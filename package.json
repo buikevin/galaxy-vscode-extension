@@ -1,0 +1,140 @@
+{
+  "name": "galaxy-code-vscode",
+  "displayName": "Galaxy Code",
+  "description": "AI-powered coding assistant with a Galaxy chat experience for VS Code.",
+  "version": "0.1.11",
+  "publisher": "kevinbui",
+  "icon": "resources/icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/buikevin/galaxy-vscode-extension.git"
+  },
+  "bugs": {
+    "url": "https://github.com/buikevin/galaxy-vscode-extension/issues"
+  },
+  "homepage": "https://github.com/buikevin/galaxy-vscode-extension#readme",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning",
+    "Programming Languages"
+  ],
+  "keywords": [
+    "ai",
+    "assistant",
+    "chat",
+    "coding",
+    "productivity"
+  ],
+  "activationEvents": [
+    "onView:galaxy-code.chatView",
+    "onCommand:galaxy-code.openChat"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "galaxy-code-sidebar",
+          "title": "Galaxy Code",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "galaxy-code-sidebar": [
+        {
+          "id": "galaxy-code.chatView",
+          "name": "Galaxy Code",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "galaxy-code.openChat",
+        "title": "Focus Chat",
+        "category": "Galaxy Code"
+      },
+      {
+        "command": "galaxy-code.clearHistory",
+        "title": "Clear Chat History",
+        "category": "Galaxy Code"
+      },
+      {
+        "command": "galaxy-code.openConfig",
+        "title": "Open Config Folder",
+        "category": "Galaxy Code"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "galaxy-code.openChat",
+        "key": "ctrl+shift+g",
+        "mac": "cmd+shift+g"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "yarn run package",
+    "compile": "yarn run check-types && yarn run lint && node esbuild.js && vite build",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "watch:webview": "vite build --watch",
+    "package": "yarn run check-types && yarn run lint && node esbuild.js --production && vite build",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "yarn run compile-tests && yarn run compile && yarn run lint",
+    "check-types": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.3",
+    "@google/genai": "^1.44.0",
+    "@radix-ui/react-label": "^2.1.0",
+    "@radix-ui/react-scroll-area": "^1.2.9",
+    "@radix-ui/react-select": "^2.2.6",
+    "@radix-ui/react-separator": "^1.1.7",
+    "@radix-ui/react-slot": "^1.2.3",
+    "@radix-ui/react-tabs": "^1.1.13",
+    "@radix-ui/react-toast": "^1.2.15",
+    "@tavily/core": "^0.7.2",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.542.0",
+    "mammoth": "^1.11.0",
+    "ollama": "^0.6.3",
+    "openai": "^6.27.0",
+    "pdf-parse": "^1.1.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwind-merge": "^3.3.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "22.x",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/react": "^18.3.24",
+    "@types/react-dom": "^18.3.7",
+    "@types/vscode": "^1.90.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "@vscode/test-cli": "^0.0.12",
+    "@vscode/test-electron": "^2.5.2",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.27.3",
+    "eslint": "^9.39.3",
+    "npm-run-all": "^4.1.5",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^3.4.17",
+    "tailwindcss-animate": "^1.0.7",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1",
+    "vite": "^7.1.7"
+  }
+}
