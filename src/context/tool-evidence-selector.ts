@@ -34,7 +34,32 @@ function markPathInvalidation(
   }
 
   invalidatedFiles.add(targetPath);
-  invalidatedDirectories.add(`${path.dirname(targetPath)}${path.sep}`);
+  invalidatedDirectories.add(normalizeDirectoryPath(path.dirname(targetPath)));
+}
+
+function normalizeDirectoryPath(targetPath: string): string {
+  if (!targetPath) {
+    return '';
+  }
+
+  return targetPath.endsWith(path.sep) ? targetPath : `${targetPath}${path.sep}`;
+}
+
+function markDirectoryInvalidation(invalidatedDirectories: Set<string>, targetPath: string): void {
+  if (!targetPath) {
+    return;
+  }
+
+  invalidatedDirectories.add(normalizeDirectoryPath(targetPath));
+}
+
+function isWorkspaceMutatingProjectCommand(commandLabel: string, category: string): boolean {
+  if (category === 'build') {
+    return true;
+  }
+
+  const normalized = commandLabel.toLowerCase();
+  return /(?:^|\s)(?:install|add|init|create|generate|codegen|scaffold|migrate|upgrade|update|sync)(?:\s|$)|git\s+(?:pull|checkout|switch|merge|rebase|reset)|(?:eslint|stylelint|ruff).+--fix|prettier.+--write|(?:^|\s)(?:npm|pnpm|yarn|bun)\s+(?:install|add)(?:\s|$)|(?:^|\s)(?:vite|next|nuxt|astro|webpack|rollup|tsup)\s+build(?:\s|$)/.test(normalized);
 }
 
 function deriveStaleEvidence(evidence: readonly ToolEvidence[]): readonly ToolEvidence[] {
@@ -65,6 +90,23 @@ function deriveStaleEvidence(evidence: readonly ToolEvidence[]): readonly ToolEv
     if (item.toolName === 'write_file' || item.toolName === 'edit_file') {
       markPathInvalidation(invalidatedFiles, invalidatedDirectories, item.filePath);
       continue;
+    }
+
+    if ((item.toolName === 'galaxy_design_init' || item.toolName === 'galaxy_design_add') && item.success) {
+      markDirectoryInvalidation(invalidatedDirectories, item.targetPath);
+      continue;
+    }
+
+    if (
+      item.toolName === 'run_project_command' &&
+      item.success &&
+      isWorkspaceMutatingProjectCommand(item.commandLabel, item.category)
+    ) {
+      markDirectoryInvalidation(invalidatedDirectories, item.cwd);
+      invalidateAllPrior = true;
+      if (/git\s+(?:pull|checkout|switch|merge|rebase|reset)/i.test(item.commandLabel)) {
+        invalidateAllPrior = true;
+      }
     }
 
   }

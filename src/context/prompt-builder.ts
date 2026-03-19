@@ -34,6 +34,11 @@ export function buildPromptContext(opts: {
   });
   const contextNoteContent = opts.workingTurn?.contextNote?.trim() ?? '';
   const compactSummaryContent = opts.workingTurn?.compactSummary?.trim() ?? '';
+  const workingPromptTokens = opts.workingTurn
+    ? countContextTokens([opts.workingTurn.userMessage, ...opts.workingTurn.contextMessages]) +
+      estimateTokens(contextNoteContent) +
+      estimateTokens(compactSummaryContent)
+    : 0;
 
   const notesMessage = buildContextMessage(notesContent, `ctx-notes-${Date.now()}`);
   if (notesMessage) {
@@ -77,16 +82,8 @@ export function buildPromptContext(opts: {
     projectMemoryTokens: estimateTokens(projectMemoryContent),
     sessionMemoryTokens: estimateTokens(activeTaskMemoryContent) + estimateTokens(projectMemoryContent),
     evidenceTokens: evidenceBlock.tokens,
-    workingSessionTokens: opts.workingTurn
-      ? countContextTokens([opts.workingTurn.userMessage, ...opts.workingTurn.contextMessages]) +
-        estimateTokens(opts.workingTurn.assistantDraft) +
-        estimateTokens(compactSummaryContent)
-      : 0,
-    workingTurnTokens: opts.workingTurn
-      ? countContextTokens([opts.workingTurn.userMessage, ...opts.workingTurn.contextMessages]) +
-        estimateTokens(opts.workingTurn.assistantDraft) +
-        estimateTokens(compactSummaryContent)
-      : 0,
+    workingSessionTokens: workingPromptTokens,
+    workingTurnTokens: workingPromptTokens,
     finalPromptTokens: countContextTokens(messages),
     compactedWorkingTurn: Boolean(opts.workingTurn?.compacted),
     droppedRawToolMessages: opts.workingTurn?.droppedContextMessages ?? 0,

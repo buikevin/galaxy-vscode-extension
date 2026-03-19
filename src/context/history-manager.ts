@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { ChatMessage } from '../shared/protocol';
 import type { ToolCall, ToolResult } from '../tools/file-tools';
-import { estimateTokens, MAX_TOKENS } from './compaction';
+import { estimateTokens, HARD_PROMPT_TOKENS } from './compaction';
 import type {
   ActiveTaskMemory,
   ProjectMemory,
@@ -24,9 +24,6 @@ import {
 import { createEmptySessionMemory, loadSessionMemory, saveSessionMemory } from './session-store';
 import { clearToolEvidence, createToolEvidence, appendToolEvidence as persistToolEvidence } from './tool-evidence-store';
 
-const WORKING_SESSION_SOFT_LIMIT = 160_000;
-const WORKING_SESSION_MIN_BUDGET = 64_000;
-const FIXED_CONTEXT_BUFFER_TOKENS = 96_000;
 const ACTIVE_TASK_MEMORY_SOFT_LIMIT = 32_000;
 const PROJECT_MEMORY_SOFT_LIMIT = 24_000;
 
@@ -41,7 +38,11 @@ export interface HistoryManager {
   appendToolMessage(message: ChatMessage): void;
   appendToolEvidence(opts: { call: ToolCall; result: ToolResult; toolCallId?: string }): void;
   incrementRound(): void;
-  compactWorkingTurn(force?: boolean): boolean;
+  compactWorkingTurn(opts?: {
+    force?: boolean;
+    workingTurnBudget?: number;
+    promptTokensEstimate?: number;
+  }): boolean;
   finalizeTurn(opts: { assistantText: string }): TurnDigest | null;
   recordExternalEvent(summary: string, filesTouched?: readonly string[]): void;
   clearCurrentTurn(): void;
@@ -196,26 +197,15 @@ function estimateWorkingTurnTokens(turn: WorkingTurn | null): number {
 
   return (
     estimateTokens(turn.userMessage.content) +
-    estimateTokens(turn.assistantDraft) +
     estimateTokens(turn.contextNote ?? '') +
     estimateTokens(turn.compactSummary ?? '') +
-    turn.contextMessages.reduce((sum, message) => sum + estimateTokens(message.content), 0) +
-    turn.toolDigests.reduce((sum, digest) => sum + estimateTokens(digest.summary), 0)
+    turn.contextMessages.reduce((sum, message) => sum + estimateTokens(message.content), 0)
   );
 }
 
 function mergeProjectSummary(existing: string, next: string): string {
   const merged = [existing.trim(), next.trim()].filter(Boolean).join('\n\n').trim();
   return summarizeText(merged, 3_200);
-}
-
-function computeWorkingSessionBudget(sessionMemory: SessionMemory): number {
-  const activeTaskTokens = estimateActiveTaskMemoryTokens(sessionMemory.activeTaskMemory);
-  const projectTokens = estimateProjectMemoryTokens(sessionMemory.projectMemory);
-  return Math.max(
-    WORKING_SESSION_MIN_BUDGET,
-    Math.min(WORKING_SESSION_SOFT_LIMIT, MAX_TOKENS - FIXED_CONTEXT_BUFFER_TOKENS - activeTaskTokens - projectTokens),
-  );
 }
 
 function compactActiveTaskMemory(memory: ActiveTaskMemory): ActiveTaskMemory {
@@ -484,13 +474,19 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
       });
     },
 
-    compactWorkingTurn(force = false): boolean {
+    compactWorkingTurn(opts): boolean {
       if (!workingTurn) {
         return false;
       }
 
-      const workingBudget = computeWorkingSessionBudget(sessionMemory);
-      if (!force && workingTurn.tokenEstimate < workingBudget) {
+      const force = opts?.force ?? false;
+      const promptNearCap =
+        typeof opts?.promptTokensEstimate === 'number' && opts.promptTokensEstimate >= HARD_PROMPT_TOKENS;
+      const budgetReached =
+        typeof opts?.workingTurnBudget === 'number' && workingTurn.tokenEstimate >= opts.workingTurnBudget;
+      const emergencyCompact = workingTurn.tokenEstimate >= HARD_PROMPT_TOKENS;
+
+      if (!force && !promptNearCap && !budgetReached && !emergencyCompact) {
         return false;
       }
 

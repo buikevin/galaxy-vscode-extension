@@ -86,7 +86,7 @@ export type ProjectCommandEvidence = ToolEvidenceBase & Readonly<{
   toolName: 'run_project_command';
   commandId: string;
   commandLabel: string;
-  category: 'build' | 'test' | 'lint' | 'typecheck' | 'format-check';
+  category: 'build' | 'test' | 'lint' | 'typecheck' | 'format-check' | 'custom';
   cwd: string;
   exitCode: number;
   outputPreview: string;

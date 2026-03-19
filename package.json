@@ -2,7 +2,7 @@
   "name": "galaxy-code-vscode",
   "displayName": "Galaxy Code",
   "description": "AI-powered coding assistant with a Galaxy chat experience for VS Code.",
-  "version": "0.1.11",
+  "version": "0.1.13",
   "publisher": "kevinbui",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -31,7 +31,13 @@
   ],
   "activationEvents": [
     "onView:galaxy-code.chatView",
-    "onCommand:galaxy-code.openChat"
+    "onView:galaxy-code.contextFilesView",
+    "onView:galaxy-code.changedFilesView",
+    "onCommand:galaxy-code.openChat",
+    "onCommand:galaxy-code.switchAgent",
+    "onCommand:galaxy-code.openLogs",
+    "onCommand:galaxy-code.toggleReview",
+    "onCommand:galaxy-code.toggleValidation"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -50,6 +56,14 @@
           "id": "galaxy-code.chatView",
           "name": "Galaxy Code",
           "type": "webview"
+        },
+        {
+          "id": "galaxy-code.contextFilesView",
+          "name": "Context Files"
+        },
+        {
+          "id": "galaxy-code.changedFilesView",
+          "name": "Changed Files"
         }
       ]
     },
@@ -68,8 +82,43 @@
         "command": "galaxy-code.openConfig",
         "title": "Open Config Folder",
         "category": "Galaxy Code"
+      },
+      {
+        "command": "galaxy-code.switchAgent",
+        "title": "Switch Agent",
+        "category": "Galaxy Code"
+      },
+      {
+        "command": "galaxy-code.openLogs",
+        "title": "Open Runtime Logs",
+        "category": "Galaxy Code"
+      },
+      {
+        "command": "galaxy-code.toggleReview",
+        "title": "Toggle Review",
+        "category": "Galaxy Code"
+      },
+      {
+        "command": "galaxy-code.toggleValidation",
+        "title": "Toggle Validation",
+        "category": "Galaxy Code"
       }
     ],
+    "configuration": {
+      "title": "Galaxy Code",
+      "properties": {
+        "galaxyCode.quality.reviewEnabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Run Galaxy Code review after the agent writes files."
+        },
+        "galaxyCode.quality.validateEnabled": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Run final validation after the agent writes files."
+        }
+      }
+    },
     "keybindings": [
       {
         "command": "galaxy-code.openChat",

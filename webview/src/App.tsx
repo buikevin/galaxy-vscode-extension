@@ -115,7 +115,8 @@ type ActionItem = Readonly<{
 
 type RenderItem =
   | Readonly<{ type: "message"; key: string; message: ChatMessage }>
-  | Readonly<{ type: "actions"; key: string; items: readonly ActionItem[] }>;
+  | Readonly<{ type: "actions"; key: string; items: readonly ActionItem[] }>
+  | Readonly<{ type: "live-shell"; key: string; session: ActiveShellSession }>;
 
 type ActiveShellSession = Readonly<{
   toolCallId: string;
@@ -255,7 +256,7 @@ export function App() {
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [messages, streamingAssistant, streamingThinking, approvalRequest, errorText]);
+  }, [messages, streamingAssistant, streamingThinking, activeShellSessions, approvalRequest, errorText]);
 
   useEffect(() => {
     if (activeShellSessions.length === 0) {
@@ -313,6 +314,9 @@ export function App() {
         );
         setQualityPreferences(message.payload.qualityPreferences);
         setChangeSummary(message.payload.changeSummary);
+        return;
+      case "selected-agent-updated":
+        setSelectedAgent(message.payload.selectedAgent);
         return;
       case "assistant-stream":
         markServerResponseReceived();
@@ -1062,8 +1066,15 @@ export function App() {
       : "Assistant";
   }
 
-  function buildRenderItems(source: readonly ChatMessage[]): RenderItem[] {
+  function buildRenderItems(
+    source: readonly ChatMessage[],
+    shellSessions: readonly ActiveShellSession[]
+  ): RenderItem[] {
     const items: RenderItem[] = [];
+    const shellSessionsByToolCallId = new Map(
+      shellSessions.map((session) => [session.toolCallId, session] as const)
+    );
+    const renderedShellSessionIds = new Set<string>();
 
     for (let index = 0; index < source.length; ) {
       const message = source[index]!;
@@ -1102,6 +1113,19 @@ export function App() {
             items: Object.freeze(actionItems),
           });
         }
+
+        const liveSessions = (message.toolCalls ?? [])
+          .map((toolCall) => shellSessionsByToolCallId.get(toolCall.id))
+          .filter((session): session is ActiveShellSession => Boolean(session));
+
+        liveSessions.forEach((session) => {
+          renderedShellSessionIds.add(session.toolCallId);
+          items.push({
+            type: "live-shell",
+            key: `live-shell:${message.id}:${session.toolCallId}`,
+            session,
+          });
+        });
 
         if (message.content.trim()) {
           items.push({
@@ -1142,6 +1166,18 @@ export function App() {
       });
       index += 1;
     }
+
+    shellSessions.forEach((session) => {
+      if (renderedShellSessionIds.has(session.toolCallId)) {
+        return;
+      }
+
+      items.push({
+        type: "live-shell",
+        key: `live-shell:orphan:${session.toolCallId}`,
+        session,
+      });
+    });
 
     return items;
   }
@@ -1409,7 +1445,7 @@ export function App() {
     );
   }
 
-  const renderItems = buildRenderItems(messages);
+  const renderItems = buildRenderItems(messages, activeShellSessions);
   const trimmedInput = input.trim();
   const canSend =
     trimmedInput.length > 0 ||
@@ -1454,6 +1490,28 @@ export function App() {
             >
               <div className="min-w-0 max-w-full overflow-x-hidden p-3 space-y-3">
                 {renderItems.map((item) => {
+                  if (item.type === "live-shell") {
+                    return (
+                      <div
+                        key={item.key}
+                        className="mr-auto w-full min-w-0 max-w-[96%] overflow-x-hidden"
+                      >
+                        {renderShellPanel({
+                          panelId: `live-shell:${item.session.toolCallId}`,
+                          commandText: item.session.commandText,
+                          cwd: item.session.cwd,
+                          output: item.session.output,
+                          success: item.session.success,
+                          exitCode: item.session.exitCode,
+                          durationLabel:
+                            getActiveShellDuration(item.session) || undefined,
+                          running:
+                            typeof item.session.durationMs !== "number",
+                        })}
+                      </div>
+                    );
+                  }
+
                   if (item.type === "actions") {
                     if (item.items.length === 1) {
                       return (
@@ -1624,24 +1682,6 @@ export function App() {
                     </div>
                   </div>
                 ) : null}
-
-                {activeShellSessions.map((session) => (
-                  <div
-                    key={`live-shell:${session.toolCallId}`}
-                    className="mr-auto w-full min-w-0 max-w-[96%] overflow-x-hidden"
-                  >
-                    {renderShellPanel({
-                      panelId: `live-shell:${session.toolCallId}`,
-                      commandText: session.commandText,
-                      cwd: session.cwd,
-                      output: session.output,
-                      success: session.success,
-                      exitCode: session.exitCode,
-                      durationLabel: getActiveShellDuration(session) || undefined,
-                      running: typeof session.durationMs !== "number",
-                    })}
-                  </div>
-                ))}
               </div>
             </ScrollArea>
 
@@ -2016,7 +2056,7 @@ export function App() {
                     Hỏi lại
                   </Button>
                   <Button onClick={() => respondToApproval("allow")}>
-                    Cho phép
+                    Cho phép luôn
                   </Button>
                 </div>
               </CardContent>

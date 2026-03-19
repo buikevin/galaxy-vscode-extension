@@ -142,6 +142,7 @@ export type ApprovalRequestPayload = Readonly<{
 
 export type HostMessage =
   | Readonly<{ type: 'session-init'; payload: SessionInitPayload }>
+  | Readonly<{ type: 'selected-agent-updated'; payload: { selectedAgent: AgentType } }>
   | Readonly<{ type: 'assistant-stream'; payload: { delta: string } }>
   | Readonly<{ type: 'assistant-thinking'; payload: { delta: string } }>
   | Readonly<{ type: 'assistant-message'; payload: ChatMessage }>

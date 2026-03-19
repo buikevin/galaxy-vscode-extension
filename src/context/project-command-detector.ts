@@ -6,7 +6,8 @@ export type ProjectCommandCategory =
   | 'test'
   | 'lint'
   | 'typecheck'
-  | 'format-check';
+  | 'format-check'
+  | 'custom';
 
 export type ProjectCommandRisk = 'safe' | 'confirm';
 

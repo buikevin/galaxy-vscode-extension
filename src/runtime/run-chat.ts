@@ -6,7 +6,7 @@ import {
   getCommandPermission,
   grantActionApproval,
 } from '../context/action-approval-store';
-import { estimateTokens } from '../context/compaction';
+import { computeWorkingContextBudget, estimateTokens } from '../context/compaction';
 import { buildPromptContext } from '../context/prompt-builder';
 import type { HistoryManager } from '../context/history-manager';
 import type { AgentType, ChatMessage, ToolApprovalDecision } from '../shared/protocol';
@@ -97,21 +97,50 @@ export async function runExtensionChat(opts: {
   );
 
   for (let round = 0; maxToolRounds === null || round < maxToolRounds; round += 1) {
-    opts.historyManager.compactWorkingTurn();
-    const promptBuild = buildPromptContext({
-      notes: opts.historyManager.getNotes(),
-      sessionMemory: opts.historyManager.getSessionMemory(),
-      workingTurn: opts.historyManager.getWorkingTurn(),
-    });
+    const workspacePath = opts.historyManager.getSessionMemory().workspacePath;
+    const buildRoundPrompt = () => {
+      const promptBuild = buildPromptContext({
+        notes: opts.historyManager.getNotes(),
+        sessionMemory: opts.historyManager.getSessionMemory(),
+        workingTurn: opts.historyManager.getWorkingTurn(),
+      });
+      const permissionsBlock = buildPermissionContextBlock(workspacePath);
+      const permissionTokens = permissionsBlock ? estimateTokens(permissionsBlock) : 0;
+      const promptTokensEstimate =
+        promptBuild.finalPromptTokens +
+        systemPromptTokens +
+        toolSchemaTokens +
+        permissionTokens;
+      return {
+        promptBuild,
+        permissionsBlock,
+        promptTokensEstimate,
+      };
+    };
+
+    let roundPrompt = buildRoundPrompt();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const workingTurnBudget = computeWorkingContextBudget({
+        promptTokensEstimate: roundPrompt.promptTokensEstimate,
+        workingTurnTokens: roundPrompt.promptBuild.workingTurnTokens,
+      });
+      const compacted = opts.historyManager.compactWorkingTurn({
+        workingTurnBudget,
+        promptTokensEstimate: roundPrompt.promptTokensEstimate,
+      });
+      if (!compacted) {
+        break;
+      }
+      roundPrompt = buildRoundPrompt();
+    }
+
+    const { promptBuild, permissionsBlock, promptTokensEstimate } = roundPrompt;
     await opts.onEvidenceContext?.({
       content: promptBuild.evidenceContent,
       tokens: promptBuild.evidenceTokens,
       entryCount: promptBuild.evidenceEntryCount,
-      finalPromptTokens:
-        promptBuild.finalPromptTokens + systemPromptTokens + toolSchemaTokens,
+      finalPromptTokens: promptTokensEstimate,
     });
-    const workspacePath = opts.historyManager.getSessionMemory().workspacePath;
-    const permissionsBlock = buildPermissionContextBlock(workspacePath);
     const messages = permissionsBlock
       ? Object.freeze([
           ...promptBuild.messages,

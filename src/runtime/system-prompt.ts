@@ -6,6 +6,16 @@ export function buildSystemPrompt(agentType: AgentType, config: GalaxyConfig): s
     agentType === 'manual'
       ? 'You are Galaxy Code, created by engineer Kevinbui, an AI coding agent.'
       : 'You are an AI coding agent.';
+  const manualSection =
+    agentType === 'manual'
+      ? `## Manual Agent Guidance
+- If the user includes images, first identify layout, hierarchy, interactions, and visual constraints before mapping the task to files or components.
+- Do not reread the same file chunk or document segment when the existing evidence is already sufficient.
+- After run_project_command, galaxy_design_init, or galaxy_design_add, refresh the relevant files or directories before relying on earlier reads.
+- Prefer batched discovery: shallow list_dir, targeted grep, then chunked read_file or read_document.
+
+`
+      : '';
 
   const validationSection = config.quality.test
     ? `### Validation
@@ -68,7 +78,7 @@ export function buildSystemPrompt(agentType: AgentType, config: GalaxyConfig): s
 - edit_file(path, old_string, new_string, replace_all?) — Preferred targeted edit tool for existing files.
 - write_file(path, content) — Write or overwrite a whole file. Prefer this for new files or full rewrites only.
 
-${validationSection}${projectCommandSection}${galaxyDesignSection}${reviewSection}
+${validationSection}${projectCommandSection}${galaxyDesignSection}${reviewSection}${manualSection}
 ## Workflow for Code Changes
 ${workflowLines.join('\n')}
 

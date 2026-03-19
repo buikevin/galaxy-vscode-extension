@@ -265,7 +265,8 @@ export function createToolEvidence(opts: {
       category !== 'test' &&
       category !== 'lint' &&
       category !== 'typecheck' &&
-      category !== 'format-check'
+      category !== 'format-check' &&
+      category !== 'custom'
     ) {
       return null;
     }
