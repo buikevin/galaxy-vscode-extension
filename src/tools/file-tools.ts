@@ -77,6 +77,7 @@ const GREP_INCLUDE_EXTS = new Set([
 ]);
 
 const MAX_LIST_DIR_ENTRIES = 100;
+const MAX_LIST_DIR_DEPTH = 8;
 const MAX_GREP_HITS = 60;
 const TAVILY_API_KEY = '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';
 
@@ -836,7 +837,7 @@ function grepTool(workspaceRoot: string, pattern: string, rawPath: string, conte
   }
 }
 
-function listDirTool(workspaceRoot: string, rawPath: string): ToolResult {
+function listDirTool(workspaceRoot: string, rawPath: string, depth = 0): ToolResult {
   try {
     const resolved = resolveWorkspacePath(workspaceRoot, rawPath || '.');
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
@@ -849,8 +850,12 @@ function listDirTool(workspaceRoot: string, rawPath: string): ToolResult {
 
     const lines: string[] = [];
     const entries: Array<Readonly<{ name: string; path: string; kind: 'file' | 'dir' }>> = [];
+    const normalizedDepth = Math.min(
+      MAX_LIST_DIR_DEPTH,
+      Math.max(0, Math.floor(Number.isFinite(depth) ? depth : 0)),
+    );
 
-    const walk = (dirPath: string, prefix = ''): void => {
+    const walk = (dirPath: string, prefix = '', currentDepth = 0): void => {
       const dirEntries = fs.readdirSync(dirPath, { withFileTypes: true });
       for (const entry of dirEntries) {
         if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist' || entry.name === 'out') {
@@ -870,8 +875,8 @@ function listDirTool(workspaceRoot: string, rawPath: string): ToolResult {
           kind,
         }));
 
-        if (kind === 'dir') {
-          walk(fullPath, `${prefix}  `);
+        if (kind === 'dir' && currentDepth < normalizedDepth) {
+          walk(fullPath, `${prefix}  `, currentDepth + 1);
         }
       }
     };
@@ -884,6 +889,7 @@ function listDirTool(workspaceRoot: string, rawPath: string): ToolResult {
       meta: Object.freeze({
         directoryPath: resolved,
         entryCount: entries.length,
+        depth: normalizedDepth,
         truncated: entries.length >= MAX_LIST_DIR_ENTRIES,
         entries: Object.freeze(entries),
       }),
@@ -1261,7 +1267,11 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
     case 'grep':
       return grepTool(toolContext.workspaceRoot, p(call, 'pattern'), p(call, 'path', '.'), Number(call.params.contextLines ?? 2));
     case 'list_dir':
-      return listDirTool(toolContext.workspaceRoot, p(call, 'path', '.'));
+      return listDirTool(
+        toolContext.workspaceRoot,
+        p(call, 'path', '.'),
+        Number(call.params.depth ?? 0),
+      );
     case 'head':
       return headTool(toolContext.workspaceRoot, p(call, 'path'), Number(call.params.lines ?? 50));
     case 'tail':
@@ -1470,11 +1480,12 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
   }),
   Object.freeze({
     name: 'list_dir',
-    description: 'List the workspace directory structure for a target path.',
+    description: 'List the workspace directory structure for a target path. This is shallow by default; increase depth only when needed.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
         path: Object.freeze({ type: 'string', description: 'Directory path inside the workspace' }),
+        depth: Object.freeze({ type: 'number', description: 'Directory traversal depth, where 0 lists only the target directory (default 0)' }),
       }),
       required: Object.freeze(['path']),
     }),

@@ -56,7 +56,7 @@ export function buildSystemPrompt(agentType: AgentType, config: GalaxyConfig): s
 - read_file(path, maxLines?, offset?) — Read file content partially. Use offset/maxLines to avoid loading full file at once.
 - read_document(path, maxChars?, offset?) — Extract text from PDF, DOCX/DOC, XLSX/XLS/XLSM/XLSB, CSV, MD, and TXT documents. For long documents, read in chunks with offset/maxChars instead of repeatedly rereading from the start.
 - grep(pattern, path, contextLines?) — Search code and text files without loading full files.
-- list_dir(path) — List directory structure inside the workspace.
+- list_dir(path, depth?) — List directory structure inside the workspace. By default this is shallow; increase depth only when needed.
 - head(path, lines?) — Read first N lines of a file.
 - tail(path, lines?) — Read last N lines of a file.
 - search_web(query, maxResults?, searchDepth?, includeAnswer?, includeRawContent?, includeDomains?, excludeDomains?, timeRange?) — Search the web with Tavily and return ranked results.

@@ -55,6 +55,10 @@ export function loadConfig(): GalaxyConfig {
         ...(typeof parsed.review === 'boolean' ? { review: parsed.review } : {}),
         ...(typeof parsed.test === 'boolean' ? { test: parsed.test } : {}),
       },
+      maxToolRounds:
+        typeof parsed.maxToolRounds === 'number' || parsed.maxToolRounds === null
+          ? parsed.maxToolRounds
+          : DEFAULT_CONFIG.maxToolRounds,
       toolSafety: {
         ...DEFAULT_CONFIG.toolSafety,
         ...(parsed.toolSafety ?? {}),

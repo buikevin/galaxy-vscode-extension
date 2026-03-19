@@ -24,8 +24,6 @@ import { captureWorkspaceSnapshot, getSessionFiles, trackWorkspaceChanges } from
 import { buildSystemPrompt } from './system-prompt';
 import type { StreamChunk } from './types';
 
-const MAX_TOOL_ROUNDS = 12;
-
 type RunResult = Readonly<{
   assistantText: string;
   assistantThinking: string;
@@ -87,6 +85,10 @@ export async function runExtensionChat(opts: {
 }): Promise<RunResult> {
   const driver = createDriver(opts.config, opts.agentType, true);
   const filesWritten = new Set<string>();
+  const maxToolRounds =
+    typeof opts.config.maxToolRounds === 'number' && Number.isFinite(opts.config.maxToolRounds)
+      ? Math.max(1, Math.floor(opts.config.maxToolRounds))
+      : null;
   const systemPromptTokens = estimateTokens(
     buildSystemPrompt(opts.agentType, opts.config),
   );
@@ -94,7 +96,7 @@ export async function runExtensionChat(opts: {
     JSON.stringify(getEnabledToolDefinitions(opts.config)),
   );
 
-  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+  for (let round = 0; maxToolRounds === null || round < maxToolRounds; round += 1) {
     opts.historyManager.compactWorkingTurn();
     const promptBuild = buildPromptContext({
       notes: opts.historyManager.getNotes(),
@@ -359,7 +361,7 @@ export async function runExtensionChat(opts: {
   return Object.freeze({
     assistantText: '',
     assistantThinking: '',
-    errorMessage: `Agent exceeded the maximum tool rounds (${MAX_TOOL_ROUNDS}).`,
+    errorMessage: `Agent exceeded the configured maximum tool rounds (${maxToolRounds ?? 'unlimited'}).`,
     filesWritten: Object.freeze([...filesWritten]),
   });
 }

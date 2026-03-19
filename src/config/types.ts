@@ -29,6 +29,7 @@ export interface GalaxyConfig {
   agent: AgentConfig[];
   quality: QualityConfig;
   toolSafety: ToolSafetyConfig;
+  maxToolRounds: number | null;
 }
 
 export const DEFAULT_CONFIG: GalaxyConfig = {
@@ -43,6 +44,7 @@ export const DEFAULT_CONFIG: GalaxyConfig = {
     review: true,
     test: true,
   },
+  maxToolRounds: null,
   toolSafety: {
     enableGitWriteTools: true,
     enableDeletePathTool: false,
