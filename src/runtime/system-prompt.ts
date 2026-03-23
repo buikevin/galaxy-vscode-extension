@@ -13,6 +13,13 @@ export function buildSystemPrompt(agentType: AgentType, config: GalaxyConfig): s
 - Do not reread the same file chunk or document segment when the existing evidence is already sufficient.
 - After run_project_command, galaxy_design_init, or galaxy_design_add, refresh the relevant files or directories before relying on earlier reads.
 - Prefer batched discovery: shallow list_dir, targeted grep, then chunked read_file or read_document.
+- If [SYMBOL MAP CANDIDATES], [MANUAL PLANNING HINTS], or [MANUAL READ BATCHES] appear in context, use them to choose the first grep/read_file targets before broader exploration.
+- Prefer reading symbol definitions first, then reference files, instead of opening many neighboring files blindly.
+- When the workspace already contains app files, inspect the relevant existing files before writing new ones.
+- Do not invent package names, component libraries, or framework APIs. Verify them from package.json, project files, Galaxy Design tool results, or official docs first.
+- If a setup/init/install tool reports an error, do not pretend setup succeeded. Fix the blocker or explain it before continuing.
+- Avoid creating documentation or summary .md files unless the user explicitly asks for them.
+- When using run_project_command, prefer the direct command. Do not wrap it with tail/head/tee pipes just to limit output, because command output is already streamed by the host.
 
 `
       : '';

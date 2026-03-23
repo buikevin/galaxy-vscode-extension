@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { ToolResult } from './file-tools';
+import { buildShellEnvironment } from '../runtime/shell-resolver';
 
 export type GalaxyDesignFramework =
   | 'react'
@@ -221,6 +222,7 @@ function isCommandAvailable(executable: string, args: readonly string[]): boolea
     const result = spawnSync(executable, [...args], {
       stdio: 'ignore',
       encoding: 'utf-8',
+      env: buildShellEnvironment(),
     });
     return !result.error && result.status === 0;
   } catch {
@@ -228,28 +230,22 @@ function isCommandAvailable(executable: string, args: readonly string[]): boolea
   }
 }
 
-function findRunner(preferred: GalaxyDesignRunner): GalaxyDesignRunner {
-  const candidates: readonly GalaxyDesignRunner[] = Object.freeze([
-    preferred,
-    ...(['bun', 'pnpm', 'yarn', 'npm'] as const).filter((item) => item !== preferred),
-  ]);
-
-  for (const candidate of candidates) {
-    if (candidate === 'bun' && isCommandAvailable('bunx', ['--version'])) {
-      return candidate;
-    }
-    if (candidate === 'pnpm' && isCommandAvailable('pnpm', ['--version'])) {
-      return candidate;
-    }
-    if (candidate === 'yarn' && isCommandAvailable('yarn', ['--version'])) {
-      return candidate;
-    }
-    if (candidate === 'npm' && isCommandAvailable('npx', ['--version'])) {
-      return candidate;
-    }
+function getRunnerExecutable(runner: GalaxyDesignRunner): string {
+  switch (runner) {
+    case 'bun':
+      return 'bunx';
+    case 'pnpm':
+      return 'pnpm';
+    case 'yarn':
+      return 'yarn';
+    case 'npm':
+      return 'npx';
   }
+}
 
-  return 'npm';
+function isRunnerAvailable(runner: GalaxyDesignRunner): boolean {
+  const executable = getRunnerExecutable(runner);
+  return isCommandAvailable(executable, ['--version']);
 }
 
 function shellQuote(value: string): string {
@@ -800,7 +796,15 @@ export function prepareGalaxyDesignAction(
     };
   }
 
-  const runnerPackageManager = findRunner(info.packageManager);
+  const runnerPackageManager = info.packageManager;
+  if (!isRunnerAvailable(runnerPackageManager)) {
+    return {
+      error:
+        `Project package manager is ${info.packageManager}, but the required runner ` +
+        `"${getRunnerExecutable(runnerPackageManager)}" is not available on this machine. ` +
+        'Install the matching package manager first instead of falling back to a different one.',
+    };
+  }
   const command = buildRunnerCommand(runnerPackageManager, action, info.targetPath, components);
 
   return Object.freeze({
@@ -825,20 +829,30 @@ function runGalaxyDesignAction(plan: GalaxyDesignActionPlan): ToolResult {
       cwd: plan.targetPath,
       encoding: 'utf-8',
       maxBuffer: 1024 * 1024 * 8,
+      env: buildShellEnvironment(),
     });
 
     const stdout = String(result.stdout ?? '').trim();
     const stderr = String(result.stderr ?? '').trim();
     const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
     const exitCode = typeof result.status === 'number' ? result.status : result.error ? 1 : 0;
+    const outputSignalsFailure =
+      /failed to install dependencies/i.test(combined) ||
+      /✖\s+failed/i.test(combined) ||
+      /ExecaError:\s*Command failed/i.test(combined) ||
+      /\berror:\s+/i.test(combined);
 
-    if (result.error || exitCode !== 0) {
+    if (result.error || exitCode !== 0 || outputSignalsFailure) {
       return Object.freeze({
         success: false,
         content: combined,
         error:
           `Galaxy Design ${plan.action} failed` +
-          (result.error ? `: ${result.error.message}` : ` with exit code ${exitCode}`),
+          (result.error
+            ? `: ${result.error.message}`
+            : outputSignalsFailure
+              ? ' due to CLI-reported install/setup errors'
+              : ` with exit code ${exitCode}`),
         meta: Object.freeze({
           action: plan.action,
           framework: plan.framework,

@@ -44,7 +44,17 @@ export type FileToolContext = Readonly<{
   refreshWorkspaceFiles: () => Promise<void>;
   onProjectCommandStart?: (payload: Readonly<{ toolCallId: string; commandText: string; cwd: string; startedAt: number }>) => Promise<void> | void;
   onProjectCommandChunk?: (payload: Readonly<{ toolCallId: string; chunk: string }>) => Promise<void> | void;
-  onProjectCommandEnd?: (payload: Readonly<{ toolCallId: string; exitCode: number; success: boolean; durationMs: number }>) => Promise<void> | void;
+  onProjectCommandEnd?: (payload: Readonly<{ toolCallId: string; exitCode: number; success: boolean; durationMs: number; background?: boolean }>) => Promise<void> | void;
+  onProjectCommandComplete?: (payload: Readonly<{
+    toolCallId: string;
+    commandText: string;
+    cwd: string;
+    exitCode: number;
+    success: boolean;
+    durationMs: number;
+    output: string;
+    background: boolean;
+  }>) => Promise<void> | void;
 }>;
 
 const GREP_INCLUDE_EXTS = new Set([
@@ -885,7 +895,7 @@ function listDirTool(workspaceRoot: string, rawPath: string, depth = 0): ToolRes
 
     return Object.freeze({
       success: true,
-      content: lines.join('\n'),
+      content: lines.join('\n') || '(empty directory)',
       meta: Object.freeze({
         directoryPath: resolved,
         entryCount: entries.length,
@@ -1241,7 +1251,6 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
     case 'write_file': {
       const result = writeFileTool(toolContext.workspaceRoot, p(call, 'path'), String(call.params.content ?? ''));
       if (result.success && typeof result.meta?.filePath === 'string') {
-        await toolContext.revealFile(result.meta.filePath, { startLine: 1, endLine: 1 });
         await toolContext.refreshWorkspaceFiles();
       }
       return result;
@@ -1255,11 +1264,6 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
         Boolean(call.params.replace_all ?? false),
       );
       if (result.success && typeof result.meta?.filePath === 'string') {
-        const ranges = Array.isArray(result.meta.changedLineRanges)
-          ? result.meta.changedLineRanges as Array<{ startLine: number; endLine: number }>
-          : [];
-        const firstRange = ranges[0];
-        await toolContext.revealFile(result.meta.filePath, firstRange);
         await toolContext.refreshWorkspaceFiles();
       }
       return result;
@@ -1367,12 +1371,25 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
                     chunk,
                   });
                 },
-                onEnd: async ({ exitCode, success, durationMs }) => {
+                onEnd: async ({ exitCode, success, durationMs, background }) => {
                   await toolContext.onProjectCommandEnd?.({
                     toolCallId: call.params.toolCallId as string,
                     exitCode,
                     success,
                     durationMs,
+                    ...(background ? { background } : {}),
+                  });
+                },
+                onComplete: async ({ commandText, cwd, exitCode, success, durationMs, output, background }) => {
+                  await toolContext.onProjectCommandComplete?.({
+                    toolCallId: call.params.toolCallId as string,
+                    commandText,
+                    cwd,
+                    exitCode,
+                    success,
+                    durationMs,
+                    output,
+                    background,
                   });
                 },
               }

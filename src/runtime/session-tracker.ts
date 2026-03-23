@@ -39,6 +39,7 @@ type WorkspaceFileSnapshot = Readonly<{
   filePath: string;
   mtimeMs: number;
   size: number;
+  content: string | null;
 }>;
 
 export function detectLanguage(filePath: string): string {
@@ -156,10 +157,12 @@ function collectWorkspaceFiles(dirPath: string, files: WorkspaceFileSnapshot[], 
 
     try {
       const stat = fs.statSync(fullPath);
+      const content = fs.readFileSync(fullPath, 'utf-8');
       files.push(Object.freeze({
         filePath: path.resolve(fullPath),
         mtimeMs: stat.mtimeMs,
         size: stat.size,
+        content,
       }));
     } catch {
       continue;
@@ -183,14 +186,14 @@ export function trackWorkspaceChanges(
   for (const [filePath, snapshot] of after.entries()) {
     const previous = before.get(filePath);
     if (!previous) {
-      captureOriginal(filePath);
+      captureOriginalFromWorkspaceSnapshot(filePath, null);
       trackFileWrite(filePath);
       changedPaths.add(filePath);
       continue;
     }
 
     if (previous.mtimeMs !== snapshot.mtimeMs || previous.size !== snapshot.size) {
-      captureOriginal(filePath);
+      captureOriginalFromWorkspaceSnapshot(filePath, previous);
       trackFileWrite(filePath);
       changedPaths.add(filePath);
     }
@@ -198,13 +201,28 @@ export function trackWorkspaceChanges(
 
   for (const filePath of before.keys()) {
     if (!after.has(filePath)) {
-      captureOriginal(filePath);
+      captureOriginalFromWorkspaceSnapshot(filePath, before.get(filePath) ?? null);
       trackFileWrite(filePath);
       changedPaths.add(filePath);
     }
   }
 
   return Object.freeze([...changedPaths]);
+}
+
+function captureOriginalFromWorkspaceSnapshot(
+  filePath: string,
+  snapshot: WorkspaceFileSnapshot | null,
+): void {
+  const resolved = path.resolve(filePath);
+  if (originalSnapshots.has(resolved)) {
+    return;
+  }
+
+  originalSnapshots.set(resolved, Object.freeze({
+    content: snapshot?.content ?? null,
+    savedAt: Date.now(),
+  }));
 }
 
 export type RevertResult =

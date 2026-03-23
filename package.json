@@ -2,7 +2,7 @@
   "name": "galaxy-code-vscode",
   "displayName": "Galaxy Code",
   "description": "AI-powered coding assistant with a Galaxy chat experience for VS Code.",
-  "version": "0.1.13",
+  "version": "0.1.29",
   "publisher": "kevinbui",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -31,11 +31,11 @@
   ],
   "activationEvents": [
     "onView:galaxy-code.chatView",
-    "onView:galaxy-code.contextFilesView",
-    "onView:galaxy-code.changedFilesView",
     "onCommand:galaxy-code.openChat",
+    "onCommand:galaxy-code.openChatRight",
     "onCommand:galaxy-code.switchAgent",
     "onCommand:galaxy-code.openLogs",
+    "onCommand:galaxy-code.openTelemetrySummary",
     "onCommand:galaxy-code.toggleReview",
     "onCommand:galaxy-code.toggleValidation"
   ],
@@ -56,14 +56,6 @@
           "id": "galaxy-code.chatView",
           "name": "Galaxy Code",
           "type": "webview"
-        },
-        {
-          "id": "galaxy-code.contextFilesView",
-          "name": "Context Files"
-        },
-        {
-          "id": "galaxy-code.changedFilesView",
-          "name": "Changed Files"
         }
       ]
     },
@@ -71,6 +63,11 @@
       {
         "command": "galaxy-code.openChat",
         "title": "Focus Chat",
+        "category": "Galaxy Code"
+      },
+      {
+        "command": "galaxy-code.openChatRight",
+        "title": "Open Chat Right",
         "category": "Galaxy Code"
       },
       {
@@ -91,6 +88,11 @@
       {
         "command": "galaxy-code.openLogs",
         "title": "Open Runtime Logs",
+        "category": "Galaxy Code"
+      },
+      {
+        "command": "galaxy-code.openTelemetrySummary",
+        "title": "Open Telemetry Summary",
         "category": "Galaxy Code"
       },
       {
@@ -116,6 +118,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "Run final validation after the agent writes files."
+        },
+        "galaxyCode.quality.fullAccessEnabled": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Allow high-risk project tools to run without asking for approval."
         }
       }
     },
@@ -185,5 +192,6 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.56.1",
     "vite": "^7.1.7"
-  }
+  },
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
 }

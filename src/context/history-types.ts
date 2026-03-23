@@ -71,6 +71,16 @@ export type SessionMemory = Readonly<{
   lastUpdatedAt: number;
 }>;
 
+export type ReadPlanProgressItem = Readonly<{
+  label: string;
+  confirmed: boolean;
+  status?: 'confirmed' | 'needs_refresh' | 'pending';
+  evidenceSummary?: string;
+  targetPath: string;
+  symbolName?: string;
+  tool: 'read_file' | 'grep';
+}>;
+
 export type PromptBuildResult = Readonly<{
   messages: readonly ChatMessage[];
   notesTokens: number;
@@ -78,6 +88,7 @@ export type PromptBuildResult = Readonly<{
   projectMemoryTokens: number;
   sessionMemoryTokens: number;
   evidenceTokens: number;
+  syntaxIndexTokens: number;
   workingSessionTokens: number;
   workingTurnTokens: number;
   finalPromptTokens: number;
@@ -85,4 +96,14 @@ export type PromptBuildResult = Readonly<{
   droppedRawToolMessages: number;
   evidenceContent: string;
   evidenceEntryCount: number;
+  syntaxIndexEntryCount: number;
+  focusSymbols: readonly string[];
+  manualPlanningContent: string;
+  manualReadBatchesContent: string;
+  manualReadBatchItems: readonly string[];
+  readPlanProgressContent: string;
+  readPlanProgressItems: readonly ReadPlanProgressItem[];
+  confirmedReadCount: number;
+  retrievalLifecycleContent?: string;
+  antiLoopGuardrailsContent?: string;
 }>;

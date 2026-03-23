@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { ToolCall, ToolResult } from '../tools/file-tools';
 import { ensureProjectStorage, getProjectStorageInfo } from './project-store';
+import { appendTelemetryEvent } from './telemetry';
 import type {
   DirectoryEntry,
   FileReadEvidence,
@@ -368,6 +369,14 @@ export function appendToolEvidence(workspacePath: string, evidence: ToolEvidence
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);
   fs.appendFileSync(storage.toolEvidencePath, `${JSON.stringify(evidence)}\n`, 'utf-8');
+  appendTelemetryEvent(workspacePath, {
+    kind: 'tool_evidence',
+    toolName: evidence.toolName,
+    success: evidence.success,
+    ...('filePath' in evidence && typeof evidence.filePath === 'string' ? { targetPath: evidence.filePath } : {}),
+    ...('targetPath' in evidence && typeof evidence.targetPath === 'string' ? { targetPath: evidence.targetPath } : {}),
+    ...('readMode' in evidence && typeof evidence.readMode === 'string' ? { readMode: evidence.readMode } : {}),
+  });
 }
 
 export function clearToolEvidence(workspacePath: string): void {

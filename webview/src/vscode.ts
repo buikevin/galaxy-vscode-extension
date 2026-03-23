@@ -41,6 +41,7 @@ export const vscode = resolveVsCodeApi<{
   selectedFiles?: string[];
   activeTab?: string;
   fileQuery?: string;
+  keptChangeSummaryKey?: string;
 }>();
 
 export function postHostMessage(message: unknown): void {

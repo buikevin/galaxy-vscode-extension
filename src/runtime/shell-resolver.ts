@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
 
 export type ShellKind = 'posix' | 'powershell' | 'cmd';
 
@@ -10,6 +12,42 @@ export type ShellProfile = Readonly<{
   availabilityArgs(binary: string): readonly string[];
 }>;
 
+function normalizePathEntries(rawPath: string | undefined): string[] {
+  if (!rawPath) {
+    return [];
+  }
+
+  const entries = rawPath.split(path.delimiter).map((entry) => entry.trim()).filter(Boolean);
+  return entries.map((entry) => {
+    if (entry === '~') {
+      return os.homedir();
+    }
+    if (entry.startsWith('~/')) {
+      return path.join(os.homedir(), entry.slice(2));
+    }
+    return entry;
+  });
+}
+
+export function buildShellEnvironment(overrides?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const baseEnv = { ...process.env, ...overrides };
+  const homeDir = baseEnv.HOME?.trim() || os.homedir();
+  const preferredEntries = [
+    path.join(homeDir, '.bun', 'bin'),
+    path.join(homeDir, '.cargo', 'bin'),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+  ];
+  const existingEntries = normalizePathEntries(baseEnv.PATH);
+  const mergedEntries = [...preferredEntries, ...existingEntries].filter(Boolean);
+  const dedupedEntries = mergedEntries.filter((entry, index) => mergedEntries.indexOf(entry) === index);
+  return {
+    ...baseEnv,
+    HOME: homeDir,
+    PATH: dedupedEntries.join(path.delimiter),
+  };
+}
+
 function commandExistsOnPath(binary: string): boolean {
   const checker = process.platform === 'win32' ? 'where' : 'command';
   const args = process.platform === 'win32' ? [binary] : ['-v', binary];
@@ -17,6 +55,7 @@ function commandExistsOnPath(binary: string): boolean {
     stdio: 'pipe',
     shell: process.platform !== 'win32',
     timeout: 5_000,
+    env: buildShellEnvironment(),
   });
   return !result.error && result.status === 0;
 }
@@ -78,6 +117,7 @@ export function checkCommandAvailability(binary: string, cwd: string): boolean {
     cwd,
     stdio: 'pipe',
     timeout: 5_000,
+    env: buildShellEnvironment(),
   });
   return !result.error && result.status === 0;
 }

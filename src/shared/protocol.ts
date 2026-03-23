@@ -71,6 +71,7 @@ export type QualityDetails = Readonly<{
 export type QualityPreferences = Readonly<{
   reviewEnabled: boolean;
   validateEnabled: boolean;
+  fullAccessEnabled: boolean;
 }>;
 
 export type ChangedFileSummary = Readonly<{
@@ -110,6 +111,18 @@ export type EvidenceContextPayload = Readonly<{
   tokens: number;
   entryCount: number;
   finalPromptTokens?: number;
+  focusSymbols?: readonly string[];
+  manualPlanningContent?: string;
+  manualReadBatchItems?: readonly string[];
+  readPlanProgressItems?: readonly Readonly<{
+    label: string;
+    confirmed: boolean;
+    evidenceSummary?: string;
+    targetPath: string;
+    symbolName?: string;
+    tool: 'read_file' | 'grep';
+  }>[];
+  confirmedReadCount?: number;
 }>;
 
 export type CommandStreamStartPayload = Readonly<{
@@ -129,6 +142,7 @@ export type CommandStreamEndPayload = Readonly<{
   exitCode: number;
   success: boolean;
   durationMs: number;
+  background?: boolean;
 }>;
 
 export type ApprovalRequestPayload = Readonly<{
@@ -175,6 +189,7 @@ export type WebviewMessage =
         attachmentIds?: readonly string[];
         reviewEnabled?: boolean;
         validateEnabled?: boolean;
+        fullAccessEnabled?: boolean;
       };
     }>
   | Readonly<{ type: 'quality-set'; payload: QualityPreferences }>

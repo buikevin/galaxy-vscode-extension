@@ -28,6 +28,10 @@ export type ProjectStorageInfo = Readonly<{
   actionApprovalsPath: string;
   projectCommandsPath: string;
   toolEvidencePath: string;
+  telemetryPath: string;
+  telemetrySummaryPath: string;
+  syntaxIndexPath: string;
+  semanticIndexPath: string;
   figmaImportsPath: string;
   figmaAssetsDirPath: string;
   attachmentsDirPath: string;
@@ -82,6 +86,10 @@ export function getProjectStorageInfo(workspacePath: string): ProjectStorageInfo
     actionApprovalsPath: localSettingsPath,
     projectCommandsPath: path.join(projectDirPath, 'project-commands.json'),
     toolEvidencePath: path.join(projectDirPath, 'tool-evidence.jsonl'),
+    telemetryPath: path.join(projectDirPath, 'telemetry.jsonl'),
+    telemetrySummaryPath: path.join(projectDirPath, 'telemetry-summary.json'),
+    syntaxIndexPath: path.join(projectDirPath, 'syntax-index.json'),
+    semanticIndexPath: path.join(projectDirPath, 'semantic-index.json'),
     figmaImportsPath: path.join(projectDirPath, 'figma-imports.jsonl'),
     figmaAssetsDirPath: path.join(projectDirPath, 'figma-assets'),
     attachmentsDirPath: path.join(localGalaxyDirPath, 'attachments'),

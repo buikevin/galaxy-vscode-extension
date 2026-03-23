@@ -291,6 +291,23 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
     });
   }
 
+  function shouldBeginNewActiveTask(userMessage: ChatMessage): boolean {
+    const normalized = userMessage.content.trim().toLowerCase();
+    if (normalized === 'continued') {
+      return false;
+    }
+    if (normalized.startsWith('[system continuation]')) {
+      return false;
+    }
+    if (normalized.startsWith('[system validation feedback]')) {
+      return false;
+    }
+    if (normalized.startsWith('[system code review feedback]')) {
+      return false;
+    }
+    return true;
+  }
+
   function beginNewActiveTask(userMessage: ChatMessage, contextNote?: string): void {
     const now = Date.now();
     const nextActiveTask = normalizeActiveTaskMemory(
@@ -391,7 +408,7 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
     },
 
     startTurn(userMessage: ChatMessage, contextNote?: string): WorkingTurn {
-      if (userMessage.content.trim().toLowerCase() !== 'continued') {
+      if (shouldBeginNewActiveTask(userMessage)) {
         beginNewActiveTask(userMessage, contextNote);
       }
 

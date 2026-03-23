@@ -33,3 +33,22 @@ export type FinalValidationResult = Readonly<{
   runs: readonly ValidationRunResult[];
   summary: string;
 }>;
+
+export type ValidationCommandStreamCallbacks = Readonly<{
+  onStart?: (payload: {
+    toolCallId: string;
+    commandText: string;
+    cwd: string;
+    startedAt: number;
+  }) => void | Promise<void>;
+  onChunk?: (payload: {
+    toolCallId: string;
+    chunk: string;
+  }) => void | Promise<void>;
+  onEnd?: (payload: {
+    toolCallId: string;
+    exitCode: number;
+    success: boolean;
+    durationMs: number;
+  }) => void | Promise<void>;
+}>;

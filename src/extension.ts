@@ -3,6 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { getAgentConfig, getConfigDir, loadConfig, saveConfig } from './config/manager';
+import { DEFAULT_CONFIG, type GalaxyConfig } from './config/types';
 import {
   buildAttachmentContextNote,
   buildAttachmentImagePaths,
@@ -23,6 +24,7 @@ import {
   saveProjectMeta,
   type ProjectStorageInfo,
 } from './context/project-store';
+import { appendTelemetryEvent, formatTelemetrySummary, loadTelemetrySummary } from './context/telemetry';
 import {
   appendUiTranscriptMessage,
   clearUiTranscript,
@@ -41,6 +43,12 @@ import {
 } from './runtime/session-tracker';
 import { formatReviewSummary, runCodeReview, type ReviewResult } from './runtime/code-reviewer';
 import { runExtensionChat } from './runtime/run-chat';
+import {
+  buildCoderSubAgentConfig,
+  buildSelectiveMultiAgentPlanMessage,
+  buildSelectiveMultiAgentSubtaskMessage,
+  maybeBuildSelectiveMultiAgentPlan,
+} from './runtime/selective-multi-agent';
 import { formatValidationSummary, runFinalValidation } from './validation/project-validator';
 import type { FinalValidationResult } from './validation/types';
 import {
@@ -70,7 +78,7 @@ import type {
 
 const MAX_AUTO_REPAIR_ATTEMPTS = 2;
 const MAX_AUTO_REVIEW_REPAIR_ATTEMPTS = 1;
-const MAX_EMPTY_CONTINUE_ATTEMPTS = 1;
+const MAX_EMPTY_CONTINUE_ATTEMPTS = 3;
 const MAX_LOG_ENTRIES = 120;
 const MAX_DEBUG_BLOCK_CHARS = 20_000;
 let figmaBridge: FigmaBridgeServer | null = null;
@@ -84,8 +92,42 @@ const TOGGLE_VALIDATION_COMMAND_ID = 'galaxy-code.toggleValidation';
 const GALAXY_CONFIGURATION_SECTION = 'galaxyCode';
 const QUALITY_REVIEW_SETTING_KEY = 'quality.reviewEnabled';
 const QUALITY_VALIDATE_SETTING_KEY = 'quality.validateEnabled';
+const QUALITY_FULL_ACCESS_SETTING_KEY = 'quality.fullAccessEnabled';
 const SELECTED_AGENT_STORAGE_KEY = 'galaxy-code.selectedAgent';
 const AGENT_TYPES: readonly AgentType[] = ['manual', 'ollama', 'gemini', 'claude', 'codex'];
+
+function isFullAccessEnabled(config: GalaxyConfig): boolean {
+  return !config.toolSafety.requireApprovalForGitPull
+    && !config.toolSafety.requireApprovalForGitPush
+    && !config.toolSafety.requireApprovalForGitCheckout
+    && !config.toolSafety.requireApprovalForDeletePath
+    && !config.toolSafety.requireApprovalForScaffold
+    && !config.toolSafety.requireApprovalForProjectCommand;
+}
+
+function applyFullAccessToToolSafety(config: GalaxyConfig, enabled: boolean): GalaxyConfig['toolSafety'] {
+  if (enabled) {
+    return {
+      ...config.toolSafety,
+      requireApprovalForGitPull: false,
+      requireApprovalForGitPush: false,
+      requireApprovalForGitCheckout: false,
+      requireApprovalForDeletePath: false,
+      requireApprovalForScaffold: false,
+      requireApprovalForProjectCommand: false,
+    };
+  }
+
+  return {
+    ...config.toolSafety,
+    requireApprovalForGitPull: DEFAULT_CONFIG.toolSafety.requireApprovalForGitPull,
+    requireApprovalForGitPush: DEFAULT_CONFIG.toolSafety.requireApprovalForGitPush,
+    requireApprovalForGitCheckout: DEFAULT_CONFIG.toolSafety.requireApprovalForGitCheckout,
+    requireApprovalForDeletePath: DEFAULT_CONFIG.toolSafety.requireApprovalForDeletePath,
+    requireApprovalForScaffold: DEFAULT_CONFIG.toolSafety.requireApprovalForScaffold,
+    requireApprovalForProjectCommand: DEFAULT_CONFIG.toolSafety.requireApprovalForProjectCommand,
+  };
+}
 
 type GalaxyWorkbenchChrome = Readonly<{
   outputChannel: vscode.OutputChannel;
@@ -99,6 +141,17 @@ type NativeShellViews = Readonly<{
   contextFilesView: vscode.TreeView<FileItem>;
   changedFilesProvider: ChangedFilesTreeProvider;
   changedFilesView: vscode.TreeView<ChangedFileSummaryPayload>;
+}>;
+
+type BackgroundCommandCompletion = Readonly<{
+  toolCallId: string;
+  commandText: string;
+  cwd: string;
+  exitCode: number;
+  success: boolean;
+  durationMs: number;
+  output: string;
+  background: boolean;
 }>;
 
 function normalizeRelativeDisplayPath(value: string): string {
@@ -286,8 +339,12 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   private qualityPreferences: QualityPreferences = Object.freeze({
     reviewEnabled: loadConfig().quality.review,
     validateEnabled: loadConfig().quality.test,
+    fullAccessEnabled: isFullAccessEnabled(loadConfig()),
   });
   private view: vscode.WebviewView | null = null;
+  private panel: vscode.WebviewPanel | null = null;
+  private pendingBackgroundCompletions: BackgroundCommandCompletion[] = [];
+  private backgroundCompletionRunning = false;
 
   private constructor(context: vscode.ExtensionContext, chrome: GalaxyWorkbenchChrome) {
     this.context = context;
@@ -307,14 +364,8 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
 
   async resolveWebviewView(webviewView: vscode.WebviewView): Promise<void> {
     this.view = webviewView;
-    webviewView.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist')],
-    };
+    this.configureWebview(webviewView.webview);
     webviewView.webview.html = this.getHtml(webviewView.webview);
-    webviewView.webview.onDidReceiveMessage((message: WebviewMessage) => {
-      void this.handleMessage(message);
-    });
 
     await this.postInit();
   }
@@ -322,6 +373,35 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   async reveal(): Promise<void> {
     await vscode.commands.executeCommand(`workbench.view.extension.${GALAXY_VIEW_CONTAINER_ID}`);
     this.view?.show?.(true);
+  }
+
+  async openChatRight(): Promise<void> {
+    if (this.panel) {
+      await this.panel.reveal(vscode.ViewColumn.Beside);
+      return;
+    }
+
+    const panel = vscode.window.createWebviewPanel(
+      'galaxy-code.chatPanel',
+      'Galaxy Code',
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist')],
+      },
+    );
+
+    this.panel = panel;
+    this.configureWebview(panel.webview);
+    panel.webview.html = this.getHtml(panel.webview);
+    panel.onDidDispose(() => {
+      if (this.panel === panel) {
+        this.panel = null;
+      }
+    });
+
+    await this.postInit();
   }
 
   attachNativeShellViews(nativeShellViews: NativeShellViews): void {
@@ -337,14 +417,15 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     const next = this.readQualityPreferencesFromVsCodeSettings();
     if (
       next.reviewEnabled === this.qualityPreferences.reviewEnabled &&
-      next.validateEnabled === this.qualityPreferences.validateEnabled
+      next.validateEnabled === this.qualityPreferences.validateEnabled &&
+      next.fullAccessEnabled === this.qualityPreferences.fullAccessEnabled
     ) {
       return;
     }
 
     await this.applyQualityPreferences(next, {
       syncVsCodeSettings: false,
-      logMessage: `Quality preferences updated from VS Code settings: review=${String(next.reviewEnabled)}, validate=${String(next.validateEnabled)}.`,
+      logMessage: `Quality preferences updated from VS Code settings: review=${String(next.reviewEnabled)}, validate=${String(next.validateEnabled)}, fullAccess=${String(next.fullAccessEnabled)}.`,
     });
   }
 
@@ -393,6 +474,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     return Object.freeze({
       reviewEnabled: configuration.get<boolean>(QUALITY_REVIEW_SETTING_KEY, this.qualityPreferences.reviewEnabled),
       validateEnabled: configuration.get<boolean>(QUALITY_VALIDATE_SETTING_KEY, this.qualityPreferences.validateEnabled),
+      fullAccessEnabled: configuration.get<boolean>(QUALITY_FULL_ACCESS_SETTING_KEY, this.qualityPreferences.fullAccessEnabled),
     });
   }
 
@@ -420,6 +502,16 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       );
     }
 
+    if (configuration.get<boolean>(QUALITY_FULL_ACCESS_SETTING_KEY) !== preferences.fullAccessEnabled) {
+      updates.push(
+        configuration.update(
+          QUALITY_FULL_ACCESS_SETTING_KEY,
+          preferences.fullAccessEnabled,
+          vscode.ConfigurationTarget.Global,
+        ),
+      );
+    }
+
     if (updates.length > 0) {
       await Promise.all(updates);
     }
@@ -435,6 +527,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     this.qualityPreferences = Object.freeze({
       reviewEnabled: next.reviewEnabled,
       validateEnabled: next.validateEnabled,
+      fullAccessEnabled: next.fullAccessEnabled,
     });
 
     const config = loadConfig();
@@ -444,6 +537,9 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         ...config.quality,
         review: this.qualityPreferences.reviewEnabled,
         test: this.qualityPreferences.validateEnabled,
+      },
+      toolSafety: {
+        ...applyFullAccessToToolSafety(config, this.qualityPreferences.fullAccessEnabled),
       },
     });
 
@@ -486,7 +582,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       case 'quality-set':
         await this.applyQualityPreferences(message.payload, {
           syncVsCodeSettings: true,
-          logMessage: `Quality preferences updated from the Galaxy Code sidebar: review=${String(message.payload.reviewEnabled)}, validate=${String(message.payload.validateEnabled)}.`,
+          logMessage: `Quality preferences updated from the Galaxy Code sidebar: review=${String(message.payload.reviewEnabled)}, validate=${String(message.payload.validateEnabled)}, fullAccess=${String(message.payload.fullAccessEnabled)}.`,
         });
         return;
       case 'composer-command':
@@ -509,7 +605,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         removeDraftAttachment(this.workspacePath, message.payload.attachmentId);
         return;
       case 'review-open':
-        await this.openNativeReview();
+        await this.openReviewPanel();
         return;
       case 'revert-all-changes':
         await this.revertAllTrackedChanges();
@@ -548,10 +644,12 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         const nextQualityPreferences = Object.freeze({
           reviewEnabled: message.payload.reviewEnabled ?? this.qualityPreferences.reviewEnabled,
           validateEnabled: message.payload.validateEnabled ?? this.qualityPreferences.validateEnabled,
+          fullAccessEnabled: message.payload.fullAccessEnabled ?? this.qualityPreferences.fullAccessEnabled,
         });
         if (
           nextQualityPreferences.reviewEnabled !== this.qualityPreferences.reviewEnabled ||
-          nextQualityPreferences.validateEnabled !== this.qualityPreferences.validateEnabled
+          nextQualityPreferences.validateEnabled !== this.qualityPreferences.validateEnabled ||
+          nextQualityPreferences.fullAccessEnabled !== this.qualityPreferences.fullAccessEnabled
         ) {
           await this.applyQualityPreferences(nextQualityPreferences, {
             syncVsCodeSettings: true,
@@ -591,23 +689,16 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         this.statusText = `Running ${this.selectedAgent}`;
         await this.postRunState();
 
-        await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: `Galaxy Code · ${getAgentLabel(this.selectedAgent)}`,
-            cancellable: false,
-          },
-          async (progress) => {
-            this.progressReporter = progress;
-            this.reportProgress(this.statusText);
+        this.progressReporter = null;
 
-            let hadError = false;
-            let thinkingLogged = false;
-            let emptyContinueAttempt = 0;
-            try {
+        let hadError = false;
+        let thinkingLogged = false;
+        let emptyContinueAttempt = 0;
+        try {
               const config = loadConfig();
               config.quality.review = this.qualityPreferences.reviewEnabled;
               config.quality.test = this.qualityPreferences.validateEnabled;
+              config.toolSafety = applyFullAccessToToolSafety(config, this.qualityPreferences.fullAccessEnabled);
               const selectedFilesContext = await buildSelectedFilesContextNote({
                 selectedFiles: message.payload.selectedFiles,
                 workspaceRoot: this.getWorkspaceRoot(),
@@ -628,100 +719,152 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
               if (contextNote.trim()) {
                 this.writeDebugBlock('turn-context-note', contextNote);
               }
-              this.historyManager.startTurn(userMessage, contextNote);
-
-              const result = await runExtensionChat({
+              const multiAgentResult = await this.runSelectiveMultiAgentPlan({
                 config,
                 agentType: this.selectedAgent,
-                historyManager: this.historyManager,
-                toolContext: {
-                  workspaceRoot: this.workspacePath,
-                  config,
-                  revealFile: async (filePath, range) => this.revealFile(filePath, range),
-                  refreshWorkspaceFiles: async () => this.refreshWorkspaceFiles(),
-                  onProjectCommandStart: async (payload) => {
-                    await this.postMessage({
-                      type: 'command-stream-start',
-                      payload,
-                    });
-                  },
-                  onProjectCommandChunk: async (payload) => {
-                    await this.postMessage({
-                      type: 'command-stream-chunk',
-                      payload,
-                    });
-                  },
-                  onProjectCommandEnd: async (payload) => {
-                    await this.postMessage({
-                      type: 'command-stream-end',
-                      payload,
-                    });
-                  },
-                },
-                onChunk: async (chunk) => {
-                  if (chunk.type === 'text') {
-                    await this.postMessage({
-                      type: 'assistant-stream',
-                      payload: { delta: chunk.delta },
-                    });
-                    return;
-                  }
-
-                  if (chunk.type === 'thinking') {
-                    if (!thinkingLogged && chunk.delta.trim()) {
-                      thinkingLogged = true;
-                      this.appendLog('status', `Received thinking stream from ${this.selectedAgent}.`);
-                    }
-                    await this.postMessage({
-                      type: 'assistant-thinking',
-                      payload: { delta: chunk.delta },
-                    });
-                    return;
-                  }
-
-                  if (chunk.type === 'error') {
-                    hadError = true;
-                    await this.postMessage({
-                      type: 'error',
-                      payload: { message: chunk.message },
-                    });
-                    this.showWorkbenchError(chunk.message);
-                  }
-                },
-                onMessage: async (chatMessage) => {
-                  this.debugChatMessage(chatMessage);
-                  await this.addMessage(chatMessage);
-                },
-                onToolCalls: async (toolCalls) => {
-                  this.writeDebugBlock(
-                    'turn-tool-calls',
-                    JSON.stringify(
-                      toolCalls.map((toolCall) => ({
-                        id: toolCall.id,
-                        name: toolCall.name,
-                        params: toolCall.params,
-                      })),
-                      null,
-                      2,
-                    ),
-                  );
-                },
-                onStatus: async (statusText) => {
-                  this.statusText = statusText;
-                  this.appendLog('status', statusText);
-                  this.reportProgress(statusText);
-                  await this.postRunState();
-                },
-                onEvidenceContext: async (payload) => {
-                  await this.postMessage({
-                    type: 'evidence-context',
-                    payload,
-                  });
-                },
-                requestToolApproval: async (approval) => this.requestToolApproval(approval),
+                originalUserMessage: userMessage,
+                ...(contextNote ? { contextNote } : {}),
               });
 
-              if (result.errorMessage && !hadError) {
+              const result = multiAgentResult.handled
+                ? {
+                    assistantText: '',
+                    assistantThinking: '',
+                    errorMessage: undefined,
+                    filesWritten: multiAgentResult.filesWritten,
+                  }
+                : await (async () => {
+                    this.historyManager.startTurn(userMessage, contextNote);
+                    return runExtensionChat({
+                      config,
+                      agentType: this.selectedAgent,
+                      historyManager: this.historyManager,
+                      toolContext: {
+                        workspaceRoot: this.workspacePath,
+                        config,
+                        revealFile: async (filePath, range) => this.revealFile(filePath, range),
+                        refreshWorkspaceFiles: async () => this.refreshWorkspaceFiles(),
+                        onProjectCommandStart: async (payload) => {
+                          await this.postMessage({
+                            type: 'command-stream-start',
+                            payload,
+                          });
+                        },
+                        onProjectCommandChunk: async (payload) => {
+                          await this.postMessage({
+                            type: 'command-stream-chunk',
+                            payload,
+                          });
+                        },
+                        onProjectCommandEnd: async (payload) => {
+                          await this.postMessage({
+                            type: 'command-stream-end',
+                            payload,
+                          });
+                        },
+                        onProjectCommandComplete: async (payload) => {
+                          await this.handleBackgroundCommandCompletion(payload);
+                        },
+                      },
+                      onChunk: async (chunk) => {
+                        if (chunk.type === 'text') {
+                          await this.postMessage({
+                            type: 'assistant-stream',
+                            payload: { delta: chunk.delta },
+                          });
+                          return;
+                        }
+
+                        if (chunk.type === 'thinking') {
+                          if (!thinkingLogged && chunk.delta.trim()) {
+                            thinkingLogged = true;
+                            this.appendLog('status', `Received thinking stream from ${this.selectedAgent}.`);
+                          }
+                          await this.postMessage({
+                            type: 'assistant-thinking',
+                            payload: { delta: chunk.delta },
+                          });
+                          return;
+                        }
+
+                        if (chunk.type === 'error') {
+                          hadError = true;
+                          await this.postMessage({
+                            type: 'error',
+                            payload: { message: chunk.message },
+                          });
+                          this.showWorkbenchError(chunk.message);
+                        }
+                      },
+                      onMessage: async (chatMessage) => {
+                        this.debugChatMessage(chatMessage);
+                        await this.addMessage(chatMessage);
+                      },
+                      onToolCalls: async (toolCalls) => {
+                        this.writeDebugBlock(
+                          'turn-tool-calls',
+                          JSON.stringify(
+                            toolCalls.map((toolCall) => ({
+                              id: toolCall.id,
+                              name: toolCall.name,
+                              params: toolCall.params,
+                            })),
+                            null,
+                            2,
+                          ),
+                        );
+                      },
+                      onStatus: async (statusText) => {
+                        this.statusText = statusText;
+                        this.appendLog('status', statusText);
+                        this.reportProgress(statusText);
+                        await this.postRunState();
+                      },
+                      onEvidenceContext: async (payload) => {
+                        if (payload.manualReadBatchItems?.length) {
+                          this.appendLog('info', `Manual read plan: ${payload.manualReadBatchItems[0]}`);
+                        }
+                        if (payload.readPlanProgressItems?.length) {
+                          this.appendLog(
+                            'info',
+                            `Read plan progress: ${payload.confirmedReadCount ?? 0}/${payload.readPlanProgressItems.length} confirmed`,
+                          );
+                        }
+                        this.writeDebugBlock(
+                          'manual-read-plan',
+                          [
+                            payload.focusSymbols?.length ? `Focus symbols: ${payload.focusSymbols.join(', ')}` : '',
+                            payload.manualPlanningContent ?? '',
+                            payload.manualReadBatchItems?.map((item, index) => `Batch ${index + 1}: ${item}`).join('\n') ?? '',
+                            payload.readPlanProgressItems
+                              ?.map((item) => `${item.confirmed ? '[confirmed]' : '[pending]'} ${item.label}`)
+                              .join('\n') ?? '',
+                          ]
+                            .filter(Boolean)
+                            .join('\n\n'),
+                        );
+                        await this.postMessage({
+                          type: 'evidence-context',
+                          payload,
+                        });
+                      },
+                      requestToolApproval: async (approval) => this.requestToolApproval(approval),
+                    });
+                  })();
+
+              if (multiAgentResult.handled) {
+                hadError = multiAgentResult.hadError;
+              }
+
+              if (multiAgentResult.handled) {
+                this.writeDebug(
+                  'turn-result',
+                  `agent=${this.selectedAgent} phase4 handled had_error=${hadError} files_written=${result.filesWritten.length}`,
+                );
+                if (!hadError && result.filesWritten.length > 0) {
+                  await this.runValidationAndReviewFlow(this.selectedAgent);
+                }
+              } else if (result.errorMessage && !hadError) {
                 hadError = true;
                 this.historyManager.clearCurrentTurn();
                 this.writeDebug(
@@ -771,6 +914,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
                 if (result.assistantThinking.trim()) {
                   this.writeDebugBlock('turn-empty-thinking', result.assistantThinking);
                 }
+                const previousTurn = this.historyManager.getWorkingTurn();
                 this.historyManager.clearCurrentTurn();
                 if (emptyContinueAttempt < MAX_EMPTY_CONTINUE_ATTEMPTS) {
                   emptyContinueAttempt += 1;
@@ -782,7 +926,13 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
                   const continueResult = await this.runInternalRepairTurn({
                     config: loadConfig(),
                     agentType: this.selectedAgent,
-                    userMessage: this.buildContinueMessage(emptyContinueAttempt),
+                    userMessage: this.buildContinueMessage({
+                      attempt: emptyContinueAttempt,
+                      lastUserGoal: previousTurn?.userMessage.content,
+                      lastThinking: result.assistantThinking,
+                      filesWritten: result.filesWritten,
+                      recentToolSummaries: previousTurn?.toolDigests.map((digest) => digest.summary) ?? [],
+                    }),
                   });
                   hadError = continueResult.hadError;
                   if (!hadError && continueResult.filesWritten.length > 0) {
@@ -790,27 +940,24 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
                   }
                 }
               }
-            } catch (error) {
-              hadError = true;
-              this.historyManager.clearCurrentTurn();
-              this.appendLog('error', `Runtime error: ${String(error)}`);
-              this.writeDebug('turn-crash', String(error));
-              const runtimeError = `Runtime error: ${String(error)}`;
-              await this.postMessage({
-                type: 'error',
-                payload: { message: runtimeError },
-              });
-              this.showWorkbenchError(runtimeError);
-            } finally {
-              this.isRunning = false;
-              this.statusText = hadError ? 'Run failed' : 'Ready';
-              await this.postRunState();
-              if (this.progressReporter === progress) {
-                this.progressReporter = null;
-              }
-            }
-          },
-        );
+        } catch (error) {
+          hadError = true;
+          this.historyManager.clearCurrentTurn();
+          this.appendLog('error', `Runtime error: ${String(error)}`);
+          this.writeDebug('turn-crash', String(error));
+          const runtimeError = `Runtime error: ${String(error)}`;
+          await this.postMessage({
+            type: 'error',
+            payload: { message: runtimeError },
+          });
+          this.showWorkbenchError(runtimeError);
+        } finally {
+          this.isRunning = false;
+          this.statusText = hadError ? 'Run failed' : 'Ready';
+          await this.postRunState();
+          await this.flushBackgroundCommandCompletions();
+          this.progressReporter = null;
+        }
         return;
       }
     }
@@ -869,7 +1016,10 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
 
     return [
       'Code review found issues that should be fixed before finishing.',
+      'Treat review findings as advisory, not ground truth.',
       'Prioritize critical issues first, then warnings that affect correctness or maintainability.',
+      'Before editing, verify each finding against the current workspace state.',
+      'If a finding is stale, already fixed, or incorrect after user edits/reverts, do not change code for it.',
       'Make the smallest safe changes needed.',
       '',
       ...lines,
@@ -884,18 +1034,136 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         '[SYSTEM CODE REVIEW FEEDBACK]\n' +
         'The reviewer found issues after the last implementation attempt.\n\n' +
         'Fix the reported issues with the smallest safe changes possible.\n' +
+        'Verify each finding against the current files before editing.\n' +
+        'Do not blindly trust stale or incorrect review findings.\n' +
         'Do not restart the task. Continue from the current workspace state.\n\n' +
         this.buildStructuredReviewRepairPrompt(review),
       timestamp: Date.now(),
     });
   }
 
-  private buildContinueMessage(attempt: number): ChatMessage {
+  private buildContinueMessage(opts: {
+    attempt: number;
+    lastUserGoal?: string;
+    lastThinking?: string;
+    filesWritten?: readonly string[];
+    recentToolSummaries?: readonly string[];
+  }): ChatMessage {
+    const lines = [
+      '[SYSTEM CONTINUATION]',
+      'The previous reply ended without a final user-facing answer.',
+      'Continue from the current workspace state.',
+      'Do not restart the task and do not repeat the same read/edit cycle unless fresh evidence is truly required.',
+      'If you already inspected or edited a file in the previous attempt, prefer moving forward to completion instead of reopening the same file again.',
+    ];
+
+    if (opts.lastUserGoal?.trim()) {
+      lines.push(`Last user goal: ${opts.lastUserGoal.trim()}`);
+    }
+
+    if (opts.filesWritten?.length) {
+      lines.push(`Files already changed in the previous attempt: ${opts.filesWritten.join(', ')}`);
+    }
+
+    if (opts.recentToolSummaries?.length) {
+      lines.push('Recent tool actions:');
+      opts.recentToolSummaries.slice(-6).forEach((item) => lines.push(`- ${item}`));
+    }
+
+    if (opts.lastThinking?.trim()) {
+      lines.push(`Last thinking snapshot: ${opts.lastThinking.trim().slice(0, 400)}`);
+    }
+
+    lines.push('Return either the next concrete action that advances the task or the final answer if the task is already complete.');
+
     return Object.freeze({
-      id: `continue-${Date.now()}-${attempt}`,
+      id: `continue-${Date.now()}-${opts.attempt}`,
       role: 'user',
-      content: 'Continued',
+      content: lines.join('\n\n'),
       timestamp: Date.now(),
+    });
+  }
+
+  private async runSelectiveMultiAgentPlan(opts: {
+    config: ReturnType<typeof loadConfig>;
+    agentType: AgentType;
+    originalUserMessage: ChatMessage;
+    contextNote?: string;
+  }): Promise<Readonly<{ handled: boolean; hadError: boolean; filesWritten: readonly string[] }>> {
+    const plan = maybeBuildSelectiveMultiAgentPlan(opts.agentType, opts.originalUserMessage.content);
+    if (!plan) {
+      return Object.freeze({ handled: false, hadError: false, filesWritten: Object.freeze([]) });
+    }
+
+    await this.addMessage({
+      ...createAssistantMessage(buildSelectiveMultiAgentPlanMessage(plan)),
+      agentType: opts.agentType,
+    });
+    this.appendLog('info', `Selective multi-agent plan activated: ${plan.subtasks.map((subtask) => subtask.id).join(', ')}.`);
+
+    const coderConfig = buildCoderSubAgentConfig(opts.config);
+    const written = new Set<string>();
+    let hadError = false;
+    const hasDesignContext =
+      Boolean(opts.originalUserMessage.images?.length) ||
+      Boolean(opts.originalUserMessage.figmaAttachments?.length) ||
+      Boolean(
+        opts.originalUserMessage.attachments?.some(
+          (attachment) => attachment.kind === 'figma' || attachment.kind === 'image',
+        ),
+      );
+
+    for (let index = 0; index < plan.subtasks.length; index += 1) {
+      const subtask = plan.subtasks[index]!;
+      const subtaskLabel = `Sub-agent ${index + 1}/${plan.subtasks.length}: ${subtask.title}`;
+      this.statusText = subtaskLabel;
+      this.appendLog('status', subtaskLabel);
+      this.reportProgress(subtaskLabel);
+      await this.postRunState();
+
+      const result = await this.runInternalRepairTurn({
+        config: coderConfig,
+        agentType: opts.agentType,
+        userMessage: buildSelectiveMultiAgentSubtaskMessage({
+          originalUserMessage: opts.originalUserMessage,
+          subtask,
+        }),
+        ...(
+          opts.contextNote &&
+          (index === 0 || (hasDesignContext && (subtask.id === 'frontend' || subtask.id === 'integration')))
+            ? { contextNote: opts.contextNote }
+            : {}
+        ),
+      });
+
+      for (const filePath of result.filesWritten) {
+        written.add(filePath);
+      }
+      appendTelemetryEvent(this.workspacePath, {
+        kind: 'sub_agent_turn',
+        scope: subtask.id,
+        filesWritten: result.filesWritten.length,
+        hadError: result.hadError,
+      });
+
+      if (result.hadError) {
+        hadError = true;
+        break;
+      }
+    }
+
+    appendTelemetryEvent(this.workspacePath, {
+      kind: 'multi_agent_plan',
+      subtaskCount: plan.subtasks.length,
+      scopes: plan.subtasks.map((subtask) => subtask.id),
+      completed: !hadError,
+      filesWritten: written.size,
+    });
+
+    return Object.freeze({
+      handled: true,
+      hadError,
+      filesWritten: Object.freeze([...written]),
     });
   }
 
@@ -903,10 +1171,12 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     config: ReturnType<typeof loadConfig>;
     agentType: AgentType;
     userMessage: ChatMessage;
+    contextNote?: string;
+    emptyContinueAttempt?: number;
   }): Promise<Readonly<{ hadError: boolean; filesWritten: readonly string[] }>> {
     let hadError = false;
     let thinkingLogged = false;
-    this.historyManager.startTurn(opts.userMessage);
+    this.historyManager.startTurn(opts.userMessage, opts.contextNote);
     this.debugChatMessage(opts.userMessage);
 
     const result = await runExtensionChat({
@@ -935,6 +1205,9 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
             type: 'command-stream-end',
             payload,
           });
+        },
+        onProjectCommandComplete: async (payload) => {
+          await this.handleBackgroundCommandCompletion(payload);
         },
       },
       onChunk: async (chunk) => {
@@ -991,6 +1264,19 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         await this.postRunState();
       },
       onEvidenceContext: async (payload) => {
+        this.writeDebugBlock(
+          'repair-manual-read-plan',
+          [
+            payload.focusSymbols?.length ? `Focus symbols: ${payload.focusSymbols.join(', ')}` : '',
+            payload.manualPlanningContent ?? '',
+            payload.manualReadBatchItems?.map((item, index) => `Batch ${index + 1}: ${item}`).join('\n') ?? '',
+            payload.readPlanProgressItems
+              ?.map((item) => `${item.confirmed ? '[confirmed]' : '[pending]'} ${item.label}`)
+              .join('\n') ?? '',
+          ]
+            .filter(Boolean)
+            .join('\n\n'),
+        );
         await this.postMessage({
           type: 'evidence-context',
           payload,
@@ -1043,7 +1329,47 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         'repair-turn-result',
         `agent=${opts.agentType} empty text_len=${result.assistantText.length} thinking_len=${result.assistantThinking.length} files_written=${result.filesWritten.length}`,
       );
+      const previousTurn = this.historyManager.getWorkingTurn();
       this.historyManager.clearCurrentTurn();
+
+      const emptyContinueAttempt = opts.emptyContinueAttempt ?? 0;
+      if (emptyContinueAttempt < MAX_EMPTY_CONTINUE_ATTEMPTS) {
+        const nextAttempt = emptyContinueAttempt + 1;
+        this.appendLog('status', `Empty assistant result detected. Auto-continuing (${nextAttempt}/${MAX_EMPTY_CONTINUE_ATTEMPTS})...`);
+        this.writeDebug(
+          'turn-empty-continue',
+          `agent=${opts.agentType} attempt=${nextAttempt} repair_turn=true`,
+        );
+
+        const nextResult = await this.runInternalRepairTurn({
+          ...opts,
+          userMessage: this.buildContinueMessage({
+            attempt: nextAttempt,
+            lastUserGoal: previousTurn?.userMessage.content,
+            lastThinking: result.assistantThinking,
+            filesWritten: result.filesWritten,
+            recentToolSummaries: previousTurn?.toolDigests.map((digest) => digest.summary) ?? [],
+          }),
+          emptyContinueAttempt: nextAttempt,
+        });
+
+        return Object.freeze({
+          hadError: nextResult.hadError,
+          filesWritten: Object.freeze([...new Set([...result.filesWritten, ...nextResult.filesWritten])]),
+        });
+      }
+
+      hadError = true;
+      const message =
+        result.filesWritten.length > 0
+          ? `Agent stopped after writing ${result.filesWritten.length} file(s) but still returned no final summary after ${MAX_EMPTY_CONTINUE_ATTEMPTS} auto-continue attempts.`
+          : `Agent returned an empty result after ${MAX_EMPTY_CONTINUE_ATTEMPTS} auto-continue attempts.`;
+      this.appendLog('error', message);
+      await this.postMessage({
+        type: 'error',
+        payload: { message },
+      });
+      this.showWorkbenchError(message);
     }
 
     return Object.freeze({
@@ -1072,6 +1398,10 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (shouldRunReview) {
+        this.statusText = 'Running code review';
+        this.reportProgress(this.statusText);
+        await this.postRunState();
+        this.appendLog('review', 'Running code review...');
         const reviewResult = await runCodeReview({
           sessionFiles,
           config: loadConfig(),
@@ -1092,9 +1422,8 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
           return;
         }
 
-        const reviewSummary = formatReviewSummary(reviewResult);
         this.updateQualityDetails({
-          reviewSummary,
+          reviewSummary: formatReviewSummary(reviewResult),
         });
         this.appendLog(
           'review',
@@ -1102,7 +1431,6 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
             ? 'Code review completed with no actionable findings.'
             : 'Code review produced actionable findings.',
         );
-        await this.addMessage(createAssistantMessage(reviewSummary));
 
         if (reviewResult.hadCritical || reviewResult.hadWarnings) {
           if (reviewRepairAttempt >= MAX_AUTO_REVIEW_REPAIR_ATTEMPTS) {
@@ -1135,19 +1463,40 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       this.appendLog('validation', `Running final validation for ${sessionFiles.length} changed files.`);
+      this.statusText = 'Running final validation';
+      this.reportProgress(this.statusText);
+      await this.postRunState();
       const validationResult = await runFinalValidation({
         workspacePath: this.workspacePath,
         sessionFiles,
+        streamCallbacks: {
+          onStart: async (payload) => {
+            await this.postMessage({
+              type: 'command-stream-start',
+              payload,
+            });
+          },
+          onChunk: async (payload) => {
+            await this.postMessage({
+              type: 'command-stream-chunk',
+              payload,
+            });
+          },
+          onEnd: async (payload) => {
+            await this.postMessage({
+              type: 'command-stream-end',
+              payload,
+            });
+          },
+        },
       });
-      const validationSummary = formatValidationSummary(validationResult);
       this.updateQualityDetails({
-        validationSummary,
+        validationSummary: formatValidationSummary(validationResult),
       });
       this.appendLog(
         'validation',
         validationResult.success ? 'Final validation passed.' : 'Final validation failed.',
       );
-      await this.addMessage(createAssistantMessage(validationSummary));
 
       if (validationResult.success) {
         return;
@@ -1230,8 +1579,10 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
 
     if (enabled.length === 0) {
       return Object.freeze({
-        label: 'Off',
-        tooltip: 'No tool approvals are currently required.',
+        label: this.qualityPreferences.fullAccessEnabled ? 'Full' : 'Off',
+        tooltip: this.qualityPreferences.fullAccessEnabled
+          ? 'run_project_command, git pull/push/checkout, delete_path, and scaffold actions can run without asking for approval.'
+          : 'No tool approvals are currently required.',
       });
     }
 
@@ -1336,10 +1687,17 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async postMessage(message: HostMessage): Promise<void> {
-    if (!this.view) {
+    const targets: vscode.Webview[] = [];
+    if (this.view) {
+      targets.push(this.view.webview);
+    }
+    if (this.panel) {
+      targets.push(this.panel.webview);
+    }
+    if (targets.length === 0) {
       return;
     }
-    await this.view.webview.postMessage(message);
+    await Promise.all(targets.map((target) => target.postMessage(message)));
   }
 
   private async getWorkspaceFiles(): Promise<SessionInitPayload['files']> {
@@ -1417,10 +1775,11 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       await this.applyQualityPreferences(Object.freeze({
         reviewEnabled: false,
         validateEnabled: false,
+        fullAccessEnabled: false,
       }), {
         syncVsCodeSettings: true,
       });
-      this.appendLog('info', 'Reset config: review=false, validate=false.');
+      this.appendLog('info', 'Reset config: review=false, validate=false, fullAccess=false.');
       return;
     }
 
@@ -1431,6 +1790,13 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async openRuntimeLogs(): Promise<void> {
+    this.chrome.outputChannel.show(true);
+  }
+
+  async openTelemetrySummary(): Promise<void> {
+    const summary = loadTelemetrySummary(this.workspacePath);
+    this.chrome.outputChannel.appendLine('');
+    this.chrome.outputChannel.appendLine(formatTelemetrySummary(summary));
     this.chrome.outputChannel.show(true);
   }
 
@@ -1789,6 +2155,10 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async openNativeReview(): Promise<void> {
+    await this.openReviewPanel();
+  }
+
+  private async openLegacyChangedFilesReview(): Promise<void> {
     const changeSummary = this.buildChangeSummaryPayload();
     await this.refreshNativeShellViews(undefined, changeSummary);
 
@@ -1879,6 +2249,10 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     const summaryText = result.wasNew
       ? `User reverted a newly created file: ${relativePath}.`
       : `User reverted changes in file: ${relativePath}.`;
+    appendTelemetryEvent(this.workspacePath, {
+      kind: 'user_revert',
+      fileCount: 1,
+    });
     this.historyManager.recordExternalEvent(summaryText, [result.filePath]);
     await this.addMessage(createAssistantMessage(summaryText));
     await this.refreshWorkspaceFiles();
@@ -1896,6 +2270,10 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         `User reverted ${result.revertedPaths.length} tracked file change(s): ` +
         revertedLabels.join(', ') +
         '.';
+      appendTelemetryEvent(this.workspacePath, {
+        kind: 'user_revert',
+        fileCount: result.revertedPaths.length,
+      });
       this.historyManager.recordExternalEvent(summaryText, result.revertedPaths);
       await this.addMessage(createAssistantMessage(summaryText));
     }
@@ -1919,31 +2297,96 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       .replace(/'/g, '&#39;');
   }
 
-  private renderReviewFileBlock(file: ChangedFileSummary): string {
-    const relativePath = this.asWorkspaceRelative(file.filePath);
-    const title = `${relativePath}${file.wasNew ? ' (new)' : ''}`;
-    const diffHtml = this.escapeHtml(file.diffText || file.currentContent || file.originalContent || '(empty)');
+  private buildReviewRows(file: ChangedFileSummary): readonly Readonly<Record<string, unknown>>[] {
+    const originalLines = (file.originalContent ?? '').split('\n');
+    const currentLines = (file.currentContent ?? '').split('\n');
 
-    return `
-      <details class="file-block" open>
-        <summary>
-          <div class="summary-main">
-            <span class="file-path">${this.escapeHtml(title)}</span>
-            <span class="stats"><span class="plus">+${file.addedLines}</span> <span class="minus">-${file.deletedLines}</span></span>
-          </div>
-          <div class="summary-actions">
-            <button data-action="revert-file" data-path="${this.escapeHtml(file.filePath)}">Revert</button>
-          </div>
-        </summary>
-        <pre>${diffHtml}</pre>
-      </details>
-    `;
+    let prefix = 0;
+    while (
+      prefix < originalLines.length &&
+      prefix < currentLines.length &&
+      originalLines[prefix] === currentLines[prefix]
+    ) {
+      prefix += 1;
+    }
+
+    let suffix = 0;
+    while (
+      suffix < originalLines.length - prefix &&
+      suffix < currentLines.length - prefix &&
+      originalLines[originalLines.length - 1 - suffix] === currentLines[currentLines.length - 1 - suffix]
+    ) {
+      suffix += 1;
+    }
+
+    const rows: Array<Readonly<Record<string, unknown>>> = [];
+    if (prefix > 0) {
+      rows.push(Object.freeze({ type: 'collapsed', count: prefix }));
+    }
+
+    const originalChanged = originalLines.slice(prefix, originalLines.length - suffix);
+    const currentChanged = currentLines.slice(prefix, currentLines.length - suffix);
+    const maxChanged = Math.max(originalChanged.length, currentChanged.length);
+    for (let index = 0; index < maxChanged; index += 1) {
+      const leftText = originalChanged[index];
+      const rightText = currentChanged[index];
+      const leftNumber = typeof leftText === 'string' ? prefix + index + 1 : null;
+      const rightNumber = typeof rightText === 'string' ? prefix + index + 1 : null;
+      const kind =
+        typeof leftText === 'string' && typeof rightText === 'string'
+          ? 'modified'
+          : typeof leftText === 'string'
+            ? 'deleted'
+            : 'added';
+      rows.push(
+        Object.freeze({
+          type: 'line',
+          kind,
+          leftNumber,
+          rightNumber,
+          leftText: leftText ?? '',
+          rightText: rightText ?? '',
+        }),
+      );
+    }
+
+    if (suffix > 0) {
+      rows.push(Object.freeze({ type: 'collapsed', count: suffix }));
+    }
+
+    if (rows.length === 0) {
+      rows.push(
+        Object.freeze({
+          type: 'line',
+          kind: 'unchanged',
+          leftNumber: 1,
+          rightNumber: 1,
+          leftText: originalLines[0] ?? '',
+          rightText: currentLines[0] ?? '',
+        }),
+      );
+    }
+
+    return Object.freeze(rows);
   }
 
   private getReviewPanelHtml(webview: vscode.Webview): string {
     const nonce = createMessageId();
     const summary = getSessionChangeSummary();
-    const blocks = summary.files.map((file) => this.renderReviewFileBlock(file)).join('\n');
+    const payload = {
+      fileCount: summary.fileCount,
+      addedLines: summary.addedLines,
+      deletedLines: summary.deletedLines,
+      files: summary.files.map((file) => ({
+        filePath: file.filePath,
+        label: this.asWorkspaceRelative(file.filePath),
+        wasNew: file.wasNew,
+        addedLines: file.addedLines,
+        deletedLines: file.deletedLines,
+        rows: this.buildReviewRows(file),
+      })),
+    };
+    const payloadJson = JSON.stringify(payload).replace(/</g, '\\u003c');
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -1951,51 +2394,219 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     <meta charset="UTF-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource} https: data:; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'nonce-${nonce}';" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Galaxy Code Review</title>
+    <title>Galaxy Diff</title>
     <style>
-      body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #0b1220; color: #e5edf8; }
-      .wrap { padding: 20px; }
-      .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-      .title { font-size: 18px; font-weight: 700; }
-      .meta { color: #94a3b8; font-size: 13px; }
-      .toolbar { display: flex; gap: 10px; }
-      button { border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); color: #e5edf8; padding: 8px 12px; border-radius: 10px; cursor: pointer; }
-      details.file-block { border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03); border-radius: 16px; margin-bottom: 12px; overflow: hidden; }
-      summary { list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; cursor: pointer; }
-      summary::-webkit-details-marker { display: none; }
-      .summary-main { display: flex; min-width: 0; align-items: center; gap: 12px; }
-      .file-path { font-weight: 600; }
-      .stats { font-size: 12px; color: #94a3b8; }
+      :root { color-scheme: dark; }
+      body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: #171717; color: #f5f5f5; }
+      .app { display: grid; grid-template-columns: 320px 1fr; height: 100vh; }
+      .sidebar { border-right: 1px solid rgba(255,255,255,0.08); background: #141414; display: flex; flex-direction: column; min-height: 0; }
+      .sidebar-header { padding: 18px 18px 14px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+      .title { font-size: 14px; font-weight: 700; letter-spacing: 0.01em; }
+      .meta { margin-top: 10px; color: #c4c4c4; font-size: 12px; }
+      .toolbar { display: flex; gap: 8px; margin-top: 14px; }
+      button { border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04); color: #f5f5f5; padding: 8px 12px; border-radius: 10px; cursor: pointer; font-size: 12px; }
+      button:hover { background: rgba(255,255,255,0.08); }
+      .file-list { overflow: auto; padding: 10px; display: grid; gap: 8px; }
+      .file-item { width: 100%; border: 1px solid rgba(255,255,255,0.06); background: #1b1b1b; color: inherit; text-align: left; padding: 12px; border-radius: 12px; }
+      .file-item.active { border-color: rgba(96,165,250,0.45); background: #1f2937; }
+      .file-path { font-size: 13px; font-weight: 600; line-height: 1.4; word-break: break-word; }
+      .file-stats { margin-top: 6px; font-size: 12px; color: #a3a3a3; }
       .plus { color: #4ade80; }
       .minus { color: #f87171; }
-      pre { margin: 0; padding: 16px; overflow: auto; max-height: 420px; border-top: 1px solid rgba(255,255,255,0.08); background: rgba(2,6,23,0.7); font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; line-height: 1.55; }
+      .content { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+      .content-header { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; border-bottom: 1px solid rgba(255,255,255,0.08); background: #181818; gap: 16px; }
+      .content-title { font-size: 18px; font-weight: 700; }
+      .content-subtitle { margin-top: 4px; font-size: 12px; color: #a3a3a3; }
+      .content-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+      .mode-toggle { display: inline-flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; background: rgba(255,255,255,0.03); }
+      .mode-toggle button { padding: 6px 10px; border-radius: 8px; border-color: transparent; background: transparent; }
+      .mode-toggle button.active { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.08); }
+      .diff-wrap { overflow: auto; padding: 16px; min-height: 0; }
+      .diff-grid { border: 1px solid rgba(255,255,255,0.08); border-radius: 14px; overflow: hidden; background: #111111; }
+      .diff-head, .diff-row, .diff-collapsed { display: grid; grid-template-columns: 1fr 1fr; }
+      .diff-head > div { padding: 12px 14px; font-size: 12px; color: #a3a3a3; background: #202020; border-bottom: 1px solid rgba(255,255,255,0.08); }
+      .diff-head > div:first-child, .diff-row > div:first-child { border-right: 1px solid rgba(255,255,255,0.08); }
+      .diff-row > div { display: grid; grid-template-columns: 56px 1fr; min-height: 28px; }
+      .diff-grid.unified .diff-head, .diff-grid.unified .diff-row, .diff-grid.unified .diff-collapsed { grid-template-columns: 1fr; }
+      .diff-grid.unified .diff-head > div:first-child, .diff-grid.unified .diff-row > div:first-child { border-right: none; }
+      .diff-grid.unified .line-single { display: grid; grid-template-columns: 56px 1fr; }
+      .gutter { padding: 6px 10px; font-size: 12px; color: #737373; background: rgba(255,255,255,0.02); user-select: none; }
+      .code { padding: 6px 12px; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+      .kind-added { background: rgba(34,197,94,0.12); }
+      .kind-deleted { background: rgba(239,68,68,0.12); }
+      .kind-modified { background: rgba(250,204,21,0.08); }
+      .kind-unchanged { background: transparent; }
+      .diff-collapsed > div { padding: 10px 14px; font-size: 12px; color: #a3a3a3; background: #252525; border-top: 1px solid rgba(255,255,255,0.06); }
+      .empty { padding: 24px; color: #a3a3a3; }
     </style>
   </head>
   <body>
-    <div class="wrap">
-      <div class="header">
-        <div>
-          <div class="title">Review Changes</div>
-          <div class="meta">${summary.fileCount} file(s), +${summary.addedLines} / -${summary.deletedLines}</div>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="title">Galaxy Diff</div>
+          <div class="meta">${summary.fileCount} files changed <span class="plus">+${summary.addedLines}</span> <span class="minus">-${summary.deletedLines}</span></div>
+          <div class="toolbar">
+            <button data-action="revert-all">Revert all</button>
+          </div>
         </div>
-        <div class="toolbar">
-          <button data-action="revert-all">Revert all</button>
+        <div id="file-list" class="file-list"></div>
+      </aside>
+      <main class="content">
+        <div class="content-header">
+          <div>
+            <div id="content-title" class="content-title">No file selected</div>
+            <div id="content-subtitle" class="content-subtitle"></div>
+          </div>
+          <div class="content-actions">
+            <div class="mode-toggle">
+              <button id="mode-unified" data-action="set-mode" data-mode="unified">Unified</button>
+              <button id="mode-split" class="active" data-action="set-mode" data-mode="split">Split</button>
+            </div>
+            <button id="open-diff-button" data-action="open-diff">Open native diff</button>
+            <button id="revert-file-button" data-action="revert-file">Revert file</button>
+          </div>
         </div>
-      </div>
-      ${blocks || '<div class="meta">No tracked changes in this session.</div>'}
+        <div id="diff-wrap" class="diff-wrap">
+          <div class="empty">No tracked changes in this session.</div>
+        </div>
+      </main>
     </div>
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi();
+      const data = ${payloadJson};
+      let selectedPath = data.files[0]?.filePath || null;
+      let viewMode = 'split';
+
+      const fileList = document.getElementById('file-list');
+      const contentTitle = document.getElementById('content-title');
+      const contentSubtitle = document.getElementById('content-subtitle');
+      const diffWrap = document.getElementById('diff-wrap');
+      const unifiedButton = document.getElementById('mode-unified');
+      const splitButton = document.getElementById('mode-split');
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function renderRows(file) {
+        const rows = file.rows || [];
+        if (rows.length === 0) {
+          return '<div class="empty">No diff data available.</div>';
+        }
+
+        const body = rows.map((row) => {
+          if (row.type === 'collapsed') {
+            return '<div class="diff-collapsed"><div>' + row.count + ' unmodified lines</div><div>' + row.count + ' unmodified lines</div></div>';
+          }
+
+          const kindClass = row.kind ? 'kind-' + row.kind : '';
+          if (viewMode === 'unified') {
+            const deletedLine = row.leftText
+              ? '<div class="line-single kind-deleted"><div class="gutter">' + (row.leftNumber ?? '') + '</div><div class="code">- ' + escapeHtml(row.leftText ?? '') + '</div></div>'
+              : '';
+            const addedLine = row.rightText
+              ? '<div class="line-single kind-added"><div class="gutter">' + (row.rightNumber ?? '') + '</div><div class="code">+ ' + escapeHtml(row.rightText ?? '') + '</div></div>'
+              : '';
+            if (row.kind === 'unchanged') {
+              return '<div class="diff-row"><div class="line-single"><div class="gutter">' + (row.rightNumber ?? row.leftNumber ?? '') + '</div><div class="code">  ' + escapeHtml(row.rightText ?? row.leftText ?? '') + '</div></div></div>';
+            }
+            if (row.kind === 'modified') {
+              return '<div class="diff-row"><div>' + deletedLine + addedLine + '</div></div>';
+            }
+            return '<div class="diff-row"><div>' + (row.kind === 'deleted' ? deletedLine : addedLine) + '</div></div>';
+          }
+          return (
+            '<div class="diff-row">' +
+              '<div class="' + kindClass + '">' +
+                '<div class="gutter">' + (row.leftNumber ?? '') + '</div>' +
+                '<div class="code">' + escapeHtml(row.leftText ?? '') + '</div>' +
+              '</div>' +
+              '<div class="' + kindClass + '">' +
+                '<div class="gutter">' + (row.rightNumber ?? '') + '</div>' +
+                '<div class="code">' + escapeHtml(row.rightText ?? '') + '</div>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join('');
+
+        return (
+          '<div class="diff-grid ' + (viewMode === 'unified' ? 'unified' : 'split') + '">' +
+            '<div class="diff-head">' +
+              (viewMode === 'unified'
+                ? '<div>Unified Diff</div>'
+                : '<div>Original</div><div>Current</div>') +
+            '</div>' +
+            body +
+          '</div>'
+        );
+      }
+
+      function renderFileList() {
+        if (!fileList) return;
+        fileList.innerHTML = data.files.map((file) => (
+          '<button class="file-item' + (file.filePath === selectedPath ? ' active' : '') + '" data-action="select-file" data-path="' + escapeHtml(file.filePath) + '">' +
+            '<div class="file-path">' + escapeHtml(file.label + (file.wasNew ? ' (new)' : '')) + '</div>' +
+            '<div class="file-stats"><span class="plus">+' + file.addedLines + '</span> <span class="minus">-' + file.deletedLines + '</span></div>' +
+          '</button>'
+        )).join('');
+      }
+
+      function renderSelectedFile() {
+        const file = data.files.find((item) => item.filePath === selectedPath) || data.files[0];
+        if (!file) {
+          if (diffWrap) diffWrap.innerHTML = '<div class="empty">No tracked changes in this session.</div>';
+          if (contentTitle) contentTitle.textContent = 'No file selected';
+          if (contentSubtitle) contentSubtitle.textContent = '';
+          return;
+        }
+
+        selectedPath = file.filePath;
+        if (contentTitle) contentTitle.textContent = file.label + (file.wasNew ? ' (new)' : '');
+        if (contentSubtitle) contentSubtitle.textContent = '+' + file.addedLines + ' / -' + file.deletedLines;
+        if (diffWrap) diffWrap.innerHTML = renderRows(file);
+        if (unifiedButton && splitButton) {
+          unifiedButton.classList.toggle('active', viewMode === 'unified');
+          splitButton.classList.toggle('active', viewMode === 'split');
+        }
+      }
+
+      renderFileList();
+      renderSelectedFile();
+
       document.addEventListener('click', (event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
-        const action = target.dataset.action;
+        const actionTarget = target.closest('[data-action]');
+        if (!(actionTarget instanceof HTMLElement)) return;
+        const action = actionTarget.dataset.action;
         if (!action) return;
         if (action === 'revert-all') {
           vscode.postMessage({ type: 'revert-all-changes' });
         }
-        if (action === 'revert-file' && target.dataset.path) {
-          vscode.postMessage({ type: 'revert-file-change', payload: { filePath: target.dataset.path } });
+        if (action === 'select-file' && actionTarget.dataset.path) {
+          selectedPath = actionTarget.dataset.path;
+          renderFileList();
+          renderSelectedFile();
+        }
+        if (action === 'set-mode' && actionTarget.dataset.mode) {
+          viewMode = actionTarget.dataset.mode === 'unified' ? 'unified' : 'split';
+          renderSelectedFile();
+        }
+        if (action === 'open-diff') {
+          if (selectedPath) {
+            vscode.postMessage({ type: 'file-diff', payload: { filePath: selectedPath } });
+          }
+        }
+        if (action === 'revert-file') {
+          if (selectedPath) {
+            vscode.postMessage({ type: 'revert-file-change', payload: { filePath: selectedPath } });
+          }
         }
       });
     </script>
@@ -2006,7 +2617,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   private async openReviewPanel(): Promise<void> {
     const panel = vscode.window.createWebviewPanel(
       'galaxy-code.reviewChanges',
-      'Galaxy Code Review',
+      'Galaxy Diff',
       vscode.ViewColumn.Beside,
       { enableScripts: true },
     );
@@ -2133,6 +2744,57 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  private async handleBackgroundCommandCompletion(payload: BackgroundCommandCompletion): Promise<void> {
+    this.pendingBackgroundCompletions = [...this.pendingBackgroundCompletions, payload];
+    this.appendLog(
+      'status',
+      `Background command completed: ${payload.commandText} (${payload.success ? `exit ${payload.exitCode}` : `failed exit ${payload.exitCode}`}).`,
+    );
+    await this.flushBackgroundCommandCompletions();
+  }
+
+  private async flushBackgroundCommandCompletions(): Promise<void> {
+    if (this.isRunning || this.backgroundCompletionRunning || this.pendingBackgroundCompletions.length === 0) {
+      return;
+    }
+
+    const next = this.pendingBackgroundCompletions[0]!;
+    this.pendingBackgroundCompletions = this.pendingBackgroundCompletions.slice(1);
+    this.backgroundCompletionRunning = true;
+    this.statusText = 'Processing completed background command';
+    this.reportProgress(this.statusText);
+    await this.postRunState();
+
+    const trimmedOutput = next.output.trim();
+    const outputBlock = trimmedOutput
+      ? `Output:\n${trimmedOutput.slice(-8_000)}`
+      : 'Output:\n(no output)';
+
+    const result = await this.runInternalRepairTurn({
+      config: loadConfig(),
+      agentType: this.selectedAgent,
+      userMessage: Object.freeze({
+        id: `background-complete-${Date.now()}`,
+        role: 'user',
+        content:
+          `Background command completed.\n` +
+          `Command: ${next.commandText}\n` +
+          `cwd: ${next.cwd}\n` +
+          `Exit code: ${next.exitCode}\n` +
+          `Success: ${String(next.success)}\n` +
+          `${outputBlock}\n\n` +
+          'Continue from the updated workspace state.',
+        timestamp: Date.now(),
+      }),
+    });
+
+    this.backgroundCompletionRunning = false;
+    if (result.filesWritten.length > 0 && !result.hadError) {
+      await this.runValidationAndReviewFlow(this.selectedAgent);
+    }
+    await this.flushBackgroundCommandCompletions();
+  }
+
   private updateQualityDetails(update: Partial<QualityDetails>): void {
     this.qualityDetails = Object.freeze({
       validationSummary: update.validationSummary ?? this.qualityDetails.validationSummary,
@@ -2178,6 +2840,16 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     <script nonce="${nonce}" src="${scriptUri}"></script>
   </body>
 </html>`;
+  }
+
+  private configureWebview(webview: vscode.Webview): void {
+    webview.options = {
+      enableScripts: true,
+      localResourceRoots: [vscode.Uri.joinPath(this.context.extensionUri, 'dist')],
+    };
+    webview.onDidReceiveMessage((message: WebviewMessage) => {
+      void this.handleMessage(message);
+    });
   }
 }
 
@@ -2234,8 +2906,6 @@ export function activate(context: vscode.ExtensionContext): void {
     agentStatusItem,
     approvalStatusItem,
   });
-  const contextFilesProvider = new ContextFilesTreeProvider();
-  const changedFilesProvider = new ChangedFilesTreeProvider();
   const sidebarRegistration = vscode.window.registerWebviewViewProvider(
     GalaxyChatViewProvider.viewType,
     sidebarProvider,
@@ -2245,27 +2915,11 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     },
   );
-  const contextFilesView = vscode.window.createTreeView(CONTEXT_FILES_VIEW_ID, {
-    treeDataProvider: contextFilesProvider,
-    showCollapseAll: false,
-    manageCheckboxStateManually: true,
-  });
-  contextFilesView.description = '0 selected';
-  contextFilesView.message = 'No workspace files found.';
-  const changedFilesView = vscode.window.createTreeView(CHANGED_FILES_VIEW_ID, {
-    treeDataProvider: changedFilesProvider,
-    showCollapseAll: false,
-  });
-  changedFilesView.message = 'No tracked changes in this session.';
-  sidebarProvider.attachNativeShellViews({
-    contextFilesProvider,
-    contextFilesView,
-    changedFilesProvider,
-    changedFilesView,
-  });
-
   const openChat = vscode.commands.registerCommand('galaxy-code.openChat', () => {
     void sidebarProvider.reveal();
+  });
+  const openChatRight = vscode.commands.registerCommand('galaxy-code.openChatRight', () => {
+    void sidebarProvider.openChatRight();
   });
 
   const clearHistory = vscode.commands.registerCommand('galaxy-code.clearHistory', () => {
@@ -2288,30 +2942,20 @@ export function activate(context: vscode.ExtensionContext): void {
   const openLogs = vscode.commands.registerCommand('galaxy-code.openLogs', async () => {
     await sidebarProvider.openRuntimeLogs();
   });
+  const openTelemetrySummary = vscode.commands.registerCommand('galaxy-code.openTelemetrySummary', async () => {
+    await sidebarProvider.openTelemetrySummary();
+  });
   const toggleReview = vscode.commands.registerCommand(TOGGLE_REVIEW_COMMAND_ID, async () => {
     await sidebarProvider.toggleReviewPreference();
   });
   const toggleValidation = vscode.commands.registerCommand(TOGGLE_VALIDATION_COMMAND_ID, async () => {
     await sidebarProvider.toggleValidationPreference();
   });
-  const openContextFile = vscode.commands.registerCommand(OPEN_CONTEXT_FILE_COMMAND_ID, async (filePath: string) => {
-    await sidebarProvider.openContextFile(filePath);
-  });
-  const openChangedFileDiff = vscode.commands.registerCommand(OPEN_CHANGED_FILE_DIFF_COMMAND_ID, async (filePath: string) => {
-    await sidebarProvider.openChangedFileDiff(filePath);
-  });
-  const contextCheckboxSubscription = contextFilesView.onDidChangeCheckboxState(async (event) => {
-    await sidebarProvider.applyContextFileSelectionUpdates(
-      event.items.map(([file, checkboxState]) => ({
-        filePath: file.path,
-        selected: checkboxState === vscode.TreeItemCheckboxState.Checked,
-      })),
-    );
-  });
   const qualitySettingsSync = vscode.workspace.onDidChangeConfiguration((event) => {
     if (
       event.affectsConfiguration(`${GALAXY_CONFIGURATION_SECTION}.${QUALITY_REVIEW_SETTING_KEY}`) ||
-      event.affectsConfiguration(`${GALAXY_CONFIGURATION_SECTION}.${QUALITY_VALIDATE_SETTING_KEY}`)
+      event.affectsConfiguration(`${GALAXY_CONFIGURATION_SECTION}.${QUALITY_VALIDATE_SETTING_KEY}`) ||
+      event.affectsConfiguration(`${GALAXY_CONFIGURATION_SECTION}.${QUALITY_FULL_ACCESS_SETTING_KEY}`)
     ) {
       void sidebarProvider.handleVsCodeQualitySettingsChange();
     }
@@ -2326,18 +2970,15 @@ export function activate(context: vscode.ExtensionContext): void {
     agentStatusItem,
     approvalStatusItem,
     sidebarRegistration,
-    contextFilesView,
-    changedFilesView,
     openChat,
+    openChatRight,
     clearHistory,
     openConfig,
     switchAgent,
     openLogs,
+    openTelemetrySummary,
     toggleReview,
     toggleValidation,
-    openContextFile,
-    openChangedFileDiff,
-    contextCheckboxSubscription,
     qualitySettingsSync,
     {
       dispose() {

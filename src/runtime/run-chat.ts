@@ -8,6 +8,7 @@ import {
 } from '../context/action-approval-store';
 import { computeWorkingContextBudget, estimateTokens } from '../context/compaction';
 import { buildPromptContext } from '../context/prompt-builder';
+import { appendTelemetryEvent } from '../context/telemetry';
 import type { HistoryManager } from '../context/history-manager';
 import type { AgentType, ChatMessage, ToolApprovalDecision } from '../shared/protocol';
 import {
@@ -52,6 +53,9 @@ function buildApprovalRequest(opts: {
   const toolName = normalizeToolName(opts.toolName);
 
   if (toolName === 'run_project_command') {
+    if (!opts.config.toolSafety.requireApprovalForProjectCommand) {
+      return null;
+    }
     const command = String(opts.params.command ?? opts.params.commandId ?? '').trim();
     const cwd = String(opts.params.cwd ?? '.').trim() || '.';
     if (command) {
@@ -80,7 +84,24 @@ export async function runExtensionChat(opts: {
   onMessage: (message: ChatMessage) => Promise<void> | void;
   onToolCalls?: (toolCalls: readonly Readonly<{ id: string; name: string; params: Record<string, unknown> }>[]) => Promise<void> | void;
   onStatus?: (statusText: string) => Promise<void> | void;
-  onEvidenceContext?: (payload: { content: string; tokens: number; entryCount: number; finalPromptTokens?: number }) => Promise<void> | void;
+  onEvidenceContext?: (payload: {
+    content: string;
+    tokens: number;
+    entryCount: number;
+    finalPromptTokens?: number;
+    focusSymbols?: readonly string[];
+    manualPlanningContent?: string;
+    manualReadBatchItems?: readonly string[];
+    readPlanProgressItems?: readonly Readonly<{
+      label: string;
+      confirmed: boolean;
+      evidenceSummary?: string;
+      targetPath: string;
+      symbolName?: string;
+      tool: 'read_file' | 'grep';
+    }>[];
+    confirmedReadCount?: number;
+  }) => Promise<void> | void;
   requestToolApproval: (approval: PendingActionApproval) => Promise<ToolApprovalDecision>;
 }): Promise<RunResult> {
   const driver = createDriver(opts.config, opts.agentType, true);
@@ -98,8 +119,9 @@ export async function runExtensionChat(opts: {
 
   for (let round = 0; maxToolRounds === null || round < maxToolRounds; round += 1) {
     const workspacePath = opts.historyManager.getSessionMemory().workspacePath;
-    const buildRoundPrompt = () => {
-      const promptBuild = buildPromptContext({
+    const buildRoundPrompt = async () => {
+      const promptBuild = await buildPromptContext({
+        agentType: opts.agentType,
         notes: opts.historyManager.getNotes(),
         sessionMemory: opts.historyManager.getSessionMemory(),
         workingTurn: opts.historyManager.getWorkingTurn(),
@@ -118,7 +140,7 @@ export async function runExtensionChat(opts: {
       };
     };
 
-    let roundPrompt = buildRoundPrompt();
+    let roundPrompt = await buildRoundPrompt();
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const workingTurnBudget = computeWorkingContextBudget({
         promptTokensEstimate: roundPrompt.promptTokensEstimate,
@@ -131,7 +153,13 @@ export async function runExtensionChat(opts: {
       if (!compacted) {
         break;
       }
-      roundPrompt = buildRoundPrompt();
+      appendTelemetryEvent(workspacePath, {
+        kind: 'working_turn_compacted',
+        promptTokensEstimate: roundPrompt.promptTokensEstimate,
+        workingTurnBudget,
+        workingTurnTokens: roundPrompt.promptBuild.workingTurnTokens,
+      });
+      roundPrompt = await buildRoundPrompt();
     }
 
     const { promptBuild, permissionsBlock, promptTokensEstimate } = roundPrompt;
@@ -140,6 +168,11 @@ export async function runExtensionChat(opts: {
       tokens: promptBuild.evidenceTokens,
       entryCount: promptBuild.evidenceEntryCount,
       finalPromptTokens: promptTokensEstimate,
+      focusSymbols: promptBuild.focusSymbols,
+      manualPlanningContent: promptBuild.manualPlanningContent,
+      manualReadBatchItems: promptBuild.manualReadBatchItems,
+      readPlanProgressItems: promptBuild.readPlanProgressItems,
+      confirmedReadCount: promptBuild.confirmedReadCount,
     });
     const messages = permissionsBlock
       ? Object.freeze([
@@ -371,7 +404,9 @@ export async function runExtensionChat(opts: {
       const toolMessage: ChatMessage = Object.freeze({
         id: createMessageId(),
         role: 'tool',
-        content: result.content || `Error: ${result.error ?? 'Unknown error'}`,
+        content: result.success
+          ? result.content || '(no output)'
+          : `Error: ${result.error ?? (result.content || 'Unknown error')}`,
         timestamp: Date.now(),
         toolName,
         toolParams: Object.freeze(call.params),

@@ -2,9 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import type { TrackedFile } from '../runtime/session-tracker';
-import { checkCommandAvailability, resolveShellProfile } from '../runtime/shell-resolver';
+import { buildShellEnvironment, checkCommandAvailability, resolveShellProfile } from '../runtime/shell-resolver';
 import { validateCodeTool } from '../tools/file-tools';
-import type { FinalValidationResult, ValidationCommand, ValidationIssue, ValidationRunResult } from './types';
+import type {
+  FinalValidationResult,
+  ValidationCommand,
+  ValidationCommandStreamCallbacks,
+  ValidationIssue,
+  ValidationRunResult,
+} from './types';
 
 function hasFile(workspacePath: string, fileName: string): boolean {
   return fs.existsSync(path.join(workspacePath, fileName));
@@ -30,6 +36,83 @@ function parsePackageScripts(workspacePath: string): Record<string, string> {
     return parsed.scripts ?? {};
   } catch {
     return {};
+  }
+}
+
+type NodePackageManager = 'bun' | 'pnpm' | 'yarn' | 'npm';
+
+function parsePackageManagerField(workspacePath: string): NodePackageManager | undefined {
+  const packagePath = path.join(workspacePath, 'package.json');
+  if (!fs.existsSync(packagePath)) {
+    return undefined;
+  }
+
+  try {
+    const raw = fs.readFileSync(packagePath, 'utf-8');
+    const parsed = JSON.parse(raw) as { packageManager?: string };
+    const value = String(parsed.packageManager ?? '').trim().toLowerCase();
+    if (value.startsWith('bun@')) {
+      return 'bun';
+    }
+    if (value.startsWith('pnpm@')) {
+      return 'pnpm';
+    }
+    if (value.startsWith('yarn@')) {
+      return 'yarn';
+    }
+    if (value.startsWith('npm@')) {
+      return 'npm';
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function detectNodePackageManager(workspacePath: string): NodePackageManager {
+  if (hasFile(workspacePath, 'bun.lock') || hasFile(workspacePath, 'bun.lockb')) {
+    return 'bun';
+  }
+  if (hasFile(workspacePath, 'pnpm-lock.yaml')) {
+    return 'pnpm';
+  }
+  if (hasFile(workspacePath, 'yarn.lock')) {
+    return 'yarn';
+  }
+  if (hasFile(workspacePath, 'package-lock.json') || hasFile(workspacePath, 'npm-shrinkwrap.json')) {
+    return 'npm';
+  }
+
+  return parsePackageManagerField(workspacePath) ?? 'npm';
+}
+
+function buildNodeScriptCommand(packageManager: NodePackageManager, scriptName: string): string {
+  switch (packageManager) {
+    case 'bun':
+      return `bun run ${scriptName}`;
+    case 'pnpm':
+      return `pnpm run ${scriptName}`;
+    case 'yarn':
+      return `yarn run ${scriptName}`;
+    case 'npm':
+    default:
+      return `npm run ${scriptName}`;
+  }
+}
+
+function buildNodeExecCommand(packageManager: NodePackageManager, binary: string, args: readonly string[]): string {
+  const suffix = args.length > 0 ? ` ${args.join(' ')}` : '';
+  switch (packageManager) {
+    case 'bun':
+      return `bunx ${binary}${suffix}`;
+    case 'pnpm':
+      return `pnpm exec ${binary}${suffix}`;
+    case 'yarn':
+      return `yarn ${binary}${suffix}`;
+    case 'npm':
+    default:
+      return `npx ${binary}${suffix}`;
   }
 }
 
@@ -76,6 +159,7 @@ function detectProjectCommands(
   const composerText = hasFile(workspacePath, 'composer.json')
     ? readTextFile(path.join(workspacePath, 'composer.json'))
     : '';
+  const nodePackageManager = detectNodePackageManager(workspacePath);
   const hasPythonFiles = hasTrackedExtension(sessionFiles, ['.py']);
   const hasPhpFiles = hasTrackedExtension(sessionFiles, ['.php']);
   const hasShellFiles = hasTrackedExtension(sessionFiles, ['.sh', '.bash', '.zsh']);
@@ -83,9 +167,9 @@ function detectProjectCommands(
 
   if (packageScripts.lint) {
     addProjectCommand(commands, seenCommands, {
-      id: 'npm-lint',
-      label: 'npm run lint',
-      command: 'npm run lint',
+      id: `${nodePackageManager}-lint`,
+      label: buildNodeScriptCommand(nodePackageManager, 'lint'),
+      command: buildNodeScriptCommand(nodePackageManager, 'lint'),
       cwd: workspacePath,
       kind: 'project',
       category: 'lint',
@@ -97,9 +181,9 @@ function detectProjectCommands(
       continue;
     }
     addProjectCommand(commands, seenCommands, {
-      id: `npm-${scriptName}`,
-      label: `npm run ${scriptName}`,
-      command: `npm run ${scriptName}`,
+      id: `${nodePackageManager}-${scriptName}`,
+      label: buildNodeScriptCommand(nodePackageManager, scriptName),
+      command: buildNodeScriptCommand(nodePackageManager, scriptName),
       cwd: workspacePath,
       kind: 'project',
       category: 'static-check',
@@ -108,9 +192,9 @@ function detectProjectCommands(
 
   if (packageScripts.test) {
     addProjectCommand(commands, seenCommands, {
-      id: 'npm-test',
-      label: 'npm run test',
-      command: 'npm run test',
+      id: `${nodePackageManager}-test`,
+      label: buildNodeScriptCommand(nodePackageManager, 'test'),
+      command: buildNodeScriptCommand(nodePackageManager, 'test'),
       cwd: workspacePath,
       kind: 'project',
       category: 'test',
@@ -119,9 +203,9 @@ function detectProjectCommands(
 
   if (packageScripts.build) {
     addProjectCommand(commands, seenCommands, {
-      id: 'npm-build',
-      label: 'npm run build',
-      command: 'npm run build',
+      id: `${nodePackageManager}-build`,
+      label: buildNodeScriptCommand(nodePackageManager, 'build'),
+      command: buildNodeScriptCommand(nodePackageManager, 'build'),
       cwd: workspacePath,
       kind: 'project',
       category: 'build',
@@ -130,9 +214,9 @@ function detectProjectCommands(
 
   if (hasFile(workspacePath, 'tsconfig.json')) {
     addProjectCommand(commands, seenCommands, {
-      id: 'tsc-noemit',
-      label: 'npx tsc --noEmit',
-      command: 'npx tsc --noEmit',
+      id: `${nodePackageManager}-tsc-noemit`,
+      label: buildNodeExecCommand(nodePackageManager, 'tsc', ['--noEmit']),
+      command: buildNodeExecCommand(nodePackageManager, 'tsc', ['--noEmit']),
       cwd: workspacePath,
       kind: 'project',
       category: 'static-check',
@@ -490,6 +574,18 @@ function commandExists(binary: string, cwd: string): boolean {
 }
 
 function isCommandAvailable(command: ValidationCommand): boolean {
+  if (command.command.startsWith('bun run ')) {
+    return commandExists('bun', command.cwd);
+  }
+  if (command.command.startsWith('bunx ')) {
+    return commandExists('bunx', command.cwd);
+  }
+  if (command.command.startsWith('pnpm run ') || command.command.startsWith('pnpm exec ')) {
+    return commandExists('pnpm', command.cwd);
+  }
+  if (command.command.startsWith('yarn run ') || command.command.startsWith('yarn ')) {
+    return commandExists('yarn', command.cwd);
+  }
   if (command.command.startsWith('npm run ')) {
     return commandExists('npm', command.cwd);
   }
@@ -548,14 +644,19 @@ function isCommandAvailable(command: ValidationCommand): boolean {
   return true;
 }
 
-async function runProjectCommand(command: ValidationCommand): Promise<ValidationRunResult> {
+async function runProjectCommand(
+  command: ValidationCommand,
+  callbacks?: ValidationCommandStreamCallbacks,
+): Promise<ValidationRunResult> {
   const startedAt = Date.now();
   const shell = resolveShellProfile();
+  const toolCallId = `validation:${command.id}:${startedAt}`;
 
   return new Promise((resolve) => {
     const child = spawn(shell.executable, [...shell.commandArgs(command.command)], {
       cwd: command.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
+      env: buildShellEnvironment(),
     });
 
     let stdout = '';
@@ -565,26 +666,55 @@ async function runProjectCommand(command: ValidationCommand): Promise<Validation
       child.kill('SIGTERM');
     }, 120_000);
 
-    child.stdout.on('data', (chunk) => {
-      stdout += String(chunk);
-    });
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
+    void callbacks?.onStart?.({
+      toolCallId,
+      commandText: command.command,
+      cwd: command.cwd,
+      startedAt,
     });
 
-    const finalize = (success: boolean, rawOutput: string, suffix: 'passed' | 'failed'): void => {
+    child.stdout.on('data', (chunk) => {
+      const text = String(chunk);
+      stdout += text;
+      void callbacks?.onChunk?.({
+        toolCallId,
+        chunk: text,
+      });
+    });
+    child.stderr.on('data', (chunk) => {
+      const text = String(chunk);
+      stderr += text;
+      void callbacks?.onChunk?.({
+        toolCallId,
+        chunk: text,
+      });
+    });
+
+    const finalize = (
+      success: boolean,
+      rawOutput: string,
+      suffix: 'passed' | 'failed',
+      exitCode: number,
+    ): void => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeout);
+      const durationMs = Date.now() - startedAt;
+      void callbacks?.onEnd?.({
+        toolCallId,
+        exitCode,
+        success,
+        durationMs,
+      });
       resolve(
         Object.freeze({
           success,
           commandId: command.id,
           command: command.command,
           category: command.category,
-          durationMs: Date.now() - startedAt,
+          durationMs,
           summary: `${command.label} ${suffix}`,
           issues: success ? Object.freeze([]) : parseIssuesWithCwd(rawOutput, command.id, command.cwd),
           rawOutputPreview: rawOutput.slice(0, 4000),
@@ -593,16 +723,16 @@ async function runProjectCommand(command: ValidationCommand): Promise<Validation
     };
 
     child.on('error', (error) => {
-      finalize(false, String(error), 'failed');
+      finalize(false, String(error), 'failed', 1);
     });
     child.on('close', (code, signal) => {
       const rawOutput = `${stdout}${stderr}`.trim();
       if (code === 0) {
-        finalize(true, rawOutput, 'passed');
+        finalize(true, rawOutput, 'passed', 0);
         return;
       }
       const errorText = rawOutput || `Command exited with code ${code ?? 'unknown'}${signal ? ` (signal ${signal})` : ''}`;
-      finalize(false, errorText, 'failed');
+      finalize(false, errorText, 'failed', code ?? 1);
     });
   });
 }
@@ -651,10 +781,13 @@ function runFileSafetyNetValidation(sessionFiles: readonly TrackedFile[]): reado
   return Object.freeze(runs);
 }
 
-async function runCommandPipeline(commands: readonly ValidationCommand[]): Promise<readonly ValidationRunResult[]> {
+async function runCommandPipeline(
+  commands: readonly ValidationCommand[],
+  callbacks?: ValidationCommandStreamCallbacks,
+): Promise<readonly ValidationRunResult[]> {
   const runs: ValidationRunResult[] = [];
   for (const command of commands) {
-    const run = await runProjectCommand(command);
+    const run = await runProjectCommand(command, callbacks);
     runs.push(run);
     if (!run.success) {
       break;
@@ -677,6 +810,7 @@ function buildSuccessSummary(runs: readonly ValidationRunResult[]): string {
 export async function runFinalValidation(opts: {
   workspacePath: string;
   sessionFiles: readonly TrackedFile[];
+  streamCallbacks?: ValidationCommandStreamCallbacks;
 }): Promise<FinalValidationResult> {
   const commands = detectProjectCommands(opts.workspacePath, opts.sessionFiles).filter(isCommandAvailable);
   const lintCommands = commands.filter((command) => command.category === 'lint');
@@ -686,8 +820,8 @@ export async function runFinalValidation(opts: {
 
   if (lintCommands.length > 0 || staticCommands.length > 0) {
     const [lintRuns, staticRuns] = await Promise.all([
-      runCommandPipeline(lintCommands),
-      runCommandPipeline(staticCommands),
+      runCommandPipeline(lintCommands, opts.streamCallbacks),
+      runCommandPipeline(staticCommands, opts.streamCallbacks),
     ]);
 
     runs.push(...lintRuns, ...staticRuns);
@@ -704,7 +838,7 @@ export async function runFinalValidation(opts: {
   }
 
   if (testCommands.length > 0) {
-    const testRuns = await runCommandPipeline(testCommands);
+    const testRuns = await runCommandPipeline(testCommands, opts.streamCallbacks);
     runs.push(...testRuns);
 
     const failedTest = findFirstFailedRun(testRuns);
