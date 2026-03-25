@@ -315,6 +315,8 @@ export function App() {
     setLocalAttachments,
     setPreviewAsset,
     setErrorText,
+    setIsRunning,
+    setStatusText,
     setRetryRequest,
     setPendingMessageId,
     setInflightRequest,

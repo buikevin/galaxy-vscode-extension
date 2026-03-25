@@ -5,6 +5,26 @@ import type { AgentDriver, RuntimeMessage, StreamHandler } from '../types';
 import { buildSystemPrompt } from '../system-prompt';
 import { getEnabledToolDefinitions } from '../../tools/file-tools';
 
+const MANUAL_RETRY_ATTEMPTS = 2;
+const MANUAL_RETRY_DELAY_MS = 800;
+
+function isRetryableManualError(error: unknown): boolean {
+  const message = String(error).toLowerCase();
+  return (
+    message.includes('fetch failed') ||
+    message.includes('terminated') ||
+    message.includes('socket') ||
+    message.includes('econnreset') ||
+    message.includes('etimedout') ||
+    message.includes('aborterror') ||
+    message.includes('und_err')
+  );
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function buildApiMessages(messages: readonly RuntimeMessage[], config: GalaxyConfig) {
   return [
     { role: 'system', content: buildSystemPrompt('manual', config) },
@@ -76,7 +96,7 @@ export function createManualDriver(
         headers: { Authorization: `Bearer ${apiKey}` },
       });
 
-      try {
+      for (let attempt = 0; attempt < MANUAL_RETRY_ATTEMPTS; attempt += 1) {
         const tools = allowTools
           ? getEnabledToolDefinitions(config).map((tool) => ({
               type: 'function' as const,
@@ -87,54 +107,72 @@ export function createManualDriver(
               },
             }))
           : undefined;
-        const stream = await client.chat({
-          model: selectedModel,
-          messages: buildApiMessages(messages, config) as unknown as import('ollama').Message[],
-          ...(tools ? { tools } : {}),
-          think: /qwen|deepseek|r1/i.test(selectedModel) ? true : undefined,
-          stream: true,
-        } as never);
+        let emittedAnyChunk = false;
 
-        let doneSent = false;
+        try {
+          const stream = await client.chat({
+            model: selectedModel,
+            messages: buildApiMessages(messages, config) as unknown as import('ollama').Message[],
+            ...(tools ? { tools } : {}),
+            think: /qwen|deepseek|r1/i.test(selectedModel) ? true : undefined,
+            stream: true,
+          } as never);
 
-        for await (const chunk of stream) {
-          if (chunk.message?.content) {
-            onChunk({ type: 'text', delta: chunk.message.content });
-          }
+          let doneSent = false;
 
-          const thinking = (chunk.message as { thinking?: string } | undefined)?.thinking;
-          if (thinking) {
-            onChunk({ type: 'thinking', delta: thinking });
-          }
+          for await (const chunk of stream) {
+            if (chunk.message?.content) {
+              emittedAnyChunk = true;
+              onChunk({ type: 'text', delta: chunk.message.content });
+            }
 
-          if (chunk.message?.tool_calls) {
-            for (const toolCall of chunk.message.tool_calls) {
-              if (toolCall.function) {
-                onChunk({
-                  type: 'tool_call',
-                  call: {
-                    name: toolCall.function.name,
-                    params: (toolCall.function.arguments ?? {}) as Record<string, unknown>,
-                  },
-                });
+            const thinking = (chunk.message as { thinking?: string } | undefined)?.thinking;
+            if (thinking) {
+              emittedAnyChunk = true;
+              onChunk({ type: 'thinking', delta: thinking });
+            }
+
+            if (chunk.message?.tool_calls) {
+              for (const toolCall of chunk.message.tool_calls) {
+                if (toolCall.function) {
+                  emittedAnyChunk = true;
+                  onChunk({
+                    type: 'tool_call',
+                    call: {
+                      name: toolCall.function.name,
+                      params: (toolCall.function.arguments ?? {}) as Record<string, unknown>,
+                    },
+                  });
+                }
               }
+            }
+
+            if (chunk.done && !doneSent) {
+              doneSent = true;
+              onChunk({ type: 'done' });
             }
           }
 
-          if (chunk.done && !doneSent) {
-            doneSent = true;
+          if (!doneSent) {
             onChunk({ type: 'done' });
           }
-        }
+          return;
+        } catch (error) {
+          const shouldRetry =
+            !emittedAnyChunk &&
+            attempt < MANUAL_RETRY_ATTEMPTS - 1 &&
+            isRetryableManualError(error);
+          if (shouldRetry) {
+            await sleep(MANUAL_RETRY_DELAY_MS * (attempt + 1));
+            continue;
+          }
 
-        if (!doneSent) {
-          onChunk({ type: 'done' });
+          onChunk({
+            type: 'error',
+            message: `Manual agent error: ${String(error)}`,
+          });
+          return;
         }
-      } catch (error) {
-        onChunk({
-          type: 'error',
-          message: `Manual agent error: ${String(error)}`,
-        });
       }
     },
   };

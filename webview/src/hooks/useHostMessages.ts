@@ -117,6 +117,7 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         cwd: payload.cwd,
         startedAt: payload.startedAt,
         output: "",
+        ...(payload.terminalTitle ? { terminalTitle: payload.terminalTitle } : {}),
       },
     ]);
   }
@@ -159,17 +160,19 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         options.setIsRunning(message.payload.isRunning);
         options.setStatusText(message.payload.statusText);
         options.setErrorText("");
-        options.setStreamingAssistant("");
-        options.setStreamingThinking("");
+        options.setStreamingAssistant(message.payload.streamingAssistant ?? "");
+        options.setStreamingThinking(message.payload.streamingThinking ?? "");
         options.setFigmaAttachments([]);
         options.setLocalAttachments([]);
         options.setPreviewAsset(null);
         options.setIsPlusMenuOpen(false);
-        options.setApprovalRequest(null);
+        options.setApprovalRequest(message.payload.approvalRequest ?? null);
         options.setRetryRequest(null);
         options.setPendingMessageId(null);
         options.setInflightRequest(null);
-        options.setActiveShellSessions([]);
+        options.setActiveShellSessions(
+          (message.payload.activeShellSessions as ActiveShellSession[] | undefined) ?? []
+        );
         options.setManualPromptPlan(null);
         options.setSelectedFiles(
           message.payload.files

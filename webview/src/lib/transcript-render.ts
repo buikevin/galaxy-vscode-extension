@@ -10,6 +10,8 @@ import type { AgentType, ChatMessage } from "@shared/protocol";
 import type { ActiveShellSession, ActionItem, RenderItem } from "@webview/entities/chat";
 import { getToolMetaString, shortenPath } from "@webview/lib/chat-render";
 
+const MAX_VISIBLE_TRANSCRIPT_MESSAGES = 120;
+
 /**
  * Resolve the assistant label shown in transcript headers.
  *
@@ -51,14 +53,18 @@ export function buildRenderItems(
   source: readonly ChatMessage[],
   shellSessions: readonly ActiveShellSession[]
 ): RenderItem[] {
+  const visibleSource =
+    source.length > MAX_VISIBLE_TRANSCRIPT_MESSAGES
+      ? source.slice(-MAX_VISIBLE_TRANSCRIPT_MESSAGES)
+      : source;
   const items: RenderItem[] = [];
   const shellSessionsByToolCallId = new Map(
     shellSessions.map((session) => [session.toolCallId, session] as const)
   );
   const renderedShellSessionIds = new Set<string>();
 
-  for (let index = 0; index < source.length; ) {
-    const message = source[index]!;
+  for (let index = 0; index < visibleSource.length; ) {
+    const message = visibleSource[index]!;
 
     if (message.role === "assistant") {
       if (message.thinking?.trim()) {
@@ -77,12 +83,12 @@ export function buildRenderItems(
 
       const actionItems: ActionItem[] = [];
       let cursor = index + 1;
-      while (cursor < source.length && source[cursor]!.role === "tool") {
-        if (!shouldHideToolMessage(source[cursor]!)) {
+      while (cursor < visibleSource.length && visibleSource[cursor]!.role === "tool") {
+        if (!shouldHideToolMessage(visibleSource[cursor]!)) {
           actionItems.push({
-            key: source[cursor]!.id,
+            key: visibleSource[cursor]!.id,
             kind: "tool",
-            message: source[cursor]!,
+            message: visibleSource[cursor]!,
           });
         }
         cursor += 1;
@@ -124,12 +130,12 @@ export function buildRenderItems(
     if (message.role === "tool") {
       const actionItems: ActionItem[] = [];
       let cursor = index;
-      while (cursor < source.length && source[cursor]!.role === "tool") {
-        if (!shouldHideToolMessage(source[cursor]!)) {
+      while (cursor < visibleSource.length && visibleSource[cursor]!.role === "tool") {
+        if (!shouldHideToolMessage(visibleSource[cursor]!)) {
           actionItems.push({
-            key: source[cursor]!.id,
+            key: visibleSource[cursor]!.id,
             kind: "tool",
-            message: source[cursor]!,
+            message: visibleSource[cursor]!,
           });
         }
         cursor += 1;
@@ -192,6 +198,8 @@ export function getToolLabel(message: ChatMessage, toolPath: string): string {
       return `${operation === "create" ? "Tạo file" : "Ghi file"}${normalizedPath ? ` (${normalizedPath})` : ""}`;
     case "edit_file":
       return `Sửa file${normalizedPath ? ` (${normalizedPath})` : ""}`;
+    case "edit_file_range":
+      return `Sửa file theo dòng${normalizedPath ? ` (${normalizedPath})` : ""}`;
     case "grep":
       return `Tìm kiếm${normalizedPath ? ` (${shortenPath(toolPath)})` : ""}`;
     case "head":

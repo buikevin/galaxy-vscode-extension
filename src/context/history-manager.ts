@@ -96,7 +96,7 @@ function createToolDigest(message: ChatMessage): ToolDigest {
             ? Object.freeze([pathParam])
             : Object.freeze([]);
   const filesWritten =
-    ['write_file', 'edit_file', 'galaxy_design_init', 'galaxy_design_add'].includes(toolName) && pathParam
+    ['write_file', 'edit_file', 'edit_file_range', 'galaxy_design_init', 'galaxy_design_add'].includes(toolName) && pathParam
       ? Object.freeze([pathParam])
       : Object.freeze([]);
   const filesReverted = Object.freeze([]);
@@ -114,6 +114,7 @@ function createToolDigest(message: ChatMessage): ToolDigest {
     list_dir: `Listed directory ${pathParam || '.'}`,
     write_file: `Wrote ${pathParam || 'file'}`,
     edit_file: `Edited ${pathParam || 'file'}`,
+    edit_file_range: `Edited ${pathParam || 'file'} by line range`,
     validate_code: `${success ? 'Validated' : 'Validation failed for'} ${pathParam || 'file'}`,
     run_project_command: `Ran project command ${getStringParam(message, 'command') || getStringParam(message, 'commandId') || ''}`.trim(),
     galaxy_design_project_info: `Inspected Galaxy Design project ${pathParam || '.'}`,
@@ -386,6 +387,9 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
       ...sessionMemory,
       activeTaskMemory: nextActiveTask,
       projectMemory: nextProjectMemory,
+      lastFinalAssistantConclusion: assistantText.trim()
+        ? summarizeText(assistantText, 2_400)
+        : sessionMemory.lastFinalAssistantConclusion,
       lastUpdatedAt: now,
     });
   }

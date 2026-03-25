@@ -65,6 +65,10 @@ type UseComposerActionsOptions = Readonly<{
   setPreviewAsset: Dispatch<SetStateAction<PreviewAsset | null>>;
   /** Update error banner text. */
   setErrorText: Dispatch<SetStateAction<string>>;
+  /** Update current run-state flag immediately after local send. */
+  setIsRunning: Dispatch<SetStateAction<boolean>>;
+  /** Update status text shown while waiting for the host/runtime. */
+  setStatusText: Dispatch<SetStateAction<string>>;
   /** Update retry request state. */
   setRetryRequest: Dispatch<SetStateAction<PendingRequest | null>>;
   /** Update pending user message id. */
@@ -270,6 +274,8 @@ export function useComposerActions(options: UseComposerActionsOptions) {
     options.setRetryRequest(null);
     options.setPendingMessageId(request.messageId);
     options.setManualPromptPlan(null);
+    options.setIsRunning(true);
+    options.setStatusText(`Running ${request.agent}`);
     options.setInflightRequest({
       ...request,
       hasServerResponse: false,

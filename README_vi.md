@@ -281,6 +281,193 @@ Working Session quá lớn
 - `Project Memory` giữ tri nhớ dài hơi của workspace.
 - `Tool Evidence` không phải memory layer chính, nhưng là nguồn bằng chứng được chọn lọc để nhét vào prompt tiếp theo.
 
+## Luồng Hybrid RAG Hiện Tại
+
+Galaxy Code hiện không dùng một kiểu retrieval duy nhất. Nó dùng `hybrid RAG`, tức là trộn nhiều nguồn tín hiệu để tìm đúng context trước khi model trả lời hoặc gọi tool.
+
+### Mục tiêu
+
+Luồng này giúp AI Agent:
+
+- tìm đúng file, đúng symbol, đúng tài liệu nhanh hơn
+- giảm đọc file lung tung
+- giảm reread không cần thiết
+- nhớ tốt hơn những gì đã đọc hoặc vừa sửa
+- quay lại đúng vùng code/doc đã liên quan ở các turn sau
+
+### Các lớp retrieval chính
+
+#### 1. Syntax / Symbol Retrieval
+
+Lớp này dùng:
+
+- file path
+- basename
+- path segment
+- export/import graph
+- definition/reference candidates
+- symbol candidates
+
+Nó mạnh khi user nhắc khá rõ về:
+
+- tên file
+- tên class
+- tên function
+- component
+- module
+
+Ví dụ:
+
+- "sửa `UserService`"
+- "xem `vite.config.ts`"
+- "nút `Button` nằm ở đâu"
+
+#### 2. Lexical Retrieval
+
+Lớp này match theo text gần đúng:
+
+- token trong query
+- token trong path
+- token trong symbol
+- token trong semantic chunk title
+
+Nó hữu ích khi query có từ khóa đúng hoặc gần đúng nhưng không đủ mạnh để chỉ ra chính xác một symbol.
+
+#### 3. Semantic Retrieval Với Gemini Embeddings
+
+Lớp này dùng `Google Gemini embeddings` để so ngữ nghĩa.
+
+Cụ thể:
+
+- query của user được embed bằng `gemini-embedding-001`
+- các semantic chunks của code/doc cũng có embedding
+- hệ so similarity giữa query và chunk
+
+Nhờ đó, agent có thể tìm đúng ngữ cảnh ngay cả khi user không dùng đúng tên file hay tên symbol.
+
+Ví dụ:
+
+- user hỏi: `phần thẩm định hồ sơ doanh nghiệp realtime nằm đâu`
+- code thật lại có tên function khác hẳn như `evaluateBusinessRealtimeCreditProfile`
+
+Nếu chỉ match theo chữ thì có thể trượt.
+Nếu có embeddings thì hệ vẫn có thể kéo đúng file/chunk lên top candidate vì chúng gần nhau về nghĩa.
+
+#### 4. Tool Evidence Retrieval
+
+Lớp này nhớ những gì agent đã làm:
+
+- đã đọc file nào
+- đã grep gì
+- đã sửa file nào
+- command nào vừa chạy
+- evidence nào còn fresh
+- evidence nào cần refresh
+
+Nhờ đó, turn sau không phải đọc lại từ đầu một cách mù quáng.
+
+#### 5. SQLite Metadata + Read Cache
+
+Galaxy hiện dùng `rag-metadata.sqlite` để lưu:
+
+- syntax metadata
+- symbol metadata
+- semantic chunk metadata
+- tool evidence metadata
+- read cache cho `read_file`
+- read cache cho `read_document`
+
+Read cache hoạt động theo nguyên tắc:
+
+- key theo:
+  - `filePath`
+  - `mtime`
+  - `size`
+  - `readMode`
+  - `offset`
+  - `limit`
+- nếu file chưa đổi thì dùng lại nội dung từ SQLite
+- nếu file đã đổi thì đọc lại file thật và ghi cache mới
+
+Điều này đặc biệt hữu ích với:
+
+- `.docx`
+- `.pdf`
+- file lớn
+- các file bị đọc lặp nhiều lần theo chunk
+
+### Luồng xử lý từng bước
+
+Khi user gửi yêu cầu, hệ đi theo flow gần như sau:
+
+```text
+User gửi yêu cầu
+  -> parse query
+  -> lấy syntax/symbol candidates
+  -> lấy lexical candidates
+  -> lấy semantic candidates bằng Gemini embeddings
+  -> lấy evidence gần đây và trạng thái freshness
+  -> lấy SQLite hint paths + read cache metadata
+  -> rerank tất cả candidate theo hybrid score
+  -> build prompt context:
+       project memory
+       active task memory
+       tool evidence
+       hybrid retrieval block
+       semantic retrieval block
+       manual planning hints
+       anti-loop guardrails
+  -> AI Agent chọn tool phù hợp
+  -> kết quả tool được ghi vào evidence + SQLite metadata
+  -> turn sau reuse lại context này nếu còn phù hợp
+```
+
+### Hybrid Score Thực Tế Đến Từ Đâu
+
+Khi rerank candidate, hệ không chỉ nhìn một tín hiệu. Nó trộn:
+
+- path match
+- basename match
+- symbol hit
+- definition/reference graph
+- lexical similarity
+- semantic similarity
+- recent evidence
+- freshness
+- file vừa đụng gần đây
+- cache/read history trong SQLite
+
+Vì vậy cùng một query, hệ có thể ưu tiên:
+
+- file định nghĩa
+- file đang bị ảnh hưởng downstream
+- chunk doc gần nghĩa nhất
+- hoặc file vừa được đọc/sửa và còn relevant
+
+### Hybrid RAG Giúp "Nhớ" Điều Gì
+
+Hiện tại nó giúp agent nhớ tốt hơn ở các mặt sau:
+
+- nhớ file nào đã liên quan
+- nhớ symbol nào đang là focus
+- nhớ chunk tài liệu nào đã đọc
+- nhớ vùng nội dung nào có thể reuse từ read cache
+- nhớ evidence nào còn dùng được
+
+Nhưng cần lưu ý:
+
+- nó không phải trí nhớ dài hạn hoàn hảo kiểu con người
+- nó mạnh ở retrieval và continuity thực dụng
+- còn memory quyết định dài hạn của task vẫn chủ yếu là heuristic + session memory
+
+### Khi Nào Hybrid RAG Tỏ Ra Hữu Ích Nhất
+
+- workspace lớn nhiều file
+- user mô tả tính năng bằng ngôn ngữ tự nhiên
+- phải đọc tài liệu dài hoặc file `.docx/.pdf`
+- cần quay lại cùng một vùng code/doc qua nhiều turn
+- cần giảm loop đọc đi đọc lại
+
 ## Chiến lược token
 
 Prompt usage hiện không còn được hiểu đơn giản là "chỉ raw chat messages mới nhất".

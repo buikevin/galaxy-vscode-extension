@@ -95,6 +95,47 @@ function normalizeAttachmentKey(value: string): string {
   return normalizeAttachmentLookup(value).replace(/[^a-z0-9]+/g, '');
 }
 
+function computeEditDistance(a: string, b: string): number {
+  if (a === b) {
+    return 0;
+  }
+  if (a.length === 0) {
+    return b.length;
+  }
+  if (b.length === 0) {
+    return a.length;
+  }
+
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  const current = new Array<number>(b.length + 1);
+
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        current[j - 1]! + 1,
+        previous[j]! + 1,
+        previous[j - 1]! + cost,
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) {
+      previous[j] = current[j]!;
+    }
+  }
+
+  return previous[b.length]!;
+}
+
+function computeCommonPrefixLength(a: string, b: string): number {
+  const max = Math.min(a.length, b.length);
+  let index = 0;
+  while (index < max && a[index] === b[index]) {
+    index += 1;
+  }
+  return index;
+}
+
 function truncateContent(content: string): string {
   if (content.length <= MAX_ATTACHMENT_CHARS) {
     return content;
@@ -372,20 +413,48 @@ export function resolveAttachmentStoredPath(workspacePath: string, rawPath: stri
   }
 
   const records = loadIndex(workspacePath).filter((record) => record.status !== 'removed');
-  const match = records.find((record) => {
+  const scoredMatches = records.map((record) => {
     const original = normalizeAttachmentLookup(record.originalName);
     const storedBase = normalizeAttachmentLookup(path.basename(record.storedPath));
     const originalKey = normalizeAttachmentKey(record.originalName);
     const storedKey = normalizeAttachmentKey(path.basename(record.storedPath));
-    return (
-      original === target ||
-      storedBase === target ||
-      originalKey === targetKey ||
-      storedKey === targetKey ||
-      (targetKey.length >= 8 && (originalKey.includes(targetKey) || targetKey.includes(originalKey))) ||
-      (targetKey.length >= 8 && (storedKey.includes(targetKey) || targetKey.includes(storedKey)))
-    );
-  });
+    const candidates = [original, storedBase, originalKey, storedKey].filter(Boolean);
+    let score = 0;
+
+    for (const candidate of candidates) {
+      if (candidate === target || candidate === targetKey) {
+        score = Math.max(score, 100);
+        continue;
+      }
+      if (candidate === originalKey || candidate === storedKey) {
+        score = Math.max(score, 96);
+      }
+      if (targetKey.length >= 8 && (candidate.includes(targetKey) || targetKey.includes(candidate))) {
+        score = Math.max(score, 84);
+      }
+
+      const prefixLength = computeCommonPrefixLength(candidate, targetKey);
+      const prefixRatio = prefixLength / Math.max(candidate.length, targetKey.length, 1);
+      if (prefixRatio >= 0.82) {
+        score = Math.max(score, 72 + Math.round(prefixRatio * 10));
+      }
+
+      const distance = computeEditDistance(candidate, targetKey);
+      if (Math.max(candidate.length, targetKey.length) >= 8 && distance <= 3) {
+        score = Math.max(score, 78 - distance * 8);
+      }
+    }
+
+    return Object.freeze({ record, score });
+  })
+    .filter((entry) => entry.score >= 64)
+    .sort((a, b) => b.score - a.score || a.record.createdAt - b.record.createdAt);
+
+  const [bestMatch, secondMatch] = scoredMatches;
+  const match =
+    bestMatch && (!secondMatch || bestMatch.score - secondMatch.score >= 8)
+      ? bestMatch.record
+      : null;
 
   if (!match || !fs.existsSync(match.storedPath)) {
     return null;

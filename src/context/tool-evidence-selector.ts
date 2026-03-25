@@ -54,6 +54,7 @@ function getEvidenceSearchText(evidence: ToolEvidence): string {
       return `${evidence.summary} ${evidence.entries.map((entry) => entry.name).join(' ')}`;
     case 'write_file':
     case 'edit_file':
+    case 'edit_file_range':
       return `${evidence.summary} ${evidence.operation}`;
   }
 }
@@ -337,7 +338,7 @@ function deriveStaleEvidence(evidence: readonly ToolEvidence[]): readonly ToolEv
 
     derived[index] = stale ? Object.freeze({ ...item, stale: true }) : item;
 
-    if (item.toolName === 'write_file' || item.toolName === 'edit_file') {
+    if (item.toolName === 'write_file' || item.toolName === 'edit_file' || item.toolName === 'edit_file_range') {
       markPathInvalidation(invalidatedFiles, invalidatedDirectories, item.filePath);
       continue;
     }
@@ -407,6 +408,7 @@ function formatEvidence(evidence: ToolEvidence): string {
       return `- ${evidence.filePath} read ${evidence.startLine && evidence.endLine ? `lines ${evidence.startLine}-${evidence.endLine}` : evidence.readMode}`;
     case 'write_file':
     case 'edit_file':
+    case 'edit_file_range':
       return `- ${evidence.filePath} ${evidence.operation}${evidence.changedLineRanges.length > 0 ? ` lines ${evidence.changedLineRanges.map((range) => `${range.startLine}-${range.endLine}`).join(', ')}` : ''}`;
     case 'validate_code':
       return `- Validation for ${evidence.filePath}: ${evidence.reportSummary}`;
@@ -466,7 +468,7 @@ function buildAntiLoopGuardrails(
       return;
     }
 
-    if (item.toolName === 'write_file' || item.toolName === 'edit_file') {
+    if (item.toolName === 'write_file' || item.toolName === 'edit_file' || item.toolName === 'edit_file_range') {
       writeCounts.set(targetPath, (writeCounts.get(targetPath) ?? 0) + 1);
       return;
     }

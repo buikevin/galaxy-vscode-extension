@@ -2,6 +2,7 @@ import type { AgentType, ChatMessage } from '../shared/protocol';
 import { countContextTokens, estimateTokens } from './compaction';
 import type { PromptBuildResult, ReadPlanProgressItem, SessionMemory, WorkingTurn } from './history-types';
 import { buildActiveTaskMemoryContent, buildProjectMemoryContent } from './memory-format';
+import { queryRagHintPaths } from './rag-metadata-store';
 import { buildSemanticRetrievalContext } from './semantic-index';
 import { buildSyntaxIndexContext, type ManualReadPlanStep, type SyntaxContextRecordSummary } from './syntax-index';
 import { appendTelemetryEvent } from './telemetry';
@@ -552,15 +553,22 @@ export async function buildPromptContext(opts: {
     queryText,
     opts.sessionMemory.projectMemory.keyFiles,
   );
+  const sqliteHintPaths = queryRagHintPaths(
+    opts.sessionMemory.workspacePath,
+    queryText,
+    4,
+  );
   const retrievalSeedPaths = uniquePaths([
     ...mentionedPaths,
     ...workingTurnFiles,
     ...takeRecentPaths(activeTaskRetrievalPaths, 6),
     ...projectHintPaths,
+    ...sqliteHintPaths,
   ]);
   const retrievalKeyFiles = uniquePaths([
     ...takeRecentPaths(activeTaskRetrievalPaths, 6),
     ...projectHintPaths,
+    ...sqliteHintPaths,
   ]);
   const retrievalRecentPaths = uniquePaths([
     ...takeRecentPaths(opts.sessionMemory.activeTaskMemory.filesTouched, 8),
@@ -570,6 +578,11 @@ export async function buildPromptContext(opts: {
   const notesContent = opts.notes.trim() ? `[NOTES]\n${opts.notes.trim()}` : '';
   const projectMemoryContent = buildProjectMemoryContent(opts.sessionMemory.projectMemory);
   const activeTaskMemoryContent = buildActiveTaskMemoryContent(opts.sessionMemory.activeTaskMemory);
+  const previousFinalConclusionContent = opts.sessionMemory.lastFinalAssistantConclusion.trim()
+    ? `[PREVIOUS FINAL ASSISTANT CONCLUSION]\n` +
+      `${opts.sessionMemory.lastFinalAssistantConclusion.trim()}\n\n` +
+      'Treat this as the most recent authoritative conclusion from the previous completed turn. Continue from it instead of restarting the analysis from scratch when the user asks to proceed.'
+    : '';
   const syntaxIndexBlock = buildSyntaxIndexContext({
     workspacePath: opts.sessionMemory.workspacePath,
     candidateFiles: retrievalSeedPaths,
@@ -690,6 +703,14 @@ export async function buildPromptContext(opts: {
   const activeTaskMessage = buildContextMessage(activeTaskMemoryContent, `ctx-active-task-${Date.now()}`);
   if (activeTaskMessage) {
     messages.push(activeTaskMessage);
+  }
+
+  const previousFinalConclusionMessage = buildContextMessage(
+    previousFinalConclusionContent,
+    `ctx-previous-final-conclusion-${Date.now()}`,
+  );
+  if (previousFinalConclusionMessage) {
+    messages.push(previousFinalConclusionMessage);
   }
 
   const codeMapCandidatesMessage = buildContextMessage(codeMapCandidatesContent, `ctx-code-map-${Date.now()}`);

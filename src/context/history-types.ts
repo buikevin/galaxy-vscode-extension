@@ -67,6 +67,7 @@ export type SessionMemory = Readonly<{
   workspacePath: string;
   activeTaskMemory: ActiveTaskMemory;
   projectMemory: ProjectMemory;
+  lastFinalAssistantConclusion: string;
   keyFiles: readonly string[];
   lastUpdatedAt: number;
 }>;

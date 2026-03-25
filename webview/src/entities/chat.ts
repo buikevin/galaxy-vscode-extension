@@ -76,6 +76,8 @@ export type ActiveShellSession = Readonly<{
   startedAt: number;
   /** Streamed stdout/stderr accumulated in the webview. */
   output: string;
+  /** Native VS Code terminal title when available. */
+  terminalTitle?: string;
   /** Final success state when the process exits. */
   success?: boolean;
   /** Final exit code when the process exits. */

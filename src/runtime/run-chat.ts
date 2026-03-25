@@ -390,7 +390,7 @@ export async function runExtensionChat(opts: {
         result.success &&
         touchedPath &&
         (
-          ['write_file', 'edit_file'].includes(toolName) ||
+          ['write_file', 'edit_file', 'edit_file_range'].includes(toolName) ||
           ['galaxy_design_init', 'galaxy_design_add'].includes(toolName)
         )
       ) {

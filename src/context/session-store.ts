@@ -127,6 +127,10 @@ function migrateLegacySessionMemory(
     workspacePath,
     activeTaskMemory,
     projectMemory,
+    lastFinalAssistantConclusion:
+      recentDigests.length > 0 && typeof recentDigests[recentDigests.length - 1]?.assistantSummary === 'string'
+        ? recentDigests[recentDigests.length - 1]!.assistantSummary
+        : '',
     keyFiles: deriveCombinedKeyFiles(activeTaskMemory, projectMemory),
     lastUpdatedAt: typeof parsed.lastUpdatedAt === 'number' ? parsed.lastUpdatedAt : now,
   });
@@ -143,6 +147,7 @@ export function createEmptySessionMemory(workspacePath: string): SessionMemory {
     workspacePath: info.workspacePath,
     activeTaskMemory,
     projectMemory,
+    lastFinalAssistantConclusion: '',
     keyFiles: deriveCombinedKeyFiles(activeTaskMemory, projectMemory),
     lastUpdatedAt: now,
   });
@@ -189,6 +194,8 @@ export function loadSessionMemory(workspacePath: string): SessionMemory | null {
       workspacePath: parsed.workspacePath,
       activeTaskMemory,
       projectMemory,
+      lastFinalAssistantConclusion:
+        typeof parsed.lastFinalAssistantConclusion === 'string' ? parsed.lastFinalAssistantConclusion : '',
       keyFiles: deriveCombinedKeyFiles(activeTaskMemory, projectMemory),
       lastUpdatedAt: parsed.lastUpdatedAt,
     });

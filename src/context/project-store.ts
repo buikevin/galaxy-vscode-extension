@@ -30,8 +30,10 @@ export type ProjectStorageInfo = Readonly<{
   toolEvidencePath: string;
   telemetryPath: string;
   telemetrySummaryPath: string;
+  commandContextPath: string;
   syntaxIndexPath: string;
   semanticIndexPath: string;
+  ragMetadataDbPath: string;
   figmaImportsPath: string;
   figmaAssetsDirPath: string;
   attachmentsDirPath: string;
@@ -88,8 +90,10 @@ export function getProjectStorageInfo(workspacePath: string): ProjectStorageInfo
     toolEvidencePath: path.join(projectDirPath, 'tool-evidence.jsonl'),
     telemetryPath: path.join(projectDirPath, 'telemetry.jsonl'),
     telemetrySummaryPath: path.join(projectDirPath, 'telemetry-summary.json'),
+    commandContextPath: path.join(projectDirPath, 'context.json'),
     syntaxIndexPath: path.join(projectDirPath, 'syntax-index.json'),
     semanticIndexPath: path.join(projectDirPath, 'semantic-index.json'),
+    ragMetadataDbPath: path.join(projectDirPath, 'rag-metadata.sqlite'),
     figmaImportsPath: path.join(projectDirPath, 'figma-imports.jsonl'),
     figmaAssetsDirPath: path.join(projectDirPath, 'figma-assets'),
     attachmentsDirPath: path.join(localGalaxyDirPath, 'attachments'),

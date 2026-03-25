@@ -4,6 +4,8 @@ import { execSync } from 'node:child_process';
 import { tavily } from '@tavily/core';
 import type { GalaxyConfig } from '../config/types';
 import { resolveAttachmentStoredPath } from '../attachments/attachment-store';
+import { getProjectStorageInfo } from '../context/project-store';
+import { getCachedReadResult, storeReadCache } from '../context/rag-metadata-store';
 import { captureOriginal, trackFileWrite } from '../runtime/session-tracker';
 import {
   galaxyDesignAddTool,
@@ -463,6 +465,145 @@ function isWithinWorkspace(targetPath: string, workspaceRoot: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function normalizeLookupKey(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\\/g, '/')
+    .replace(/[^a-zA-Z0-9]+/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function computeEditDistance(a: string, b: string): number {
+  if (a === b) {
+    return 0;
+  }
+  if (a.length === 0) {
+    return b.length;
+  }
+  if (b.length === 0) {
+    return a.length;
+  }
+
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  const current = new Array<number>(b.length + 1);
+
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        current[j - 1]! + 1,
+        previous[j]! + 1,
+        previous[j - 1]! + cost,
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) {
+      previous[j] = current[j]!;
+    }
+  }
+
+  return previous[b.length]!;
+}
+
+function computeCommonPrefixLength(a: string, b: string): number {
+  const max = Math.min(a.length, b.length);
+  let index = 0;
+  while (index < max && a[index] === b[index]) {
+    index += 1;
+  }
+  return index;
+}
+
+function findWorkspacePathByApproximateName(workspaceRoot: string, rawPath: string): string | null {
+  const targetBase = path.basename(rawPath);
+  const targetKey = normalizeLookupKey(targetBase);
+  if (!targetKey) {
+    return null;
+  }
+
+  const skipDirs = new Set([
+    '.git',
+    'node_modules',
+    'dist',
+    'build',
+    'coverage',
+    '.next',
+    '.nuxt',
+    '.turbo',
+    'target',
+    '.galaxy',
+  ]);
+
+  const stack = [workspaceRoot];
+  const candidates: Array<Readonly<{ filePath: string; score: number }>> = [];
+  let visited = 0;
+
+  while (stack.length > 0 && visited < 6_000) {
+    const currentDir = stack.pop()!;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        if (!skipDirs.has(entry.name)) {
+          stack.push(entryPath);
+        }
+        continue;
+      }
+      visited += 1;
+      const baseKey = normalizeLookupKey(entry.name);
+      const relKey = normalizeLookupKey(path.relative(workspaceRoot, entryPath));
+      if (!baseKey && !relKey) {
+        continue;
+      }
+
+      let score = 0;
+      for (const candidate of [baseKey, relKey]) {
+        if (!candidate) {
+          continue;
+        }
+        if (candidate === targetKey) {
+          score = Math.max(score, 100);
+          continue;
+        }
+        if (targetKey.length >= 8 && (candidate.includes(targetKey) || targetKey.includes(candidate))) {
+          score = Math.max(score, 84);
+        }
+        const prefixLength = computeCommonPrefixLength(candidate, targetKey);
+        const prefixRatio = prefixLength / Math.max(candidate.length, targetKey.length, 1);
+        if (prefixRatio >= 0.82) {
+          score = Math.max(score, 72 + Math.round(prefixRatio * 10));
+        }
+        const distance = computeEditDistance(candidate, targetKey);
+        if (Math.max(candidate.length, targetKey.length) >= 8 && distance <= 3) {
+          score = Math.max(score, 78 - distance * 8);
+        }
+      }
+
+      if (score >= 64) {
+        candidates.push(Object.freeze({ filePath: entryPath, score }));
+      }
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score || a.filePath.localeCompare(b.filePath));
+  const [bestMatch, secondMatch] = candidates;
+  if (!bestMatch) {
+    return null;
+  }
+  if (secondMatch && bestMatch.score - secondMatch.score < 8) {
+    return null;
+  }
+  return bestMatch.filePath;
+}
+
 function resolveWorkspacePath(workspaceRoot: string, rawPath: string): string {
   const candidate = path.isAbsolute(rawPath)
     ? path.resolve(rawPath)
@@ -487,6 +628,23 @@ function resolveReadablePath(workspaceRoot: string, rawPath: string): string {
   const attachmentPath = resolveAttachmentStoredPath(workspaceRoot, rawPath);
   if (attachmentPath) {
     return attachmentPath;
+  }
+
+  const fallbackWorkspacePath = findWorkspacePathByApproximateName(workspaceRoot, rawPath);
+  if (fallbackWorkspacePath) {
+    return fallbackWorkspacePath;
+  }
+
+  const projectStorage = getProjectStorageInfo(workspaceRoot);
+  const normalizedRawPath = path.resolve(rawPath);
+  if (
+    normalizedRawPath === path.resolve(projectStorage.commandContextPath)
+    || rawPath === 'context.json'
+    || rawPath === path.basename(projectStorage.commandContextPath)
+  ) {
+    if (fs.existsSync(projectStorage.commandContextPath)) {
+      return projectStorage.commandContextPath;
+    }
   }
 
   throw new Error(`Path must stay inside the workspace or match an attached file: ${rawPath}`);
@@ -663,25 +821,55 @@ function readFileTool(workspaceRoot: string, rawPath: string, options?: { maxLin
       });
     }
 
-    const raw = fs.readFileSync(resolved, 'utf-8');
-    const lines = raw.split('\n');
     const offset = Math.max(0, Number(options?.offset ?? 0));
     const maxLines = Math.max(1, Number(options?.maxLines ?? 200));
+    const cached = getCachedReadResult(workspaceRoot, {
+      filePath: resolved,
+      mtimeMs: stat.mtimeMs,
+      sizeBytes: stat.size,
+      readMode: 'file_lines',
+      offset,
+      limit: maxLines,
+    });
+    if (cached) {
+      return Object.freeze({
+        success: true,
+        content: cached.content,
+        ...(cached.meta ? { meta: Object.freeze({ ...cached.meta, cacheHit: true }) } : {}),
+      });
+    }
+
+    const raw = fs.readFileSync(resolved, 'utf-8');
+    const lines = raw.split('\n');
     const slice = lines.slice(offset, offset + maxLines);
     const content = slice.join('\n');
     const truncated = lines.length > offset + maxLines;
+    const finalContent = truncated ? `${content}\n[... ${lines.length - offset - maxLines} more lines]` : content;
+    const meta = Object.freeze({
+      filePath: resolved,
+      readMode: offset > 0 || maxLines < lines.length ? 'partial' : 'full',
+      startLine: offset + 1,
+      endLine: offset + slice.length,
+      totalLines: lines.length,
+      truncated,
+      cacheHit: false,
+    });
+
+    storeReadCache(workspaceRoot, {
+      filePath: resolved,
+      mtimeMs: stat.mtimeMs,
+      sizeBytes: stat.size,
+      readMode: 'file_lines',
+      offset,
+      limit: maxLines,
+      content: finalContent,
+      metaJson: JSON.stringify(meta),
+    });
 
     return Object.freeze({
       success: true,
-      content: truncated ? `${content}\n[... ${lines.length - offset - maxLines} more lines]` : content,
-      meta: Object.freeze({
-        filePath: resolved,
-        readMode: offset > 0 || maxLines < lines.length ? 'partial' : 'full',
-        startLine: offset + 1,
-        endLine: offset + slice.length,
-        totalLines: lines.length,
-        truncated,
-      }),
+      content: finalContent,
+      meta,
     });
   } catch (error) {
     return Object.freeze({
@@ -781,6 +969,81 @@ function editFileTool(
         replaceAll,
         occurrencesChanged: replaceAll ? occurrences : 1,
         changedLineRanges: changedRange,
+      }),
+    });
+  } catch (error) {
+    return Object.freeze({
+      success: false,
+      content: '',
+      error: String(error),
+    });
+  }
+}
+
+function editFileRangeTool(
+  workspaceRoot: string,
+  rawPath: string,
+  startLine: number,
+  endLine: number,
+  newContent: string,
+): ToolResult {
+  try {
+    const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
+    if (!fs.existsSync(resolved)) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `File not found: ${rawPath}`,
+      });
+    }
+
+    if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || startLine < 1 || endLine < startLine) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `Invalid line range for ${rawPath}. start_line and end_line must be 1-based and end_line >= start_line.`,
+      });
+    }
+
+    captureOriginal(resolved);
+    const original = fs.readFileSync(resolved, 'utf-8');
+    const originalLines = original.split('\n');
+
+    if (startLine > originalLines.length + 1) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `start_line ${startLine} is outside ${rawPath} (${originalLines.length} lines).`,
+      });
+    }
+
+    const replacementLines = newContent.split('\n');
+    const updatedLines = [
+      ...originalLines.slice(0, startLine - 1),
+      ...replacementLines,
+      ...originalLines.slice(endLine),
+    ];
+    const updated = updatedLines.join('\n');
+
+    fs.writeFileSync(resolved, updated, 'utf-8');
+    trackFileWrite(resolved);
+
+    return Object.freeze({
+      success: true,
+      content: `Edited ${toDisplayPath(resolved, workspaceRoot)} lines ${startLine}-${endLine}`,
+      meta: Object.freeze({
+        filePath: resolved,
+        operation: 'edit',
+        existedBefore: true,
+        changedLineRanges: Object.freeze([
+          Object.freeze({
+            startLine,
+            endLine: Math.max(startLine, startLine + replacementLines.length - 1),
+          }),
+        ]),
+        rangeEdit: true,
+        startLine,
+        endLine,
       }),
     });
   } catch (error) {
@@ -952,23 +1215,56 @@ async function readDocumentTool(
 ): Promise<ToolResult> {
   try {
     const resolved = resolveReadablePath(workspaceRoot, rawPath);
+    const stat = fs.statSync(resolved);
+    const maxChars = Math.max(1, Number(options?.maxChars ?? 20_000));
+    const offset = Math.max(0, Number(options?.offset ?? 0));
+    const cached = getCachedReadResult(workspaceRoot, {
+      filePath: resolved,
+      mtimeMs: stat.mtimeMs,
+      sizeBytes: stat.size,
+      readMode: 'document_chars',
+      offset,
+      limit: maxChars,
+    });
+    if (cached) {
+      return Object.freeze({
+        success: true,
+        content: cached.content,
+        ...(cached.meta ? { meta: Object.freeze({ ...cached.meta, cacheHit: true }) } : {}),
+      });
+    }
+
     const result = await readDocumentFile(resolved, options);
+    const meta = Object.freeze({
+      filePath: resolved,
+      readMode: 'document',
+      format: result.format ?? path.extname(resolved).slice(1).toUpperCase(),
+      ...(typeof result.pageCount === 'number' ? { pageCount: result.pageCount } : {}),
+      ...(typeof result.totalChars === 'number' ? { totalChars: result.totalChars } : {}),
+      ...(typeof result.returnedChars === 'number' ? { returnedChars: result.returnedChars } : {}),
+      ...(typeof result.offset === 'number' ? { offset: result.offset } : {}),
+      ...(typeof result.nextOffset === 'number' ? { nextOffset: result.nextOffset } : {}),
+      ...(typeof result.hasMore === 'boolean' ? { hasMore: result.hasMore } : {}),
+      truncated: Boolean(result.truncated ?? false),
+      cacheHit: false,
+    });
+    if (result.success) {
+      storeReadCache(workspaceRoot, {
+        filePath: resolved,
+        mtimeMs: stat.mtimeMs,
+        sizeBytes: stat.size,
+        readMode: 'document_chars',
+        offset,
+        limit: maxChars,
+        content: result.content,
+        metaJson: JSON.stringify(meta),
+      });
+    }
     return Object.freeze({
       success: result.success,
       content: result.content,
       ...(result.error ? { error: result.error } : {}),
-      meta: Object.freeze({
-        filePath: resolved,
-        readMode: 'document',
-        format: result.format ?? path.extname(resolved).slice(1).toUpperCase(),
-        ...(typeof result.pageCount === 'number' ? { pageCount: result.pageCount } : {}),
-        ...(typeof result.totalChars === 'number' ? { totalChars: result.totalChars } : {}),
-        ...(typeof result.returnedChars === 'number' ? { returnedChars: result.returnedChars } : {}),
-        ...(typeof result.offset === 'number' ? { offset: result.offset } : {}),
-        ...(typeof result.nextOffset === 'number' ? { nextOffset: result.nextOffset } : {}),
-        ...(typeof result.hasMore === 'boolean' ? { hasMore: result.hasMore } : {}),
-        truncated: Boolean(result.truncated ?? false),
-      }),
+      meta,
     });
   } catch (error) {
     return Object.freeze({
@@ -1268,6 +1564,19 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
       }
       return result;
     }
+    case 'edit_file_range': {
+      const result = editFileRangeTool(
+        toolContext.workspaceRoot,
+        p(call, 'path'),
+        Number(call.params.start_line ?? 0),
+        Number(call.params.end_line ?? 0),
+        String(call.params.new_content ?? ''),
+      );
+      if (result.success && typeof result.meta?.filePath === 'string') {
+        await toolContext.refreshWorkspaceFiles();
+      }
+      return result;
+    }
     case 'grep':
       return grepTool(toolContext.workspaceRoot, p(call, 'pattern'), p(call, 'path', '.'), Number(call.params.contextLines ?? 2));
     case 'list_dir':
@@ -1439,7 +1748,7 @@ export function getToolFilePath(call: ToolCall): string {
 
 export function isCodeWriteTool(toolName: string): boolean {
   const normalized = normalizeToolName(toolName);
-  return normalized === 'write_file' || normalized === 'edit_file';
+  return normalized === 'write_file' || normalized === 'edit_file' || normalized === 'edit_file_range';
 }
 
 const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
@@ -1480,6 +1789,20 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
         replace_all: Object.freeze({ type: 'boolean', description: 'Replace all matches instead of one exact match' }),
       }),
       required: Object.freeze(['path', 'old_string', 'new_string']),
+    }),
+  }),
+  Object.freeze({
+    name: 'edit_file_range',
+    description: 'Edit a specific line range in a file by replacing lines start_line through end_line with new_content. Prefer this when you know the target line range from a recent read_file result.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        path: Object.freeze({ type: 'string', description: 'File path inside the workspace' }),
+        start_line: Object.freeze({ type: 'number', description: '1-based start line, inclusive' }),
+        end_line: Object.freeze({ type: 'number', description: '1-based end line, inclusive' }),
+        new_content: Object.freeze({ type: 'string', description: 'Replacement content for the target line range' }),
+      }),
+      required: Object.freeze(['path', 'start_line', 'end_line', 'new_content']),
     }),
   }),
   Object.freeze({

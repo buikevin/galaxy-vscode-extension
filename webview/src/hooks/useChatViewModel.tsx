@@ -253,6 +253,13 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
     );
   }
 
+  function openShellTerminal(toolCallId: string): void {
+    postHostMessage({
+      type: "shell-open-terminal",
+      payload: { toolCallId },
+    } satisfies WebviewMessage);
+  }
+
   const toolRenderers = useToolRenderers({
     copiedCommandMessageId: options.copiedCommandMessageId,
     setCopiedCommandMessageId: options.setCopiedCommandMessageId,
@@ -263,6 +270,7 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
     handleListDirHover,
     shellOutputRefs: options.shellOutputRefs,
     shellNow: options.shellNow,
+    openShellTerminal,
   });
 
   function renderActionBody(item: ActionItem): ReactNode {

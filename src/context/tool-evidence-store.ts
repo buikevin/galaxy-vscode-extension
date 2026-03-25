@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { ToolCall, ToolResult } from '../tools/file-tools';
 import { ensureProjectStorage, getProjectStorageInfo } from './project-store';
+import { appendToolEvidenceMetadata, clearToolEvidenceMetadata } from './rag-metadata-store';
 import { appendTelemetryEvent } from './telemetry';
 import type {
   DirectoryEntry,
@@ -195,7 +196,8 @@ export function createToolEvidence(opts: {
 
   if (
     toolName === 'write_file' ||
-    toolName === 'edit_file'
+    toolName === 'edit_file' ||
+    toolName === 'edit_file_range'
   ) {
     const evidence: FileWriteEvidence = Object.freeze({
       ...base,
@@ -369,6 +371,26 @@ export function appendToolEvidence(workspacePath: string, evidence: ToolEvidence
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);
   fs.appendFileSync(storage.toolEvidencePath, `${JSON.stringify(evidence)}\n`, 'utf-8');
+  appendToolEvidenceMetadata(
+    workspacePath,
+    Object.freeze({
+      evidenceId: evidence.evidenceId,
+      toolName: evidence.toolName,
+      success: evidence.success,
+      stale: evidence.stale,
+      capturedAt: evidence.capturedAt,
+      summary: evidence.summary,
+      targetPath:
+        'filePath' in evidence
+          ? evidence.filePath
+          : 'targetPath' in evidence && typeof evidence.targetPath === 'string'
+            ? evidence.targetPath
+            : 'directoryPath' in evidence
+              ? evidence.directoryPath
+              : undefined,
+      turnId: evidence.turnId,
+    }),
+  );
   appendTelemetryEvent(workspacePath, {
     kind: 'tool_evidence',
     toolName: evidence.toolName,
@@ -383,4 +405,5 @@ export function clearToolEvidence(workspacePath: string): void {
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);
   fs.writeFileSync(storage.toolEvidencePath, '', 'utf-8');
+  clearToolEvidenceMetadata(workspacePath);
 }

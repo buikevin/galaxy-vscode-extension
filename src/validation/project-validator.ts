@@ -12,6 +12,8 @@ import type {
   ValidationRunResult,
 } from './types';
 
+const MAX_VALIDATION_CAPTURE_CHARS = 20_000;
+
 function hasFile(workspacePath: string, fileName: string): boolean {
   return fs.existsSync(path.join(workspacePath, fileName));
 }
@@ -675,7 +677,7 @@ async function runProjectCommand(
 
     child.stdout.on('data', (chunk) => {
       const text = String(chunk);
-      stdout += text;
+      stdout = `${stdout}${text}`.slice(-MAX_VALIDATION_CAPTURE_CHARS);
       void callbacks?.onChunk?.({
         toolCallId,
         chunk: text,
@@ -683,7 +685,7 @@ async function runProjectCommand(
     });
     child.stderr.on('data', (chunk) => {
       const text = String(chunk);
-      stderr += text;
+      stderr = `${stderr}${text}`.slice(-MAX_VALIDATION_CAPTURE_CHARS);
       void callbacks?.onChunk?.({
         toolCallId,
         chunk: text,

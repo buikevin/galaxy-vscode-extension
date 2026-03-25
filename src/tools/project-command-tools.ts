@@ -8,6 +8,7 @@ import type { ToolResult } from './file-tools';
 
 const BACKGROUND_STARTUP_GRACE_MS = 15_000;
 const ASYNC_COMMAND_HANDOFF_MS = 12_000;
+const MAX_CAPTURED_OUTPUT_CHARS = 20_000;
 const BACKGROUND_READY_PATTERNS = [
   /ready in \d+/i,
   /compiled successfully/i,
@@ -161,11 +162,11 @@ export async function runProjectCommandTool(
       ...(backgroundMode ? { detached: true } : {}),
     });
 
-    const chunks: string[] = [];
     let totalChars = 0;
     let timedOut = false;
     let settled = false;
     let releasedToBackground = false;
+    let capturedOutput = '';
     const timeoutMs = command?.timeoutMs ?? 120_000;
 
     const appendChunk = async (chunk: string): Promise<void> => {
@@ -173,11 +174,11 @@ export async function runProjectCommandTool(
         return;
       }
 
-      chunks.push(chunk);
       totalChars += chunk.length;
+      capturedOutput = `${capturedOutput}${chunk}`.slice(-MAX_CAPTURED_OUTPUT_CHARS);
       await options?.stream?.onChunk?.({ chunk });
 
-      if (backgroundMode && !releasedToBackground && looksLikeReadyOutput(chunks.join(''))) {
+      if (backgroundMode && !releasedToBackground && looksLikeReadyOutput(capturedOutput)) {
         finalizeAsBackground();
       }
     };
@@ -206,10 +207,10 @@ export async function runProjectCommandTool(
       releasedToBackground = true;
       clearTimeout(timer);
       const durationMs = Date.now() - startedAt;
-      const raw = chunks.join('').trim() || '(background command started)';
+      const raw = capturedOutput.trim() || '(background command started)';
       const truncated = raw.length > maxChars;
-      const content = truncated
-        ? `${raw.slice(0, maxChars)}\n...[truncated ${raw.length - maxChars} chars]`
+      const tailOutput = truncated
+        ? `${raw.slice(-maxChars)}\n...[truncated ${raw.length - maxChars} chars earlier]`
         : raw;
       if (backgroundMode) {
         child.unref();
@@ -217,8 +218,8 @@ export async function runProjectCommandTool(
       void finalize(Object.freeze({
         success: true,
         content:
-          `${content}\n\n` +
-          `[background] Command handed off. Galaxy will continue now and resume when the command completes.`,
+          `[background] Command handed off to a VS Code terminal.\n` +
+          `Use View terminal to inspect live output while Galaxy continues working.`,
         meta: Object.freeze({
           commandId: command?.id ?? commandText,
           commandLabel,
@@ -230,6 +231,7 @@ export async function runProjectCommandTool(
           truncated,
           totalChars,
           background: true,
+          tailOutput,
         }),
       }));
     };
@@ -296,13 +298,16 @@ export async function runProjectCommandTool(
         return;
       }
       const durationMs = Date.now() - startedAt;
-      const raw = chunks.join('').trim() || (timedOut ? '(command timed out)' : '(no output)');
+      const raw = capturedOutput.trim() || (timedOut ? '(command timed out)' : '(no output)');
       const truncated = raw.length > maxChars;
-      const content = truncated
-        ? `${raw.slice(0, maxChars)}\n...[truncated ${raw.length - maxChars} chars]`
+      const tailOutput = truncated
+        ? `${raw.slice(-maxChars)}\n...[truncated ${raw.length - maxChars} chars earlier]`
         : raw;
       const exitCode = timedOut ? 124 : Number(code ?? 0);
       const success = exitCode === 0;
+      const content = success
+        ? 'Command completed. Use View terminal for the full output.'
+        : 'Command failed. Use View terminal for the full output.';
 
       const result = Object.freeze({
         success,
@@ -318,6 +323,7 @@ export async function runProjectCommandTool(
           durationMs,
           truncated,
           totalChars,
+          tailOutput,
           ...(releasedToBackground ? { background: true } : {}),
         }),
       });
@@ -335,7 +341,7 @@ export async function runProjectCommandTool(
           exitCode,
           success,
           durationMs,
-          output: content,
+          output: tailOutput,
           background: true,
         });
         return;

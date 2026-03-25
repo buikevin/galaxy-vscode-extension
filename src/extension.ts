@@ -43,6 +43,7 @@ import {
 } from './runtime/session-tracker';
 import { formatReviewSummary, runCodeReview, type ReviewResult } from './runtime/code-reviewer';
 import { runExtensionChat } from './runtime/run-chat';
+import { CommandTerminalRegistry } from './runtime/command-terminal-registry';
 import {
   buildCoderSubAgentConfig,
   buildSelectiveMultiAgentPlanMessage,
@@ -67,6 +68,9 @@ import type {
   FileItem,
   FigmaAttachment,
   HostMessage,
+  CommandStreamChunkPayload,
+  CommandStreamEndPayload,
+  CommandStreamStartPayload,
   LocalAttachmentPayload,
   LogEntry,
   PlanItem,
@@ -81,6 +85,7 @@ const MAX_AUTO_REVIEW_REPAIR_ATTEMPTS = 1;
 const MAX_EMPTY_CONTINUE_ATTEMPTS = 3;
 const MAX_LOG_ENTRIES = 120;
 const MAX_DEBUG_BLOCK_CHARS = 20_000;
+const MAX_COMMAND_CONTEXT_OUTPUT_CHARS = 12_000;
 let figmaBridge: FigmaBridgeServer | null = null;
 const GALAXY_VIEW_CONTAINER_ID = 'galaxy-code-sidebar';
 const CONTEXT_FILES_VIEW_ID = 'galaxy-code.contextFilesView';
@@ -154,6 +159,32 @@ type BackgroundCommandCompletion = Readonly<{
   background: boolean;
 }>;
 
+type ActiveShellSessionState = Readonly<{
+  toolCallId: string;
+  commandText: string;
+  cwd: string;
+  startedAt: number;
+  output: string;
+  terminalTitle?: string;
+  success?: boolean;
+  exitCode?: number;
+  durationMs?: number;
+  background?: boolean;
+}>;
+
+type CommandContextFile = Readonly<{
+  command: string;
+  cwd: string;
+  status: 'running' | 'completed' | 'failed';
+  exitCode?: number;
+  durationMs?: number;
+  tailOutput: string;
+  summary: string;
+  changedFiles: readonly string[];
+  updatedAt: string;
+  completedAt?: string;
+}>;
+
 function normalizeRelativeDisplayPath(value: string): string {
   return value.replace(/\\/g, '/');
 }
@@ -185,6 +216,55 @@ function writeDebugLine(filePath: string, scope: string, message: string): void 
   } catch {
     // ignore debug logging failures
   }
+}
+
+const MAX_WEBVIEW_MESSAGE_COUNT = 160;
+const MAX_WEBVIEW_TOOL_CONTENT_CHARS = 12_000;
+const MAX_WEBVIEW_PARAM_STRING_CHARS = 1_200;
+const MAX_WEBVIEW_META_ARRAY_ITEMS = 24;
+
+function truncateWebviewText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) {
+    return value;
+  }
+  return `${value.slice(0, maxChars)}\n\n...[truncated ${value.length - maxChars} chars]`;
+}
+
+function sanitizeWebviewValue(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') {
+    return truncateWebviewText(value, MAX_WEBVIEW_PARAM_STRING_CHARS);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const items = value.slice(0, MAX_WEBVIEW_META_ARRAY_ITEMS).map((item) => sanitizeWebviewValue(item, depth + 1));
+    if (value.length > MAX_WEBVIEW_META_ARRAY_ITEMS) {
+      items.push(`[...${value.length - MAX_WEBVIEW_META_ARRAY_ITEMS} more items]`);
+    }
+    return items;
+  }
+  if (typeof value === 'object') {
+    if (depth >= 2) {
+      return '[object truncated]';
+    }
+    const entries = Object.entries(value as Record<string, unknown>).slice(0, 32);
+    return Object.fromEntries(entries.map(([key, nested]) => [key, sanitizeWebviewValue(nested, depth + 1)]));
+  }
+  return String(value);
+}
+
+function sanitizeChatMessageForWebview(message: ChatMessage): ChatMessage {
+  if (message.role !== 'tool') {
+    return message;
+  }
+
+  return Object.freeze({
+    ...message,
+    content: truncateWebviewText(message.content, MAX_WEBVIEW_TOOL_CONTENT_CHARS),
+    ...(message.toolParams ? { toolParams: sanitizeWebviewValue(message.toolParams) as Record<string, unknown> } : {}),
+    ...(message.toolMeta ? { toolMeta: sanitizeWebviewValue(message.toolMeta) as Record<string, unknown> } : {}),
+  });
 }
 
 function isAgentType(value: string | undefined): value is AgentType {
@@ -330,6 +410,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   private pendingApprovalRequestId: string | null = null;
   private pendingApprovalResolver: ((decision: ToolApprovalDecision) => void) | null = null;
   private pendingApprovalTitle: string | null = null;
+  private pendingApprovalPayload: ApprovalRequestPayload | null = null;
   private progressReporter: vscode.Progress<{ message?: string }> | null = null;
   private runtimeLogs: LogEntry[] = [];
   private qualityDetails: QualityDetails = Object.freeze({
@@ -343,6 +424,10 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   });
   private view: vscode.WebviewView | null = null;
   private panel: vscode.WebviewPanel | null = null;
+  private activeShellSessions = new Map<string, ActiveShellSessionState>();
+  private readonly commandTerminalRegistry = new CommandTerminalRegistry();
+  private streamingAssistant = '';
+  private streamingThinking = '';
   private pendingBackgroundCompletions: BackgroundCommandCompletion[] = [];
   private backgroundCompletionRunning = false;
 
@@ -571,6 +656,9 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       case 'file-diff':
         await this.openTrackedDiff(message.payload.filePath);
         return;
+      case 'shell-open-terminal':
+        await this.revealShellTerminal(message.payload.toolCallId);
+        return;
       case 'approval-response':
         if (this.pendingApprovalResolver && this.pendingApprovalRequestId === message.payload.requestId) {
           this.appendLog('approval', `User selected ${message.payload.decision} for the pending approval request.`);
@@ -684,6 +772,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         this.appendTranscriptMessage(userMessage);
         this.appendLog('info', `User prompt sent with agent ${this.selectedAgent}.`);
         this.debugChatMessage(userMessage);
+        this.clearStreamingBuffers();
 
         this.isRunning = true;
         this.statusText = `Running ${this.selectedAgent}`;
@@ -744,34 +833,16 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
                         config,
                         revealFile: async (filePath, range) => this.revealFile(filePath, range),
                         refreshWorkspaceFiles: async () => this.refreshWorkspaceFiles(),
-                        onProjectCommandStart: async (payload) => {
-                          await this.postMessage({
-                            type: 'command-stream-start',
-                            payload,
-                          });
-                        },
-                        onProjectCommandChunk: async (payload) => {
-                          await this.postMessage({
-                            type: 'command-stream-chunk',
-                            payload,
-                          });
-                        },
-                        onProjectCommandEnd: async (payload) => {
-                          await this.postMessage({
-                            type: 'command-stream-end',
-                            payload,
-                          });
-                        },
+                        onProjectCommandStart: async (payload) => this.emitCommandStreamStart(payload),
+                        onProjectCommandChunk: async (payload) => this.emitCommandStreamChunk(payload),
+                        onProjectCommandEnd: async (payload) => this.emitCommandStreamEnd(payload),
                         onProjectCommandComplete: async (payload) => {
                           await this.handleBackgroundCommandCompletion(payload);
                         },
                       },
                       onChunk: async (chunk) => {
                         if (chunk.type === 'text') {
-                          await this.postMessage({
-                            type: 'assistant-stream',
-                            payload: { delta: chunk.delta },
-                          });
+                          await this.emitAssistantStream(chunk.delta);
                           return;
                         }
 
@@ -780,10 +851,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
                             thinkingLogged = true;
                             this.appendLog('status', `Received thinking stream from ${this.selectedAgent}.`);
                           }
-                          await this.postMessage({
-                            type: 'assistant-thinking',
-                            payload: { delta: chunk.delta },
-                          });
+                          await this.emitAssistantThinking(chunk.delta);
                           return;
                         }
 
@@ -894,17 +962,23 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
                 if (!result.assistantThinking.trim()) {
                   this.appendLog('status', `No thinking stream was returned by ${this.selectedAgent} for this turn.`);
                 }
-                const assistantMessage: ChatMessage = {
-                  id: createMessageId(),
-                  role: 'assistant',
-                  content: result.assistantText,
-                  ...(result.assistantThinking.trim() ? { thinking: result.assistantThinking } : {}),
-                  timestamp: Date.now(),
-                };
-                await this.addMessage(assistantMessage);
                 this.historyManager.finalizeTurn({ assistantText: result.assistantText });
-                if (result.filesWritten.length > 0) {
+                let publishAssistantMessage = true;
+                if (this.shouldGateAssistantFinalMessage(result.filesWritten)) {
+                  const qualityOutcome = await this.runValidationAndReviewFlow(this.selectedAgent);
+                  publishAssistantMessage = qualityOutcome.passed && !qualityOutcome.repaired;
+                } else if (result.filesWritten.length > 0) {
                   await this.runValidationAndReviewFlow(this.selectedAgent);
+                }
+                if (publishAssistantMessage) {
+                  const assistantMessage: ChatMessage = {
+                    id: createMessageId(),
+                    role: 'assistant',
+                    content: result.assistantText,
+                    ...(result.assistantThinking.trim() ? { thinking: result.assistantThinking } : {}),
+                    timestamp: Date.now(),
+                  };
+                  await this.addMessage(assistantMessage);
                 }
               } else if (!hadError) {
                 this.writeDebug(
@@ -1084,6 +1158,13 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  private shouldGateAssistantFinalMessage(filesWritten: readonly string[]): boolean {
+    if (filesWritten.length === 0) {
+      return false;
+    }
+    return this.qualityPreferences.reviewEnabled || this.qualityPreferences.validateEnabled;
+  }
+
   private async runSelectiveMultiAgentPlan(opts: {
     config: ReturnType<typeof loadConfig>;
     agentType: AgentType;
@@ -1188,34 +1269,16 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         config: opts.config,
         revealFile: async (filePath, range) => this.revealFile(filePath, range),
         refreshWorkspaceFiles: async () => this.refreshWorkspaceFiles(),
-        onProjectCommandStart: async (payload) => {
-          await this.postMessage({
-            type: 'command-stream-start',
-            payload,
-          });
-        },
-        onProjectCommandChunk: async (payload) => {
-          await this.postMessage({
-            type: 'command-stream-chunk',
-            payload,
-          });
-        },
-        onProjectCommandEnd: async (payload) => {
-          await this.postMessage({
-            type: 'command-stream-end',
-            payload,
-          });
-        },
+        onProjectCommandStart: async (payload) => this.emitCommandStreamStart(payload),
+        onProjectCommandChunk: async (payload) => this.emitCommandStreamChunk(payload),
+        onProjectCommandEnd: async (payload) => this.emitCommandStreamEnd(payload),
         onProjectCommandComplete: async (payload) => {
           await this.handleBackgroundCommandCompletion(payload);
         },
       },
       onChunk: async (chunk) => {
         if (chunk.type === 'text') {
-          await this.postMessage({
-            type: 'assistant-stream',
-            payload: { delta: chunk.delta },
-          });
+          await this.emitAssistantStream(chunk.delta);
           return;
         }
 
@@ -1224,10 +1287,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
             thinkingLogged = true;
             this.appendLog('status', `Received thinking stream from ${opts.agentType}.`);
           }
-          await this.postMessage({
-            type: 'assistant-thinking',
-            payload: { delta: chunk.delta },
-          });
+          await this.emitAssistantThinking(chunk.delta);
           return;
         }
 
@@ -1314,16 +1374,18 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       if (!result.assistantThinking.trim()) {
         this.appendLog('status', `No thinking stream was returned by ${opts.agentType} for this turn.`);
       }
-      const assistantMessage: ChatMessage = {
-        id: createMessageId(),
-        role: 'assistant',
-        content: result.assistantText,
-        agentType: this.selectedAgent,
-        ...(result.assistantThinking.trim() ? { thinking: result.assistantThinking } : {}),
-        timestamp: Date.now(),
-      };
-      await this.addMessage(assistantMessage);
       this.historyManager.finalizeTurn({ assistantText: result.assistantText });
+      if (!this.shouldGateAssistantFinalMessage(result.filesWritten)) {
+        const assistantMessage: ChatMessage = {
+          id: createMessageId(),
+          role: 'assistant',
+          content: result.assistantText,
+          agentType: this.selectedAgent,
+          ...(result.assistantThinking.trim() ? { thinking: result.assistantThinking } : {}),
+          timestamp: Date.now(),
+        };
+        await this.addMessage(assistantMessage);
+      }
     } else if (!hadError) {
       this.writeDebug(
         'repair-turn-result',
@@ -1378,23 +1440,24 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  private async runValidationAndReviewFlow(agentType: AgentType): Promise<void> {
+  private async runValidationAndReviewFlow(agentType: AgentType): Promise<Readonly<{ passed: boolean; repaired: boolean }>> {
     const initialConfig = loadConfig();
     const shouldRunValidation = initialConfig.quality.test;
     const shouldRunReview = initialConfig.quality.review;
 
     if (!shouldRunValidation && !shouldRunReview) {
-      return;
+      return Object.freeze({ passed: true, repaired: false });
     }
 
     let validationRepairAttempt = 0;
     let reviewRepairAttempt = 0;
     let currentAgent = agentType;
+    let repaired = false;
 
     for (;;) {
       const sessionFiles = getSessionFiles();
       if (sessionFiles.length === 0) {
-        return;
+        return Object.freeze({ passed: true, repaired });
       }
 
       if (shouldRunReview) {
@@ -1409,7 +1472,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         });
 
         if (!reviewResult) {
-          return;
+          return Object.freeze({ passed: false, repaired });
         }
 
         if (!reviewResult.success) {
@@ -1419,7 +1482,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
             payload: { message: reviewResult.review },
           });
           this.showWorkbenchError(reviewResult.review);
-          return;
+          return Object.freeze({ passed: false, repaired });
         }
 
         this.updateQualityDetails({
@@ -1434,10 +1497,11 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
 
         if (reviewResult.hadCritical || reviewResult.hadWarnings) {
           if (reviewRepairAttempt >= MAX_AUTO_REVIEW_REPAIR_ATTEMPTS) {
-            return;
+            return Object.freeze({ passed: false, repaired });
           }
 
           reviewRepairAttempt += 1;
+          repaired = true;
           await this.addMessage(
             createAssistantMessage(
               `Attempting automatic repair from code review findings (${reviewRepairAttempt}/${MAX_AUTO_REVIEW_REPAIR_ATTEMPTS})...`,
@@ -1451,7 +1515,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
           });
 
           if (repairResult.hadError || repairResult.filesWritten.length === 0) {
-            return;
+            return Object.freeze({ passed: false, repaired });
           }
 
           continue;
@@ -1459,7 +1523,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (!shouldRunValidation) {
-        return;
+        return Object.freeze({ passed: true, repaired });
       }
 
       this.appendLog('validation', `Running final validation for ${sessionFiles.length} changed files.`);
@@ -1470,24 +1534,9 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         workspacePath: this.workspacePath,
         sessionFiles,
         streamCallbacks: {
-          onStart: async (payload) => {
-            await this.postMessage({
-              type: 'command-stream-start',
-              payload,
-            });
-          },
-          onChunk: async (payload) => {
-            await this.postMessage({
-              type: 'command-stream-chunk',
-              payload,
-            });
-          },
-          onEnd: async (payload) => {
-            await this.postMessage({
-              type: 'command-stream-end',
-              payload,
-            });
-          },
+          onStart: async (payload) => this.emitCommandStreamStart(payload),
+          onChunk: async (payload) => this.emitCommandStreamChunk(payload),
+          onEnd: async (payload) => this.emitCommandStreamEnd(payload),
         },
       });
       this.updateQualityDetails({
@@ -1499,14 +1548,15 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       );
 
       if (validationResult.success) {
-        return;
+        return Object.freeze({ passed: true, repaired });
       }
 
       if (validationRepairAttempt >= MAX_AUTO_REPAIR_ATTEMPTS) {
-        return;
+        return Object.freeze({ passed: false, repaired });
       }
 
       validationRepairAttempt += 1;
+      repaired = true;
       await this.addMessage(
         createAssistantMessage(
           `Attempting automatic repair from final validation errors (${validationRepairAttempt}/${MAX_AUTO_REPAIR_ATTEMPTS})...`,
@@ -1520,7 +1570,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       });
 
       if (repairResult.hadError || repairResult.filesWritten.length === 0) {
-        return;
+        return Object.freeze({ passed: false, repaired });
       }
     }
   }
@@ -1671,7 +1721,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     const payload: SessionInitPayload = {
       workspaceName: vscode.workspace.workspaceFolders?.[0]?.name ?? 'Workspace',
       files,
-      messages: [...this.messages],
+      messages: this.messages.slice(-MAX_WEBVIEW_MESSAGE_COUNT).map((message) => sanitizeChatMessageForWebview(message)),
       selectedAgent: this.selectedAgent,
       phase: 'phase-8',
       isRunning: this.isRunning,
@@ -1681,6 +1731,12 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       qualityDetails: this.qualityDetails,
       qualityPreferences: this.qualityPreferences,
       changeSummary,
+      ...(this.streamingAssistant ? { streamingAssistant: this.streamingAssistant } : {}),
+      ...(this.streamingThinking ? { streamingThinking: this.streamingThinking } : {}),
+      ...(this.activeShellSessions.size > 0
+        ? { activeShellSessions: [...this.activeShellSessions.values()].sort((a, b) => a.startedAt - b.startedAt) }
+        : {}),
+      ...(this.pendingApprovalPayload ? { approvalRequest: this.pendingApprovalPayload } : {}),
     };
 
     await this.postMessage({ type: 'session-init', payload });
@@ -1863,7 +1919,17 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     this.pendingApprovalRequestId = null;
     this.pendingApprovalResolver = null;
     this.pendingApprovalTitle = null;
+    this.pendingApprovalPayload = null;
     this.progressReporter = null;
+    this.activeShellSessions.clear();
+    this.commandTerminalRegistry.clear();
+    try {
+      fs.rmSync(this.projectStorage.commandContextPath, { force: true });
+    } catch {
+      // ignore context cleanup failures
+    }
+    this.streamingAssistant = '';
+    this.streamingThinking = '';
     this.updateWorkbenchChrome();
   }
 
@@ -1890,10 +1956,13 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     this.messages.push(message);
+    if (message.role === 'assistant') {
+      this.clearStreamingBuffers();
+    }
     this.appendTranscriptMessage(message);
     await this.postMessage({
       type: 'message-added',
-      payload: message,
+      payload: sanitizeChatMessageForWebview(message),
     });
   }
 
@@ -2187,7 +2256,135 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     this.pendingApprovalResolver = null;
     this.pendingApprovalRequestId = null;
     this.pendingApprovalTitle = null;
+    this.pendingApprovalPayload = null;
     this.updateWorkbenchChrome();
+  }
+
+  private clearStreamingBuffers(): void {
+    this.streamingAssistant = '';
+    this.streamingThinking = '';
+  }
+
+  private truncateCommandContextOutput(value: string): string {
+    if (value.length <= MAX_COMMAND_CONTEXT_OUTPUT_CHARS) {
+      return value;
+    }
+    return value.slice(-MAX_COMMAND_CONTEXT_OUTPUT_CHARS);
+  }
+
+  private writeCommandContextFile(payload: Readonly<{
+    commandText: string;
+    cwd: string;
+    success?: boolean;
+    exitCode?: number;
+    durationMs?: number;
+    output?: string;
+    changedFiles?: readonly string[];
+    running?: boolean;
+  }>): CommandContextFile {
+    const trimmedOutput = this.truncateCommandContextOutput((payload.output ?? '').trim());
+    const status: CommandContextFile['status'] = payload.running
+      ? 'running'
+      : payload.success === false
+        ? 'failed'
+        : 'completed';
+    const summary = payload.running
+      ? 'Command is still running in the VS Code terminal.'
+      : payload.success === false
+        ? `Command failed with exit code ${payload.exitCode ?? 1}.`
+        : `Command completed with exit code ${payload.exitCode ?? 0}.`;
+    const nowIso = new Date().toISOString();
+    const record: CommandContextFile = Object.freeze({
+      command: payload.commandText,
+      cwd: payload.cwd,
+      status,
+      ...(typeof payload.exitCode === 'number' ? { exitCode: payload.exitCode } : {}),
+      ...(typeof payload.durationMs === 'number' ? { durationMs: payload.durationMs } : {}),
+      tailOutput: trimmedOutput,
+      summary,
+      changedFiles: Object.freeze([...(payload.changedFiles ?? [])]),
+      updatedAt: nowIso,
+      ...(!payload.running ? { completedAt: nowIso } : {}),
+    });
+    fs.writeFileSync(this.projectStorage.commandContextPath, JSON.stringify(record, null, 2), 'utf-8');
+    return record;
+  }
+
+  private async revealShellTerminal(toolCallId: string): Promise<void> {
+    if (this.commandTerminalRegistry.reveal(toolCallId)) {
+      return;
+    }
+    await vscode.window.showWarningMessage('Terminal for this command is no longer available.');
+  }
+
+  private async emitAssistantStream(delta: string): Promise<void> {
+    this.streamingAssistant += delta;
+    await this.postMessage({
+      type: 'assistant-stream',
+      payload: { delta },
+    });
+  }
+
+  private async emitAssistantThinking(delta: string): Promise<void> {
+    this.streamingThinking += delta;
+    await this.postMessage({
+      type: 'assistant-thinking',
+      payload: { delta },
+    });
+  }
+
+  private async emitCommandStreamStart(payload: CommandStreamStartPayload): Promise<void> {
+    const terminalTitle = this.commandTerminalRegistry.start(
+      payload.toolCallId,
+      payload.commandText,
+      payload.cwd,
+    );
+    this.activeShellSessions.set(
+      payload.toolCallId,
+      Object.freeze({
+        toolCallId: payload.toolCallId,
+        commandText: payload.commandText,
+        cwd: payload.cwd,
+        startedAt: payload.startedAt,
+        output: '',
+        terminalTitle,
+      }),
+    );
+    this.writeCommandContextFile({
+      commandText: payload.commandText,
+      cwd: payload.cwd,
+      running: true,
+    });
+    await this.postMessage({
+      type: 'command-stream-start',
+      payload: {
+        ...payload,
+        terminalTitle,
+      },
+    });
+  }
+
+  private async emitCommandStreamChunk(payload: CommandStreamChunkPayload): Promise<void> {
+    this.commandTerminalRegistry.append(payload.toolCallId, payload.chunk);
+  }
+
+  private async emitCommandStreamEnd(payload: CommandStreamEndPayload): Promise<void> {
+    const current = this.activeShellSessions.get(payload.toolCallId);
+    if (current) {
+      const next = Object.freeze({
+        ...current,
+        success: payload.success,
+        exitCode: payload.exitCode,
+        durationMs: payload.durationMs,
+        ...(payload.background ? { background: true } : {}),
+      });
+      this.activeShellSessions.set(payload.toolCallId, next);
+    }
+    this.commandTerminalRegistry.complete(payload.toolCallId, payload);
+    await this.postMessage({
+      type: 'command-stream-end',
+      payload,
+    });
   }
 
   private shouldUseNativeApprovalPrompt(approval: {
@@ -2654,6 +2851,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     this.appendLog('approval', `${approval.toolName} is waiting for user approval.`);
     this.pendingApprovalRequestId = requestId;
     this.pendingApprovalTitle = approval.title;
+    this.pendingApprovalPayload = payload;
     this.updateWorkbenchChrome();
 
     if (this.shouldUseNativeApprovalPrompt(approval)) {
@@ -2745,10 +2943,19 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleBackgroundCommandCompletion(payload: BackgroundCommandCompletion): Promise<void> {
+    this.writeCommandContextFile({
+      commandText: payload.commandText,
+      cwd: payload.cwd,
+      success: payload.success,
+      exitCode: payload.exitCode,
+      durationMs: payload.durationMs,
+      output: payload.output,
+      changedFiles: getSessionFiles().map((file) => this.asWorkspaceRelative(file.filePath)),
+    });
     this.pendingBackgroundCompletions = [...this.pendingBackgroundCompletions, payload];
     this.appendLog(
       'status',
-      `Background command completed: ${payload.commandText} (${payload.success ? `exit ${payload.exitCode}` : `failed exit ${payload.exitCode}`}).`,
+      `Background command completed: ${payload.commandText} (${payload.success ? `exit ${payload.exitCode}` : `failed exit ${payload.exitCode}`}). Context saved to ${path.basename(this.projectStorage.commandContextPath)}.`,
     );
     await this.flushBackgroundCommandCompletions();
   }
@@ -2765,10 +2972,15 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     this.reportProgress(this.statusText);
     await this.postRunState();
 
-    const trimmedOutput = next.output.trim();
-    const outputBlock = trimmedOutput
-      ? `Output:\n${trimmedOutput.slice(-8_000)}`
-      : 'Output:\n(no output)';
+    const contextRecord = this.writeCommandContextFile({
+      commandText: next.commandText,
+      cwd: next.cwd,
+      success: next.success,
+      exitCode: next.exitCode,
+      durationMs: next.durationMs,
+      output: next.output,
+      changedFiles: getSessionFiles().map((file) => this.asWorkspaceRelative(file.filePath)),
+    });
 
     const result = await this.runInternalRepairTurn({
       config: loadConfig(),
@@ -2782,8 +2994,10 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
           `cwd: ${next.cwd}\n` +
           `Exit code: ${next.exitCode}\n` +
           `Success: ${String(next.success)}\n` +
-          `${outputBlock}\n\n` +
-          'Continue from the updated workspace state.',
+          `Context file: context.json\n` +
+          `Summary: ${contextRecord.summary}\n` +
+          `Tail output:\n${contextRecord.tailOutput || '(no output)'}\n\n` +
+          'Continue from the updated workspace state. If you need the full command context, read context.json. Do not rerun the same command unless the context above proves it is necessary.',
         timestamp: Date.now(),
       }),
     });

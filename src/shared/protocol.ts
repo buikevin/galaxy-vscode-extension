@@ -104,6 +104,21 @@ export type SessionInitPayload = Readonly<{
   qualityDetails: QualityDetails;
   qualityPreferences: QualityPreferences;
   changeSummary: ChangeSummary;
+  streamingAssistant?: string;
+  streamingThinking?: string;
+  activeShellSessions?: readonly Readonly<{
+    toolCallId: string;
+    commandText: string;
+    cwd: string;
+    startedAt: number;
+    output: string;
+    terminalTitle?: string;
+    success?: boolean;
+    exitCode?: number;
+    durationMs?: number;
+    background?: boolean;
+  }>[];
+  approvalRequest?: ApprovalRequestPayload | null;
 }>;
 
 export type EvidenceContextPayload = Readonly<{
@@ -130,6 +145,7 @@ export type CommandStreamStartPayload = Readonly<{
   commandText: string;
   cwd: string;
   startedAt: number;
+  terminalTitle?: string;
 }>;
 
 export type CommandStreamChunkPayload = Readonly<{
@@ -203,4 +219,5 @@ export type WebviewMessage =
   | Readonly<{ type: 'file-open'; payload: { filePath: string } }>
   | Readonly<{ type: 'file-diff'; payload: { filePath: string } }>
   | Readonly<{ type: 'approval-response'; payload: { requestId: string; decision: ToolApprovalDecision } }>
-  | Readonly<{ type: 'resolve-figma-attachment'; payload: { importId: string; purpose: 'attach' | 'preview' } }>;
+  | Readonly<{ type: 'resolve-figma-attachment'; payload: { importId: string; purpose: 'attach' | 'preview' } }>
+  | Readonly<{ type: 'shell-open-terminal'; payload: { toolCallId: string } }>;

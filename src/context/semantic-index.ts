@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { estimateTokens } from './compaction';
 import { ensureProjectStorage, getProjectStorageInfo } from './project-store';
+import { queryRagHintPaths, syncSemanticMetadata } from './rag-metadata-store';
 import type { SyntaxContextRecordSummary, SyntaxSymbolRecord } from './syntax-index';
 
 const SEMANTIC_INDEX_VERSION = 2;
@@ -126,6 +127,24 @@ function saveStore(workspacePath: string, store: SemanticIndexStore): void {
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);
   fs.writeFileSync(storage.semanticIndexPath, JSON.stringify(store, null, 2), 'utf-8');
+  syncSemanticMetadata(
+    workspacePath,
+    Object.values(store.chunks).map((chunk) =>
+      Object.freeze({
+        id: chunk.id,
+        filePath: chunk.filePath,
+        title: chunk.title,
+        kind: chunk.kind,
+        ...(chunk.symbolName ? { symbolName: chunk.symbolName } : {}),
+        ...(typeof chunk.exported === 'boolean' ? { exported: chunk.exported } : {}),
+        ...(typeof chunk.startLine === 'number' ? { startLine: chunk.startLine } : {}),
+        ...(typeof chunk.endLine === 'number' ? { endLine: chunk.endLine } : {}),
+        mtimeMs: chunk.mtimeMs,
+        ...(chunk.embeddingModel ? { embeddingModel: chunk.embeddingModel } : {}),
+        indexedAt: chunk.indexedAt,
+      }),
+    ),
+  );
 }
 
 function isDocFile(relativePath: string): boolean {
@@ -656,9 +675,11 @@ export async function buildSemanticRetrievalContext(opts: {
     });
   }
 
+  const sqliteHintPaths = queryRagHintPaths(opts.workspacePath, opts.queryText, 4);
+
   const syncedStore = syncStore({
     workspacePath: opts.workspacePath,
-    candidateFiles: opts.candidateFiles,
+    candidateFiles: [...opts.candidateFiles, ...sqliteHintPaths],
     records: opts.records,
   });
   const store = await ensureChunkEmbeddings(syncedStore).catch(() => syncedStore);
@@ -671,7 +692,7 @@ export async function buildSemanticRetrievalContext(opts: {
         queryTerms: queryVector.terms,
         queryMagnitude: queryVector.magnitude,
         queryEmbedding,
-        candidateFiles: opts.candidateFiles,
+        candidateFiles: [...opts.candidateFiles, ...sqliteHintPaths],
         primaryPaths: opts.primaryPaths,
         definitionPaths: opts.definitionPaths,
         referencePaths: opts.referencePaths,

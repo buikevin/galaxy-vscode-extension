@@ -55,7 +55,7 @@ export function buildSystemPrompt(agentType: AgentType, config: GalaxyConfig): s
 
   const workflowLines = [
     '1. Use grep/head/read_file/read_document/search_web/extract_web/map_web/crawl_web to understand the current code, attached documents, or web context just in time.',
-    '2. Use edit_file to change only the specific lines needed. Do not rewrite whole existing files unless necessary.',
+    '2. Prefer edit_file_range when you know the exact lines to replace from a recent read_file result. Use edit_file only for exact string replacements when the exact text is stable.',
     ...(config.quality.test
       ? [
           '3. Finish the implementation and let the end-phase quality flow run near the end.',
@@ -82,7 +82,8 @@ export function buildSystemPrompt(agentType: AgentType, config: GalaxyConfig): s
 - crawl_web(url, maxDepth?, maxBreadth?, limit?, instructions?, extractDepth?, selectPaths?, selectDomains?, excludePaths?, excludeDomains?, allowExternal?, includeImages?, format?, maxCharsPerPage?) — Crawl a website with Tavily and extract readable content from multiple pages.
 
 ### Writing & Editing
-- edit_file(path, old_string, new_string, replace_all?) — Preferred targeted edit tool for existing files.
+- edit_file_range(path, start_line, end_line, new_content) — Preferred targeted edit tool for existing files when you know the exact line range from a recent read_file result.
+- edit_file(path, old_string, new_string, replace_all?) — Exact string replacement tool. Use this only when old_string is copied verbatim from the latest file content.
 - write_file(path, content) — Write or overwrite a whole file. Prefer this for new files or full rewrites only.
 
 ${validationSection}${projectCommandSection}${galaxyDesignSection}${reviewSection}${manualSection}

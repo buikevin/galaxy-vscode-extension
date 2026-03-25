@@ -48,6 +48,8 @@ type UseToolRenderersOptions = Readonly<{
   shellOutputRefs: MutableRefObject<Map<string, HTMLDivElement>>;
   /** Current timestamp used to derive live shell durations. */
   shellNow: number;
+  /** Open the native VS Code terminal for a shell session. */
+  openShellTerminal: (toolCallId: string) => void;
 }>;
 
 /**
@@ -102,9 +104,11 @@ export function useToolRenderers(options: UseToolRenderersOptions) {
    */
   function renderShellPanel(opts: {
     panelId: string;
+    toolCallId: string;
     commandText: string;
     cwd: string;
     output: string;
+    terminalTitle?: string;
     success?: boolean;
     exitCode?: number;
     durationLabel?: string;
@@ -119,6 +123,7 @@ export function useToolRenderers(options: UseToolRenderersOptions) {
         commandText={opts.commandText}
         cwd={opts.cwd}
         output={opts.output}
+        terminalTitle={opts.terminalTitle}
         success={opts.success}
         exitCode={opts.exitCode}
         durationLabel={opts.durationLabel}
@@ -127,6 +132,7 @@ export function useToolRenderers(options: UseToolRenderersOptions) {
         copied={isCopied}
         onToggle={() => options.toggleExpanded(expandedKey)}
         onCopy={() => copyCommand(opts.panelId, opts.commandText)}
+        onViewTerminal={() => options.openShellTerminal(opts.toolCallId)}
         onOutputNode={(node) => {
           if (!node) {
             options.shellOutputRefs.current.delete(opts.panelId);
@@ -200,9 +206,11 @@ export function useToolRenderers(options: UseToolRenderersOptions) {
         onListDirHover={options.handleListDirHover}
         shellContent={renderShellPanel({
           panelId: message.id,
+          toolCallId: message.toolCallId ?? message.id,
           commandText,
           cwd,
           output: message.content,
+          terminalTitle: getToolMetaString(message, "terminalTitle") || undefined,
           success: message.toolSuccess,
           exitCode: exitCode ?? undefined,
           durationLabel: duration || undefined,
@@ -234,9 +242,11 @@ export function useToolRenderers(options: UseToolRenderersOptions) {
   function renderShellSession(session: ActiveShellSession): ReactNode {
     return renderShellPanel({
       panelId: `live-shell:${session.toolCallId}`,
+      toolCallId: session.toolCallId,
       commandText: session.commandText,
       cwd: session.cwd,
       output: session.output,
+      terminalTitle: session.terminalTitle,
       success: session.success,
       exitCode: session.exitCode,
       durationLabel: getActiveShellDuration(session) || undefined,

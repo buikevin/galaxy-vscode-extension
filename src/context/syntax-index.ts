@@ -3,6 +3,7 @@ import path from 'node:path';
 import * as ts from 'typescript';
 import { estimateTokens } from './compaction';
 import { ensureProjectStorage, getProjectStorageInfo } from './project-store';
+import { syncSyntaxMetadata } from './rag-metadata-store';
 
 const SYNTAX_INDEX_VERSION = 3;
 const MAX_CONTEXT_FILES = 6;
@@ -680,6 +681,19 @@ function saveStore(workspacePath: string, store: SyntaxIndexStore): void {
   const projectStorage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(projectStorage);
   fs.writeFileSync(projectStorage.syntaxIndexPath, JSON.stringify(store, null, 2), 'utf-8');
+  syncSyntaxMetadata(
+    workspacePath,
+    Object.values(store.files).map((record) =>
+      Object.freeze({
+        relativePath: record.relativePath,
+        language: record.language,
+        mtimeMs: record.mtimeMs,
+        imports: record.imports,
+        exports: record.exports,
+        symbols: record.symbols,
+      }),
+    ),
+  );
 }
 
 function collectWorkspaceSeedFiles(

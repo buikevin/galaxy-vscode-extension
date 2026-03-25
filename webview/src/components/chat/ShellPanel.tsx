@@ -3,12 +3,11 @@
  * @email kevinbui210191@gmail.com
  * @create date 2026-03-23
  * @modify date 2026-03-23
- * @desc Reusable shell output card for streamed command execution in the chat transcript.
+ * @desc Reusable shell command card that keeps chat lightweight and opens the native VS Code terminal for full output.
  */
 
-import { Check, ChevronDown, Copy } from "lucide-react";
+import { Check, ChevronDown, Copy, SquareTerminal } from "lucide-react";
 import { Button } from "@webview/components/ui/button";
-import { Skeleton } from "@webview/components/ui/skeleton";
 
 /**
  * Props for the streamed shell panel.
@@ -22,6 +21,8 @@ type ShellPanelProps = Readonly<{
   cwd: string;
   /** Streamed stdout/stderr content accumulated so far. */
   output: string;
+  /** Optional terminal title when the host created a native VS Code terminal. */
+  terminalTitle?: string;
   /** Final command success state when available. */
   success?: boolean;
   /** Final exit code when available. */
@@ -38,6 +39,8 @@ type ShellPanelProps = Readonly<{
   onToggle: () => void;
   /** Copy command text into clipboard. */
   onCopy: () => void;
+  /** Reveal the native VS Code terminal for this command. */
+  onViewTerminal: () => void;
   /** Ref callback used by the parent for auto-scrolling shell output. */
   onOutputNode: (node: HTMLDivElement | null) => void;
 }>;
@@ -46,7 +49,11 @@ type ShellPanelProps = Readonly<{
  * Render the live shell output card used by run_project_command results.
  */
 export function ShellPanel(props: ShellPanelProps) {
-  const showShellSkeleton = Boolean(props.running && !props.output.trim());
+  const statusSummary = props.running
+    ? "Lệnh đang chạy trong terminal của VS Code. Bấm View để xem output trực tiếp."
+    : props.success
+      ? "Lệnh đã hoàn tất. Bấm View để xem output đầy đủ trong terminal."
+      : "Lệnh đã kết thúc lỗi. Bấm View để xem output đầy đủ trong terminal.";
 
   return (
     <div className="max-w-full min-w-0 space-y-2 overflow-x-hidden">
@@ -101,47 +108,58 @@ export function ShellPanel(props: ShellPanelProps) {
                     cwd: {props.cwd}
                   </div>
                 ) : null}
+                {props.terminalTitle ? (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    terminal: {props.terminalTitle}
+                  </div>
+                ) : null}
               </div>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
-                className="rounded-full shrink-0"
-                onClick={props.onCopy}
-              >
-                {props.copied ? (
-                  <>
-                    <Check className="w-4 h-4" />
-                    <span>Copied</span>
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-4 h-4" />
-                    <span>Copy</span>
-                  </>
-                )}
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="rounded-full shrink-0"
+                  onClick={props.onViewTerminal}
+                >
+                  <SquareTerminal className="w-4 h-4" />
+                  <span>View</span>
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  className="rounded-full shrink-0"
+                  onClick={props.onCopy}
+                >
+                  {props.copied ? (
+                    <>
+                      <Check className="w-4 h-4" />
+                      <span>Copied</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-4 h-4" />
+                      <span>Copy</span>
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
             <div
               ref={props.onOutputNode}
-              className="max-h-72 overflow-auto rounded-xl border border-white/10 bg-[#151515] px-4 py-3 shadow-[inset_0_1px_18px_rgba(255,255,255,0.03)]"
+              className="rounded-xl border border-white/10 bg-[#151515] px-4 py-3 shadow-[inset_0_1px_18px_rgba(255,255,255,0.03)]"
             >
-              {showShellSkeleton ? (
-                <div className="py-1 space-y-3">
-                  <Skeleton className="w-11/12 h-4 bg-white/10" variant="text" />
-                  <Skeleton className="w-8/12 h-4 bg-white/10" variant="text" />
-                  <Skeleton className="w-10/12 h-4 bg-white/10" variant="text" />
-                  <div className="pt-1 text-xs text-muted-foreground">
-                    {props.durationLabel
-                      ? `Đang chờ stdout/stderr... (${props.durationLabel})`
-                      : "Đang chờ stdout/stderr..."}
-                  </div>
+              <div className="space-y-2">
+                <div className="text-sm leading-6 text-slate-300">
+                  {statusSummary}
                 </div>
-              ) : (
-                <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-8 text-slate-300 [overflow-wrap:anywhere]">
-                  {props.output || "(no output)"}
-                </pre>
-              )}
+                {props.output.trim() ? (
+                  <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-6 text-slate-400 [overflow-wrap:anywhere]">
+                    {props.output}
+                  </pre>
+                ) : null}
+              </div>
             </div>
           </div>
         ) : null}
