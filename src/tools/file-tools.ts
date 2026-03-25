@@ -1778,20 +1778,6 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
     }),
   }),
   Object.freeze({
-    name: 'edit_file',
-    description: 'Edit a specific part of a file by replacing old_string with new_string. Prefer this over write_file for targeted changes.',
-    parameters: Object.freeze({
-      type: 'object',
-      properties: Object.freeze({
-        path: Object.freeze({ type: 'string', description: 'File path inside the workspace' }),
-        old_string: Object.freeze({ type: 'string', description: 'Exact text to find' }),
-        new_string: Object.freeze({ type: 'string', description: 'Replacement text' }),
-        replace_all: Object.freeze({ type: 'boolean', description: 'Replace all matches instead of one exact match' }),
-      }),
-      required: Object.freeze(['path', 'old_string', 'new_string']),
-    }),
-  }),
-  Object.freeze({
     name: 'edit_file_range',
     description: 'Edit a specific line range in a file by replacing lines start_line through end_line with new_content. Prefer this when you know the target line range from a recent read_file result.',
     parameters: Object.freeze({
