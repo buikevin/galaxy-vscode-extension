@@ -178,13 +178,17 @@ export function useToolRenderers(options: UseToolRenderersOptions) {
       (message.toolName === "read_file" ||
         message.toolName === "read_document") &&
       Boolean(toolPath);
-    const isRunProjectCommand = message.toolName === "run_project_command";
+    const isRunProjectCommand =
+      message.toolName === "run_project_command" ||
+      message.toolName === "run_terminal_command";
 
     const commandText =
       getToolMetaString(message, "commandText") ||
       (typeof message.toolParams?.command === "string"
         ? message.toolParams.command
-        : "");
+        : typeof message.toolParams?.commandId === "string"
+          ? message.toolParams.commandId
+          : "");
     const cwd = getToolMetaString(message, "cwd");
     const exitCode = getToolMetaNumber(message, "exitCode");
     const duration = formatCommandDuration(getToolMetaNumber(message, "durationMs"));

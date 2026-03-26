@@ -44,6 +44,47 @@ type PendingActionApproval = Readonly<{
   details: readonly string[];
 }>;
 
+function getBlockedCapability(toolName: string): string {
+  if (toolName === 'request_code_review') {
+    return 'review';
+  }
+  if (toolName === 'validate_code') {
+    return 'validation';
+  }
+  if (toolName === 'search_web' || toolName === 'extract_web' || toolName === 'map_web' || toolName === 'crawl_web') {
+    return 'webResearch';
+  }
+  if (toolName.startsWith('vscode_')) {
+    return 'vscodeNative';
+  }
+  if (toolName === 'search_extension_tools' || toolName === 'activate_extension_tools') {
+    return 'vscodeNative';
+  }
+  if (toolName.startsWith('galaxy_design')) {
+    return 'galaxyDesign';
+  }
+  if (
+    toolName === 'write_file' ||
+    toolName === 'edit_file' ||
+    toolName === 'edit_file_range' ||
+    toolName === 'multi_edit_file_ranges' ||
+    toolName === 'revert_file' ||
+    toolName === 'diff_file'
+  ) {
+    return 'editFiles';
+  }
+  if (
+    toolName === 'run_project_command' ||
+    toolName === 'run_terminal_command' ||
+    toolName === 'await_terminal_command' ||
+    toolName === 'get_terminal_output' ||
+    toolName === 'kill_terminal_command'
+  ) {
+    return 'runCommands';
+  }
+  return 'readProject';
+}
+
 function buildApprovalRequest(opts: {
   workspacePath: string;
   config: GalaxyConfig;
@@ -52,7 +93,7 @@ function buildApprovalRequest(opts: {
 }): PendingActionApproval | null {
   const toolName = normalizeToolName(opts.toolName);
 
-  if (toolName === 'run_project_command') {
+  if (toolName === 'run_project_command' || toolName === 'run_terminal_command') {
     if (!opts.config.toolSafety.requireApprovalForProjectCommand) {
       return null;
     }
@@ -105,6 +146,18 @@ export async function runExtensionChat(opts: {
   requestToolApproval: (approval: PendingActionApproval) => Promise<ToolApprovalDecision>;
 }): Promise<RunResult> {
   const driver = createDriver(opts.config, opts.agentType, true);
+  const workspacePath = opts.historyManager.getSessionMemory().workspacePath;
+  appendTelemetryEvent(workspacePath, {
+    kind: 'capability_snapshot',
+    source: 'chat_turn',
+    agentType: opts.agentType,
+    enabledCapabilities: Object.freeze(
+      Object.entries(opts.config.toolCapabilities)
+        .filter(([, enabled]) => enabled)
+        .map(([capability]) => capability)
+        .sort(),
+    ),
+  });
   const filesWritten = new Set<string>();
   const maxToolRounds =
     typeof opts.config.maxToolRounds === 'number' && Number.isFinite(opts.config.maxToolRounds)
@@ -118,7 +171,6 @@ export async function runExtensionChat(opts: {
   );
 
   for (let round = 0; maxToolRounds === null || round < maxToolRounds; round += 1) {
-    const workspacePath = opts.historyManager.getSessionMemory().workspacePath;
     const buildRoundPrompt = async () => {
       const promptBuild = await buildPromptContext({
         agentType: opts.agentType,
@@ -265,6 +317,11 @@ export async function runExtensionChat(opts: {
       const toolName = normalizeToolName(call.name);
 
       if (!isToolEnabled(toolName, opts.config)) {
+        appendTelemetryEvent(workspacePath, {
+          kind: 'blocked_tool',
+          toolName,
+          capability: getBlockedCapability(toolName),
+        });
         const disabledToolMessage: ChatMessage = Object.freeze({
           id: createMessageId(),
           role: 'tool',
@@ -333,7 +390,7 @@ export async function runExtensionChat(opts: {
           const deniedToolMessage: ChatMessage = Object.freeze({
             id: createMessageId(),
             role: 'tool',
-            content: `Permission denied by user for ${toolName}.`,
+          content: `Permission denied by user for ${toolName}.`,
             timestamp: Date.now(),
             toolName,
             toolParams: Object.freeze(call.params),
@@ -367,7 +424,7 @@ export async function runExtensionChat(opts: {
                 ...call,
                 params: Object.freeze({
                   ...call.params,
-                  ...(toolName === 'run_project_command' ? { toolCallId: toolCall.id } : {}),
+                  ...(toolName === 'run_project_command' || toolName === 'run_terminal_command' ? { toolCallId: toolCall.id } : {}),
                 }),
               }),
               opts.toolContext,
@@ -390,7 +447,7 @@ export async function runExtensionChat(opts: {
         result.success &&
         touchedPath &&
         (
-          ['write_file', 'edit_file', 'edit_file_range'].includes(toolName) ||
+          ['write_file', 'edit_file', 'edit_file_range', 'multi_edit_file_ranges'].includes(toolName) ||
           ['galaxy_design_init', 'galaxy_design_add'].includes(toolName)
         )
       ) {

@@ -55,6 +55,30 @@ type TelemetryEvent =
       kind: 'user_revert';
       capturedAt: number;
       fileCount: number;
+    }>
+  | Readonly<{
+      id: string;
+      kind: 'capability_snapshot';
+      capturedAt: number;
+      source: 'chat_turn' | 'repair_turn';
+      agentType: string;
+      enabledCapabilities: readonly string[];
+    }>
+  | Readonly<{
+      id: string;
+      kind: 'validation_selection';
+      capturedAt: number;
+      mode: 'project' | 'file' | 'none';
+      profiles: readonly string[];
+      commandCount: number;
+      usedFileSafetyNet: boolean;
+    }>
+  | Readonly<{
+      id: string;
+      kind: 'blocked_tool';
+      capturedAt: number;
+      toolName: string;
+      capability: string;
     }>;
 
 type TelemetryEventInput =
@@ -63,7 +87,10 @@ type TelemetryEventInput =
   | Omit<Extract<TelemetryEvent, { kind: 'tool_evidence' }>, 'id' | 'capturedAt'>
   | Omit<Extract<TelemetryEvent, { kind: 'multi_agent_plan' }>, 'id' | 'capturedAt'>
   | Omit<Extract<TelemetryEvent, { kind: 'sub_agent_turn' }>, 'id' | 'capturedAt'>
-  | Omit<Extract<TelemetryEvent, { kind: 'user_revert' }>, 'id' | 'capturedAt'>;
+  | Omit<Extract<TelemetryEvent, { kind: 'user_revert' }>, 'id' | 'capturedAt'>
+  | Omit<Extract<TelemetryEvent, { kind: 'capability_snapshot' }>, 'id' | 'capturedAt'>
+  | Omit<Extract<TelemetryEvent, { kind: 'validation_selection' }>, 'id' | 'capturedAt'>
+  | Omit<Extract<TelemetryEvent, { kind: 'blocked_tool' }>, 'id' | 'capturedAt'>;
 
 export type TelemetrySummary = Readonly<{
   totalEvents: number;
@@ -79,6 +106,9 @@ export type TelemetrySummary = Readonly<{
   multiAgentSuccesses: number;
   subAgentTurns: number;
   userReverts: number;
+  capabilitySnapshots: number;
+  validationSelections: number;
+  blockedToolCalls: number;
   lastUpdatedAt: number;
   readCountsByPath: Readonly<Record<string, number>>;
 }>;
@@ -97,6 +127,9 @@ const EMPTY_SUMMARY: TelemetrySummary = Object.freeze({
   multiAgentSuccesses: 0,
   subAgentTurns: 0,
   userReverts: 0,
+  capabilitySnapshots: 0,
+  validationSelections: 0,
+  blockedToolCalls: 0,
   lastUpdatedAt: 0,
   readCountsByPath: Object.freeze({}),
 });
@@ -143,6 +176,9 @@ export function formatTelemetrySummary(summary: TelemetrySummary): string {
     `Multi-agent successes: ${summary.multiAgentSuccesses}`,
     `Sub-agent turns: ${summary.subAgentTurns}`,
     `User reverts: ${summary.userReverts}`,
+    `Capability snapshots: ${summary.capabilitySnapshots}`,
+    `Validation selections: ${summary.validationSelections}`,
+    `Blocked tool calls: ${summary.blockedToolCalls}`,
     summary.lastUpdatedAt > 0 ? `Last updated: ${new Date(summary.lastUpdatedAt).toISOString()}` : 'Last updated: n/a',
     topReadPaths ? `Top reread paths:\n${topReadPaths}` : 'Top reread paths:\n- none',
   ].join('\n');
@@ -198,6 +234,9 @@ function updateSummary(summary: TelemetrySummary, event: TelemetryEvent): Teleme
       summary.multiAgentSuccesses + (event.kind === 'multi_agent_plan' && event.completed ? 1 : 0),
     subAgentTurns: summary.subAgentTurns + (event.kind === 'sub_agent_turn' ? 1 : 0),
     userReverts: summary.userReverts + (event.kind === 'user_revert' ? event.fileCount : 0),
+    capabilitySnapshots: summary.capabilitySnapshots + (event.kind === 'capability_snapshot' ? 1 : 0),
+    validationSelections: summary.validationSelections + (event.kind === 'validation_selection' ? 1 : 0),
+    blockedToolCalls: summary.blockedToolCalls + (event.kind === 'blocked_tool' ? 1 : 0),
     lastUpdatedAt: event.capturedAt,
     readCountsByPath: Object.freeze(nextReadCounts),
   });

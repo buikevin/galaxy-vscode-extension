@@ -12,8 +12,12 @@ import type {
   ApprovalRequestPayload,
   ChatMessage,
   ChangeSummary,
+  ExtensionToolGroup,
   FigmaAttachment,
+  QualityDetails,
   QualityPreferences,
+  ToolCapabilities,
+  ToolToggles,
 } from "@shared/protocol";
 import { Card, CardContent } from "@webview/components/ui/card";
 import { ApprovalPopup } from "@webview/components/chat/ApprovalPopup";
@@ -45,6 +49,48 @@ const AGENTS: readonly AgentType[] = ["manual", "ollama", "gemini", "claude", "c
  * Hard limit used to visualize prompt token usage inside the composer ring.
  */
 const MAX_CONTEXT_TOKENS = 256_000;
+
+/**
+ * Default individual tool-toggle state used before the host session-init arrives.
+ */
+const DEFAULT_TOOL_TOGGLES: ToolToggles = {
+  read_file: true,
+  find_test_files: true,
+  get_latest_test_failure: true,
+  get_latest_review_findings: true,
+  get_next_review_finding: true,
+  dismiss_review_finding: true,
+  write_file: true,
+  insert_file_at_line: true,
+  edit_file_range: true,
+  multi_edit_file_ranges: true,
+  grep: true,
+  list_dir: true,
+  head: true,
+  tail: true,
+  read_document: true,
+  search_web: true,
+  extract_web: true,
+  map_web: true,
+  crawl_web: true,
+  run_terminal_command: true,
+  await_terminal_command: true,
+  get_terminal_output: true,
+  kill_terminal_command: true,
+  run_project_command: true,
+  validate_code: true,
+  request_code_review: true,
+  vscode_open_diff: true,
+  vscode_show_problems: true,
+  vscode_workspace_search: true,
+  vscode_find_references: true,
+  search_extension_tools: true,
+  activate_extension_tools: true,
+  galaxy_design_project_info: true,
+  galaxy_design_registry: true,
+  galaxy_design_init: true,
+  galaxy_design_add: true,
+};
 
 /**
  * Slash commands available from the chat composer.
@@ -110,6 +156,29 @@ export function App() {
       validateEnabled: true,
       fullAccessEnabled: false,
     });
+  const [qualityDetails, setQualityDetails] = useState<QualityDetails>({
+    validationSummary: "",
+    reviewSummary: "",
+    reviewFindings: [],
+  });
+  const [toolCapabilities, setToolCapabilities] = useState<ToolCapabilities>({
+    readProject: true,
+    editFiles: true,
+    runCommands: true,
+    webResearch: true,
+    validation: true,
+    review: true,
+    vscodeNative: true,
+    galaxyDesign: true,
+  });
+  const [toolToggles, setToolToggles] =
+    useState<ToolToggles>(DEFAULT_TOOL_TOGGLES);
+  const [extensionToolGroups, setExtensionToolGroups] = useState<
+    readonly ExtensionToolGroup[]
+  >([]);
+  const [extensionToolToggles, setExtensionToolToggles] = useState<
+    Readonly<Record<string, boolean>>
+  >({});
   const [pendingPreviewImportId, setPendingPreviewImportId] = useState<
     string | null
   >(null);
@@ -278,6 +347,11 @@ export function App() {
     setManualPromptPlan,
     setSelectedFiles,
     setQualityPreferences,
+    setQualityDetails,
+    setToolCapabilities,
+    setToolToggles,
+    setExtensionToolGroups,
+    setExtensionToolToggles,
     setChangeSummary,
     setKeptChangeSummaryKey,
     setPromptTokens,
@@ -289,6 +363,9 @@ export function App() {
    */
   const {
     updateQualityPreferences,
+    updateToolCapabilities,
+    updateToolToggles,
+    updateExtensionToolToggles,
     openFigmaPreview,
     removeFigmaAttachment,
     removeLocalAttachment,
@@ -306,6 +383,11 @@ export function App() {
     figmaAttachments,
     localAttachments,
     qualityPreferences,
+    qualityDetails,
+    toolCapabilities,
+    toolToggles,
+    extensionToolGroups,
+    extensionToolToggles,
     approvalRequest,
     retryRequest,
     setMessages,
@@ -324,6 +406,9 @@ export function App() {
     setInput,
     setIsPlusMenuOpen,
     setQualityPreferences,
+    setToolCapabilities,
+    setToolToggles,
+    setExtensionToolToggles,
     setApprovalRequest,
   });
 
@@ -352,6 +437,11 @@ export function App() {
     activeShellSessions,
     shellNow,
     qualityPreferences,
+    qualityDetails,
+    toolCapabilities,
+    toolToggles,
+    extensionToolGroups,
+    extensionToolToggles,
     expandedItems,
     expandedMessages,
     changeSummary,
@@ -381,6 +471,9 @@ export function App() {
     handleFileSelection,
     handleComposerPaste,
     updateQualityPreferences,
+    updateToolCapabilities,
+    updateToolToggles,
+    updateExtensionToolToggles,
     executeSlashCommand,
     slashCommandSource: SLASH_COMMANDS,
     agents: AGENTS,

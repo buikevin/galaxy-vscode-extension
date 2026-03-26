@@ -11,6 +11,44 @@ export type ProjectMeta = Readonly<{
   createdAt: number;
   lastOpenedAt: number;
   storageVersion: number;
+  toolCapabilities?: Readonly<{
+    readProject?: boolean;
+    editFiles?: boolean;
+    runCommands?: boolean;
+    webResearch?: boolean;
+    validation?: boolean;
+    review?: boolean;
+    vscodeNative?: boolean;
+    galaxyDesign?: boolean;
+  }>;
+  toolToggles?: Readonly<Record<string, boolean>>;
+  extensionToolToggles?: Readonly<Record<string, boolean>>;
+  latestTestFailure?: Readonly<{
+    capturedAt: number;
+    summary: string;
+    command: string;
+    profile: string;
+    category: string;
+    issues: readonly Readonly<{
+      filePath?: string;
+      line?: number;
+      column?: number;
+      severity: 'error' | 'warning';
+      message: string;
+      source: string;
+    }>[];
+  }>;
+  latestReviewFindings?: Readonly<{
+    capturedAt: number;
+    summary: string;
+    findings: readonly Readonly<{
+      id: string;
+      severity: 'critical' | 'warning' | 'info';
+      location: string;
+      message: string;
+      status?: 'open' | 'dismissed';
+    }>[];
+  }>;
 }>;
 
 export type ProjectStorageInfo = Readonly<{
@@ -169,6 +207,11 @@ export function saveProjectMeta(info: ProjectStorageInfo, previous?: ProjectMeta
     createdAt: previous?.createdAt ?? now,
     lastOpenedAt: now,
     storageVersion: STORAGE_VERSION,
+    ...(previous?.toolCapabilities ? { toolCapabilities: previous.toolCapabilities } : {}),
+    ...(previous?.toolToggles ? { toolToggles: previous.toolToggles } : {}),
+    ...(previous?.extensionToolToggles ? { extensionToolToggles: previous.extensionToolToggles } : {}),
+    ...(previous?.latestTestFailure ? { latestTestFailure: previous.latestTestFailure } : {}),
+    ...(previous?.latestReviewFindings ? { latestReviewFindings: previous.latestReviewFindings } : {}),
   });
 
   fs.writeFileSync(info.projectMetaPath, JSON.stringify(meta, null, 2), 'utf-8');

@@ -21,6 +21,7 @@ import {
   ensureProjectStorage,
   getProjectStorageInfo,
   loadProjectMeta,
+  type ProjectMeta,
   saveProjectMeta,
   type ProjectStorageInfo,
 } from './context/project-store';
@@ -44,6 +45,7 @@ import {
 import { formatReviewSummary, runCodeReview, type ReviewResult } from './runtime/code-reviewer';
 import { runExtensionChat } from './runtime/run-chat';
 import { CommandTerminalRegistry } from './runtime/command-terminal-registry';
+import { discoverExtensionToolGroups, searchExtensionToolGroups } from './runtime/extension-tool-discovery';
 import {
   buildCoderSubAgentConfig,
   buildSelectiveMultiAgentPlanMessage,
@@ -52,6 +54,7 @@ import {
 } from './runtime/selective-multi-agent';
 import { formatValidationSummary, runFinalValidation } from './validation/project-validator';
 import type { FinalValidationResult } from './validation/types';
+import type { ToolResult } from './tools/file-tools';
 import {
   appendFigmaImport,
   buildAttachedFigmaContextNote,
@@ -71,10 +74,13 @@ import type {
   CommandStreamChunkPayload,
   CommandStreamEndPayload,
   CommandStreamStartPayload,
+  ExtensionToolGroup,
   LocalAttachmentPayload,
   LogEntry,
   PlanItem,
   QualityPreferences,
+  ToolCapabilities,
+  ToolToggles,
   QualityDetails,
   SessionInitPayload,
   WebviewMessage,
@@ -100,6 +106,88 @@ const QUALITY_VALIDATE_SETTING_KEY = 'quality.validateEnabled';
 const QUALITY_FULL_ACCESS_SETTING_KEY = 'quality.fullAccessEnabled';
 const SELECTED_AGENT_STORAGE_KEY = 'galaxy-code.selectedAgent';
 const AGENT_TYPES: readonly AgentType[] = ['manual', 'ollama', 'gemini', 'claude', 'codex'];
+
+function getToolCapabilitiesFromConfig(config: GalaxyConfig): ToolCapabilities {
+  return Object.freeze({
+    ...config.toolCapabilities,
+  });
+}
+
+function getToolTogglesFromConfig(config: GalaxyConfig): ToolToggles {
+  return Object.freeze({
+    ...config.toolToggles,
+  });
+}
+
+function getWorkspaceToolCapabilities(config: GalaxyConfig, meta: ProjectMeta | null): ToolCapabilities {
+  return Object.freeze({
+    ...config.toolCapabilities,
+    ...(meta?.toolCapabilities ?? {}),
+  });
+}
+
+function getWorkspaceToolToggles(config: GalaxyConfig, meta: ProjectMeta | null): ToolToggles {
+  return Object.freeze({
+    ...config.toolToggles,
+    ...((meta?.toolToggles ?? {}) as Partial<ToolToggles>),
+  });
+}
+
+function getWorkspaceExtensionToolToggles(config: GalaxyConfig, meta: ProjectMeta | null): Readonly<Record<string, boolean>> {
+  return Object.freeze({
+    ...config.extensionToolToggles,
+    ...(meta?.extensionToolToggles ?? {}),
+  });
+}
+
+function getQualityPreferencesForWorkspace(
+  config: GalaxyConfig,
+  capabilities: ToolCapabilities,
+): QualityPreferences {
+  return Object.freeze({
+    reviewEnabled: capabilities.review,
+    validateEnabled: capabilities.validation,
+    fullAccessEnabled: isFullAccessEnabled(config),
+  });
+}
+
+function buildEffectiveConfig(
+  config: GalaxyConfig,
+  meta: ProjectMeta | null,
+  qualityPreferences: QualityPreferences,
+  availableExtensionToolGroups: readonly ExtensionToolGroup[],
+): GalaxyConfig {
+  const toolCapabilities = getWorkspaceToolCapabilities(config, meta);
+  const toolToggles = getWorkspaceToolToggles(config, meta);
+  const quality = {
+    ...config.quality,
+    review: qualityPreferences.reviewEnabled,
+    test: qualityPreferences.validateEnabled,
+  };
+
+  return Object.freeze({
+    ...config,
+    quality,
+    toolSafety: applyFullAccessToToolSafety(
+      {
+        ...config,
+        quality,
+        toolCapabilities,
+        toolToggles,
+      },
+      qualityPreferences.fullAccessEnabled,
+    ),
+    toolCapabilities: Object.freeze({
+      ...toolCapabilities,
+      review: qualityPreferences.reviewEnabled,
+      validation: qualityPreferences.validateEnabled,
+      runCommands: toolCapabilities.runCommands,
+    }),
+    toolToggles,
+    extensionToolToggles: getWorkspaceExtensionToolToggles(config, meta),
+    availableExtensionToolGroups,
+  });
+}
 
 function isFullAccessEnabled(config: GalaxyConfig): boolean {
   return !config.toolSafety.requireApprovalForGitPull
@@ -416,12 +504,21 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   private qualityDetails: QualityDetails = Object.freeze({
     validationSummary: '',
     reviewSummary: '',
+    reviewFindings: Object.freeze([]),
   });
   private qualityPreferences: QualityPreferences = Object.freeze({
-    reviewEnabled: loadConfig().quality.review,
-    validateEnabled: loadConfig().quality.test,
-    fullAccessEnabled: isFullAccessEnabled(loadConfig()),
+    reviewEnabled: true,
+    validateEnabled: true,
+    fullAccessEnabled: false,
   });
+  private toolCapabilities: ToolCapabilities = Object.freeze({
+    ...DEFAULT_CONFIG.toolCapabilities,
+  });
+  private toolToggles: ToolToggles = Object.freeze({
+    ...DEFAULT_CONFIG.toolToggles,
+  });
+  private extensionToolGroups: readonly ExtensionToolGroup[] = [];
+  private extensionToolToggles: Readonly<Record<string, boolean>> = Object.freeze({});
   private view: vscode.WebviewView | null = null;
   private panel: vscode.WebviewPanel | null = null;
   private activeShellSessions = new Map<string, ActiveShellSessionState>();
@@ -437,7 +534,13 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     this.workspacePath = this.resolveStorageWorkspacePath();
     this.projectStorage = getProjectStorageInfo(this.workspacePath);
     ensureProjectStorage(this.projectStorage);
-    saveProjectMeta(this.projectStorage, loadProjectMeta(this.projectStorage));
+    const projectMeta = saveProjectMeta(this.projectStorage, loadProjectMeta(this.projectStorage));
+    const config = loadConfig();
+    this.extensionToolGroups = discoverExtensionToolGroups(context.extension.id);
+    this.toolCapabilities = getWorkspaceToolCapabilities(config, projectMeta);
+    this.toolToggles = getWorkspaceToolToggles(config, projectMeta);
+    this.extensionToolToggles = getWorkspaceExtensionToolToggles(config, projectMeta);
+    this.qualityPreferences = getQualityPreferencesForWorkspace(config, this.toolCapabilities);
     this.historyManager = createHistoryManager({
       workspacePath: this.workspacePath,
       notes: loadNotes(),
@@ -616,6 +719,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     const config = loadConfig();
+    const previousMeta = loadProjectMeta(this.projectStorage);
     saveConfig({
       ...config,
       quality: {
@@ -627,6 +731,19 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         ...applyFullAccessToToolSafety(config, this.qualityPreferences.fullAccessEnabled),
       },
     });
+    saveProjectMeta(this.projectStorage, previousMeta ? {
+      ...previousMeta,
+      toolCapabilities: {
+        ...(previousMeta.toolCapabilities ?? {}),
+        review: this.qualityPreferences.reviewEnabled,
+        validation: this.qualityPreferences.validateEnabled,
+      },
+      toolToggles: previousMeta.toolToggles,
+      extensionToolToggles: previousMeta.extensionToolToggles,
+    } : null);
+    this.toolCapabilities = getWorkspaceToolCapabilities(loadConfig(), loadProjectMeta(this.projectStorage));
+    this.toolToggles = getWorkspaceToolToggles(loadConfig(), loadProjectMeta(this.projectStorage));
+    this.extensionToolToggles = getWorkspaceExtensionToolToggles(loadConfig(), loadProjectMeta(this.projectStorage));
 
     if (opts?.syncVsCodeSettings !== false) {
       await this.syncQualityPreferencesToVsCodeSettingsInternal(this.qualityPreferences);
@@ -635,6 +752,174 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     await this.postMessage({
       type: 'quality-preferences-updated',
       payload: this.qualityPreferences,
+    });
+    await this.postMessage({
+      type: 'tool-capabilities-updated',
+      payload: this.toolCapabilities,
+    });
+    await this.postMessage({
+      type: 'tool-toggles-updated',
+      payload: this.toolToggles,
+    });
+
+    if (opts?.logMessage) {
+      this.appendLog('info', opts.logMessage);
+    }
+  }
+
+  private async applyToolCapabilities(
+    next: ToolCapabilities,
+    opts?: Readonly<{
+      logMessage?: string;
+    }>,
+  ): Promise<void> {
+    const config = loadConfig();
+    const previousMeta = loadProjectMeta(this.projectStorage);
+    saveConfig({
+      ...config,
+      quality: {
+        ...config.quality,
+        review: next.review,
+        test: next.validation,
+      },
+      toolSafety: {
+        ...config.toolSafety,
+        enableProjectCommandTool: next.runCommands,
+      },
+      toolCapabilities: {
+        ...config.toolCapabilities,
+        ...next,
+      },
+    });
+    saveProjectMeta(this.projectStorage, previousMeta ? {
+      ...previousMeta,
+      toolCapabilities: next,
+      toolToggles: previousMeta.toolToggles,
+      extensionToolToggles: previousMeta.extensionToolToggles,
+	    } : {
+	      workspaceId: this.projectStorage.workspaceId,
+	      workspaceName: this.projectStorage.workspaceName,
+	      workspacePath: this.projectStorage.workspacePath,
+	      projectDirName: this.projectStorage.projectDirName,
+	      createdAt: Date.now(),
+	      lastOpenedAt: Date.now(),
+	      storageVersion: 1,
+	      toolCapabilities: next,
+	      toolToggles: loadConfig().toolToggles,
+        extensionToolToggles: loadConfig().extensionToolToggles,
+	    });
+
+    const persisted = loadConfig();
+    this.toolCapabilities = getWorkspaceToolCapabilities(persisted, loadProjectMeta(this.projectStorage));
+    this.toolToggles = getWorkspaceToolToggles(persisted, loadProjectMeta(this.projectStorage));
+    this.extensionToolToggles = getWorkspaceExtensionToolToggles(persisted, loadProjectMeta(this.projectStorage));
+    this.qualityPreferences = Object.freeze({
+      reviewEnabled: this.toolCapabilities.review,
+      validateEnabled: this.toolCapabilities.validation,
+      fullAccessEnabled: isFullAccessEnabled(persisted),
+    });
+
+    await this.syncQualityPreferencesToVsCodeSettingsInternal(this.qualityPreferences);
+    await this.postMessage({
+      type: 'tool-capabilities-updated',
+      payload: this.toolCapabilities,
+    });
+    await this.postMessage({
+      type: 'tool-toggles-updated',
+      payload: this.toolToggles,
+    });
+    await this.postMessage({
+      type: 'quality-preferences-updated',
+      payload: this.qualityPreferences,
+    });
+
+    if (opts?.logMessage) {
+      this.appendLog('info', opts.logMessage);
+    }
+  }
+
+  private async applyToolToggles(
+    next: ToolToggles,
+    opts?: Readonly<{
+      logMessage?: string;
+    }>,
+  ): Promise<void> {
+    const config = loadConfig();
+    const previousMeta = loadProjectMeta(this.projectStorage);
+    saveConfig({
+      ...config,
+      toolToggles: next,
+    });
+    saveProjectMeta(this.projectStorage, previousMeta ? {
+      ...previousMeta,
+      toolCapabilities: previousMeta.toolCapabilities,
+      toolToggles: next,
+      extensionToolToggles: previousMeta.extensionToolToggles,
+    } : {
+      workspaceId: this.projectStorage.workspaceId,
+      workspaceName: this.projectStorage.workspaceName,
+      workspacePath: this.projectStorage.workspacePath,
+      projectDirName: this.projectStorage.projectDirName,
+      createdAt: Date.now(),
+      lastOpenedAt: Date.now(),
+      storageVersion: 1,
+      toolCapabilities: undefined,
+      toolToggles: next,
+      extensionToolToggles: loadConfig().extensionToolToggles,
+    });
+
+    const persisted = loadConfig();
+    this.toolToggles = getWorkspaceToolToggles(persisted, loadProjectMeta(this.projectStorage));
+
+    await this.postMessage({
+      type: 'tool-toggles-updated',
+      payload: this.toolToggles,
+    });
+
+    if (opts?.logMessage) {
+      this.appendLog('info', opts.logMessage);
+    }
+  }
+
+  private async applyExtensionToolToggles(
+    next: Readonly<Record<string, boolean>>,
+    opts?: Readonly<{
+      logMessage?: string;
+    }>,
+  ): Promise<void> {
+    const config = loadConfig();
+    const previousMeta = loadProjectMeta(this.projectStorage);
+    saveConfig({
+      ...config,
+      extensionToolToggles: next,
+    });
+    saveProjectMeta(this.projectStorage, previousMeta ? {
+      ...previousMeta,
+      toolCapabilities: previousMeta.toolCapabilities,
+      toolToggles: previousMeta.toolToggles,
+      extensionToolToggles: next,
+    } : {
+      workspaceId: this.projectStorage.workspaceId,
+      workspaceName: this.projectStorage.workspaceName,
+      workspacePath: this.projectStorage.workspacePath,
+      projectDirName: this.projectStorage.projectDirName,
+      createdAt: Date.now(),
+      lastOpenedAt: Date.now(),
+      storageVersion: 1,
+      toolCapabilities: undefined,
+      toolToggles: loadConfig().toolToggles,
+      extensionToolToggles: next,
+    });
+
+    const persisted = loadConfig();
+    this.extensionToolToggles = getWorkspaceExtensionToolToggles(
+      persisted,
+      loadProjectMeta(this.projectStorage),
+    );
+
+    await this.postMessage({
+      type: 'extension-tool-toggles-updated',
+      payload: this.extensionToolToggles,
     });
 
     if (opts?.logMessage) {
@@ -673,6 +958,21 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
           logMessage: `Quality preferences updated from the Galaxy Code sidebar: review=${String(message.payload.reviewEnabled)}, validate=${String(message.payload.validateEnabled)}, fullAccess=${String(message.payload.fullAccessEnabled)}.`,
         });
         return;
+      case 'tool-capabilities-set':
+        await this.applyToolCapabilities(message.payload, {
+          logMessage: 'Tool capabilities updated from the Galaxy Code sidebar.',
+        });
+        return;
+      case 'tool-toggles-set':
+        await this.applyToolToggles(message.payload, {
+          logMessage: 'Tool toggles updated from the Galaxy Code sidebar.',
+        });
+        return;
+      case 'extension-tool-toggles-set':
+        await this.applyExtensionToolToggles(message.payload, {
+          logMessage: 'Extension tool toggles updated from the Galaxy Code sidebar.',
+        });
+        return;
       case 'composer-command':
         await this.handleComposerCommand(message.payload.id);
         return;
@@ -694,6 +994,12 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         return;
       case 'review-open':
         await this.openReviewPanel();
+        return;
+      case 'review-finding-dismiss':
+        await this.dismissReviewFindingTool(message.payload.findingId);
+        return;
+      case 'review-finding-apply':
+        await this.applyReviewFinding(message.payload.findingId);
         return;
       case 'revert-all-changes':
         await this.revertAllTrackedChanges();
@@ -771,6 +1077,14 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         this.messages.push(userMessage);
         this.appendTranscriptMessage(userMessage);
         this.appendLog('info', `User prompt sent with agent ${this.selectedAgent}.`);
+        this.appendLog(
+          'info',
+          `Capability snapshot: ${Object.entries(this.toolCapabilities)
+            .filter(([, enabled]) => enabled)
+            .map(([capability]) => capability)
+            .sort()
+            .join(', ') || 'none'}.`,
+        );
         this.debugChatMessage(userMessage);
         this.clearStreamingBuffers();
 
@@ -784,10 +1098,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         let thinkingLogged = false;
         let emptyContinueAttempt = 0;
         try {
-              const config = loadConfig();
-              config.quality.review = this.qualityPreferences.reviewEnabled;
-              config.quality.test = this.qualityPreferences.validateEnabled;
-              config.toolSafety = applyFullAccessToToolSafety(config, this.qualityPreferences.fullAccessEnabled);
+              const config = this.getEffectiveConfig();
               const selectedFilesContext = await buildSelectedFilesContextNote({
                 selectedFiles: message.payload.selectedFiles,
                 workspaceRoot: this.getWorkspaceRoot(),
@@ -833,6 +1144,20 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
                         config,
                         revealFile: async (filePath, range) => this.revealFile(filePath, range),
                         refreshWorkspaceFiles: async () => this.refreshWorkspaceFiles(),
+                        openTrackedDiff: async (filePath) => this.openTrackedDiffTool(filePath),
+                        showProblems: async (filePath) => this.showProblemsTool(filePath),
+                        workspaceSearch: async (query, options) => this.workspaceSearchTool(query, options),
+                        findReferences: async (filePath, options) => this.findReferencesTool(filePath, options),
+                        executeExtensionCommand: async (commandId, title, extensionId) =>
+                          this.executeExtensionCommandTool(commandId, title, extensionId),
+                        searchExtensionTools: async (query, maxResults) =>
+                          this.searchExtensionToolsTool(query, maxResults),
+                        activateExtensionTools: async (toolKeys) =>
+                          this.activateExtensionToolsTool(toolKeys),
+                        getLatestTestFailure: async () => this.getLatestTestFailureTool(),
+                        getLatestReviewFindings: async () => this.getLatestReviewFindingsTool(),
+                        getNextReviewFinding: async () => this.getNextReviewFindingTool(),
+                        dismissReviewFinding: async (findingId) => this.dismissReviewFindingTool(findingId),
                         onProjectCommandStart: async (payload) => this.emitCommandStreamStart(payload),
                         onProjectCommandChunk: async (payload) => this.emitCommandStreamChunk(payload),
                         onProjectCommandEnd: async (payload) => this.emitCommandStreamEnd(payload),
@@ -998,7 +1323,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
                     `agent=${this.selectedAgent} attempt=${emptyContinueAttempt}`,
                   );
                   const continueResult = await this.runInternalRepairTurn({
-                    config: loadConfig(),
+                    config: this.getEffectiveConfig(),
                     agentType: this.selectedAgent,
                     userMessage: this.buildContinueMessage({
                       attempt: emptyContinueAttempt,
@@ -1269,6 +1594,20 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         config: opts.config,
         revealFile: async (filePath, range) => this.revealFile(filePath, range),
         refreshWorkspaceFiles: async () => this.refreshWorkspaceFiles(),
+        openTrackedDiff: async (filePath) => this.openTrackedDiffTool(filePath),
+        showProblems: async (filePath) => this.showProblemsTool(filePath),
+        workspaceSearch: async (query, options) => this.workspaceSearchTool(query, options),
+        findReferences: async (filePath, options) => this.findReferencesTool(filePath, options),
+        executeExtensionCommand: async (commandId, title, extensionId) =>
+          this.executeExtensionCommandTool(commandId, title, extensionId),
+        searchExtensionTools: async (query, maxResults) =>
+          this.searchExtensionToolsTool(query, maxResults),
+        activateExtensionTools: async (toolKeys) =>
+          this.activateExtensionToolsTool(toolKeys),
+        getLatestTestFailure: async () => this.getLatestTestFailureTool(),
+        getLatestReviewFindings: async () => this.getLatestReviewFindingsTool(),
+        getNextReviewFinding: async () => this.getNextReviewFindingTool(),
+        dismissReviewFinding: async (findingId) => this.dismissReviewFindingTool(findingId),
         onProjectCommandStart: async (payload) => this.emitCommandStreamStart(payload),
         onProjectCommandChunk: async (payload) => this.emitCommandStreamChunk(payload),
         onProjectCommandEnd: async (payload) => this.emitCommandStreamEnd(payload),
@@ -1441,9 +1780,9 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async runValidationAndReviewFlow(agentType: AgentType): Promise<Readonly<{ passed: boolean; repaired: boolean }>> {
-    const initialConfig = loadConfig();
-    const shouldRunValidation = initialConfig.quality.test;
-    const shouldRunReview = initialConfig.quality.review;
+    const initialConfig = this.getEffectiveConfig();
+    const shouldRunValidation = initialConfig.toolCapabilities.validation;
+    const shouldRunReview = initialConfig.toolCapabilities.review;
 
     if (!shouldRunValidation && !shouldRunReview) {
       return Object.freeze({ passed: true, repaired: false });
@@ -1461,13 +1800,13 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       }
 
       if (shouldRunReview) {
-        this.statusText = 'Running code review';
+        this.statusText = 'Running review quality gate';
         this.reportProgress(this.statusText);
         await this.postRunState();
-        this.appendLog('review', 'Running code review...');
+        this.appendLog('review', 'Running blocking review quality gate...');
         const reviewResult = await runCodeReview({
           sessionFiles,
-          config: loadConfig(),
+          config: this.getEffectiveConfig(),
           agentType: currentAgent,
         });
 
@@ -1485,9 +1824,37 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
           return Object.freeze({ passed: false, repaired });
         }
 
+        const structuredFindings = Object.freeze(
+          reviewResult.findings.map((finding, index) =>
+            Object.freeze({
+              id: `review-${Date.now()}-${index + 1}`,
+              severity: finding.severity,
+              location: finding.location,
+              message: finding.message,
+              status: 'open' as const,
+            }),
+          ),
+        );
         this.updateQualityDetails({
           reviewSummary: formatReviewSummary(reviewResult),
+          reviewFindings: structuredFindings,
         });
+        this.persistProjectMetaPatch((previousMeta) =>
+          previousMeta
+            ? {
+                ...previousMeta,
+                latestReviewFindings: Object.freeze({
+                  capturedAt: Date.now(),
+                  summary: reviewResult.hadCritical
+                    ? 'Critical review findings available.'
+                    : reviewResult.hadWarnings
+                      ? 'Review warnings available.'
+                      : 'Review completed with no actionable findings.',
+                  findings: structuredFindings,
+                }),
+              }
+            : null,
+        );
         this.appendLog(
           'review',
           !reviewResult.hadCritical && !reviewResult.hadWarnings
@@ -1509,7 +1876,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
           );
 
           const repairResult = await this.runInternalRepairTurn({
-            config: loadConfig(),
+            config: this.getEffectiveConfig(),
             agentType: currentAgent,
             userMessage: this.buildReviewRepairMessage(reviewResult, reviewRepairAttempt),
           });
@@ -1526,8 +1893,8 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         return Object.freeze({ passed: true, repaired });
       }
 
-      this.appendLog('validation', `Running final validation for ${sessionFiles.length} changed files.`);
-      this.statusText = 'Running final validation';
+      this.appendLog('validation', `Running blocking validation quality gate for ${sessionFiles.length} changed files.`);
+      this.statusText = 'Running validation quality gate';
       this.reportProgress(this.statusText);
       await this.postRunState();
       const validationResult = await runFinalValidation({
@@ -1539,9 +1906,31 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
           onEnd: async (payload) => this.emitCommandStreamEnd(payload),
         },
       });
+      this.appendLog('validation', validationResult.selectionSummary);
       this.updateQualityDetails({
         validationSummary: formatValidationSummary(validationResult),
       });
+      const latestFailedRun = validationResult.runs.find((run) => !run.success && run.category === 'test')
+        ?? validationResult.runs.find((run) => !run.success);
+      this.persistProjectMetaPatch((previousMeta) =>
+        previousMeta
+          ? {
+              ...previousMeta,
+              ...(latestFailedRun
+                ? {
+                    latestTestFailure: Object.freeze({
+                      capturedAt: Date.now(),
+                      summary: latestFailedRun.summary,
+                      command: latestFailedRun.command,
+                      profile: latestFailedRun.profile,
+                      category: latestFailedRun.category,
+                      issues: latestFailedRun.issues,
+                    }),
+                  }
+                : { latestTestFailure: undefined }),
+            }
+          : null,
+      );
       this.appendLog(
         'validation',
         validationResult.success ? 'Final validation passed.' : 'Final validation failed.',
@@ -1564,7 +1953,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       );
 
       const repairResult = await this.runInternalRepairTurn({
-        config: loadConfig(),
+        config: this.getEffectiveConfig(),
         agentType: currentAgent,
         userMessage: this.buildValidationRepairMessage(validationResult, validationRepairAttempt),
       });
@@ -1675,6 +2064,213 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     });
   }
 
+  private persistProjectMetaPatch(
+    mutate: (previous: ProjectMeta | null) => ProjectMeta | null,
+  ): void {
+    const previousMeta = loadProjectMeta(this.projectStorage);
+    saveProjectMeta(this.projectStorage, mutate(previousMeta));
+  }
+
+  private async getLatestTestFailureTool(): Promise<ToolResult> {
+    const meta = loadProjectMeta(this.projectStorage);
+    const latest = meta?.latestTestFailure;
+    if (!latest) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: 'No latest test failure is stored for this workspace.',
+      });
+    }
+
+    const lines = [
+      `Latest test failure: ${latest.summary}`,
+      `Command: ${latest.command}`,
+      `Profile: ${latest.profile} / ${latest.category}`,
+      '',
+      ...latest.issues.slice(0, 20).map((issue) => {
+        const location = [
+          issue.filePath ?? '',
+          typeof issue.line === 'number' ? `:${issue.line}` : '',
+          typeof issue.column === 'number' ? `:${issue.column}` : '',
+        ].join('');
+        return `- [${issue.severity.toUpperCase()}] ${location || issue.source}: ${issue.message}`;
+      }),
+    ];
+
+    return Object.freeze({
+      success: true,
+      content: lines.join('\n').trim(),
+      meta: Object.freeze({
+        capturedAt: latest.capturedAt,
+        issuesCount: latest.issues.length,
+      }),
+    });
+  }
+
+  private async getLatestReviewFindingsTool(): Promise<ToolResult> {
+    const meta = loadProjectMeta(this.projectStorage);
+    const latest = meta?.latestReviewFindings;
+    if (!latest) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: 'No latest review findings are stored for this workspace.',
+      });
+    }
+
+    const lines = [
+      `Latest review findings: ${latest.summary}`,
+      '',
+      ...latest.findings.slice(0, 20).map(
+        (finding) => `- [${finding.severity.toUpperCase()}] (${finding.id}) [${finding.status ?? 'open'}] ${finding.location}: ${finding.message}`,
+      ),
+    ];
+
+    return Object.freeze({
+      success: true,
+      content: lines.join('\n').trim(),
+      meta: Object.freeze({
+        capturedAt: latest.capturedAt,
+        findingsCount: latest.findings.length,
+      }),
+    });
+  }
+
+  private async getNextReviewFindingTool(): Promise<ToolResult> {
+    const meta = loadProjectMeta(this.projectStorage);
+    const latest = meta?.latestReviewFindings;
+    const finding = latest?.findings.find((item) => (item.status ?? 'open') !== 'dismissed');
+    if (!latest || !finding) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: 'No open review finding is stored for this workspace.',
+      });
+    }
+
+    return Object.freeze({
+      success: true,
+      content: `Next review finding (${finding.id})\n[${finding.severity.toUpperCase()}] ${finding.location}: ${finding.message}`,
+      meta: Object.freeze({
+        findingId: finding.id,
+        severity: finding.severity,
+        location: finding.location,
+      }),
+    });
+  }
+
+  private async dismissReviewFindingTool(findingId: string): Promise<ToolResult> {
+    const trimmedId = findingId.trim();
+    if (!trimmedId) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: 'finding_id is required.',
+      });
+    }
+
+    const previousMeta = loadProjectMeta(this.projectStorage);
+    const latest = previousMeta?.latestReviewFindings;
+    if (!previousMeta || !latest) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: 'No latest review findings are stored for this workspace.',
+      });
+    }
+
+    const nextFindings = latest.findings.map((finding) =>
+      finding.id === trimmedId ? Object.freeze({ ...finding, status: 'dismissed' as const }) : finding,
+    );
+    const updated = nextFindings.find((finding) => finding.id === trimmedId);
+    if (!updated) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `Review finding not found: ${trimmedId}`,
+      });
+    }
+
+    this.persistProjectMetaPatch((current) =>
+      current
+        ? {
+            ...current,
+            latestReviewFindings: Object.freeze({
+              ...latest,
+              findings: Object.freeze(nextFindings),
+            }),
+          }
+        : null,
+    );
+    this.updateQualityDetails({
+      reviewFindings: Object.freeze(nextFindings),
+    });
+
+    return Object.freeze({
+      success: true,
+      content: `Dismissed review finding ${trimmedId}`,
+      meta: Object.freeze({
+        findingId: trimmedId,
+      }),
+    });
+  }
+
+  private async applyReviewFinding(findingId: string): Promise<void> {
+    if (this.isRunning) {
+      return;
+    }
+
+    const meta = loadProjectMeta(this.projectStorage);
+    const latest = meta?.latestReviewFindings;
+    const finding = latest?.findings.find((item) => item.id === findingId && (item.status ?? 'open') !== 'dismissed');
+    if (!finding) {
+      await this.postMessage({
+        type: 'error',
+        payload: { message: `Review finding not found or already dismissed: ${findingId}` },
+      });
+      return;
+    }
+
+    const repairMessage: ChatMessage = Object.freeze({
+      id: `review-finding-apply-${Date.now()}`,
+      role: 'user',
+      content:
+        '[SYSTEM REVIEW FINDING APPLY]\n' +
+        'Fix exactly this review finding with the smallest safe change.\n' +
+        'Verify the finding against the current workspace state before editing.\n' +
+        'Do not rewrite unrelated code and do not restart the task.\n\n' +
+        `Finding id: ${finding.id}\n` +
+        `Severity: ${finding.severity}\n` +
+        `Location: ${finding.location}\n` +
+        `Message: ${finding.message}`,
+      timestamp: Date.now(),
+    });
+
+    this.clearStreamingBuffers();
+    this.isRunning = true;
+    this.statusText = 'Applying review finding';
+    await this.postRunState();
+
+    const result = await this.runInternalRepairTurn({
+      config: this.getEffectiveConfig(),
+      agentType: this.selectedAgent,
+      userMessage: repairMessage,
+    });
+
+    this.isRunning = false;
+    this.statusText = result.hadError ? 'Review finding apply failed' : 'Review finding applied';
+    await this.postRunState();
+
+    if (result.hadError) {
+      return;
+    }
+
+    if (result.filesWritten.length > 0) {
+      await this.dismissReviewFindingTool(finding.id);
+      await this.runValidationAndReviewFlow(this.selectedAgent);
+    }
+  }
+
   private async postRunState(): Promise<void> {
     this.updateWorkbenchChrome();
     await this.postMessage({
@@ -1715,8 +2311,10 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
 
   private async postInit(): Promise<void> {
     this.updateWorkbenchChrome();
+    this.extensionToolGroups = discoverExtensionToolGroups(this.context.extension.id);
     const files = await this.getWorkspaceFiles();
     const changeSummary = this.buildChangeSummaryPayload();
+    const meta = loadProjectMeta(this.projectStorage);
     await this.refreshNativeShellViews(files, changeSummary);
     const payload: SessionInitPayload = {
       workspaceName: vscode.workspace.workspaceFolders?.[0]?.name ?? 'Workspace',
@@ -1728,8 +2326,15 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       statusText: this.statusText,
       planItems: this.buildPhasePlanItems(),
       logs: [...this.runtimeLogs],
-      qualityDetails: this.qualityDetails,
+      qualityDetails: Object.freeze({
+        ...this.qualityDetails,
+        reviewFindings: meta?.latestReviewFindings?.findings ?? this.qualityDetails.reviewFindings ?? Object.freeze([]),
+      }),
       qualityPreferences: this.qualityPreferences,
+      toolCapabilities: this.toolCapabilities,
+      toolToggles: this.toolToggles,
+      extensionToolGroups: this.extensionToolGroups,
+      extensionToolToggles: this.extensionToolToggles,
       changeSummary,
       ...(this.streamingAssistant ? { streamingAssistant: this.streamingAssistant } : {}),
       ...(this.streamingThinking ? { streamingThinking: this.streamingThinking } : {}),
@@ -1793,6 +2398,15 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
 
   private getWorkspaceRoot(): string | undefined {
     return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  }
+
+  private getEffectiveConfig(): GalaxyConfig {
+    return buildEffectiveConfig(
+      loadConfig(),
+      loadProjectMeta(this.projectStorage),
+      this.qualityPreferences,
+      this.extensionToolGroups,
+    );
   }
 
   private resolveStorageWorkspacePath(): string {
@@ -2095,6 +2709,374 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     await this.openDiff(originalUri, filePath, `Session Diff: ${this.asWorkspaceRelative(filePath)}`);
   }
 
+  private async openTrackedDiffTool(filePath: string): Promise<ToolResult> {
+    try {
+      const targetPath = this.resolveWorkspaceFilePath(filePath);
+      if (typeof getOriginalContent(targetPath) === 'undefined') {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: `No tracked diff snapshot exists yet for ${this.asWorkspaceRelative(targetPath)}.`,
+        });
+      }
+      await this.openTrackedDiff(targetPath);
+      return Object.freeze({
+        success: true,
+        content: `Opened native diff for ${this.asWorkspaceRelative(targetPath)}.`,
+        meta: Object.freeze({
+          filePath: targetPath,
+          operation: 'open_diff',
+        }),
+      });
+    } catch (error) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: String(error),
+      });
+    }
+  }
+
+  private async showProblemsTool(filePath?: string): Promise<ToolResult> {
+    try {
+      const targetPath = filePath ? this.resolveWorkspaceFilePath(filePath) : '';
+      const targetUri = targetPath ? vscode.Uri.file(targetPath) : undefined;
+      const diagnostics = targetUri
+        ? vscode.languages.getDiagnostics(targetUri)
+        : vscode.languages.getDiagnostics().flatMap((entry) => entry[1]);
+      await vscode.commands.executeCommand('workbench.actions.view.problems');
+      const summaryLines = diagnostics.slice(0, 20).map((diagnostic) => {
+        const severity =
+          diagnostic.severity === vscode.DiagnosticSeverity.Error
+            ? 'error'
+            : diagnostic.severity === vscode.DiagnosticSeverity.Warning
+            ? 'warning'
+            : diagnostic.severity === vscode.DiagnosticSeverity.Information
+            ? 'info'
+            : 'hint';
+        return `- [${severity}] line ${diagnostic.range.start.line + 1}: ${diagnostic.message}`;
+      });
+      return Object.freeze({
+        success: true,
+        content:
+          summaryLines.length > 0
+            ? summaryLines.join('\n')
+            : targetPath
+            ? `No diagnostics for ${this.asWorkspaceRelative(targetPath)}.`
+            : 'No diagnostics in Problems view.',
+        meta: Object.freeze({
+          ...(targetPath ? { filePath: targetPath } : {}),
+          issuesCount: diagnostics.length,
+          operation: 'show_problems',
+        }),
+      });
+    } catch (error) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: String(error),
+      });
+    }
+  }
+
+  private async workspaceSearchTool(
+    query: string,
+    options?: Readonly<{
+      includes?: string;
+      maxResults?: number;
+      isRegex?: boolean;
+      isCaseSensitive?: boolean;
+      matchWholeWord?: boolean;
+    }>,
+  ): Promise<ToolResult> {
+    try {
+      const maxResults = Math.max(1, Math.min(options?.maxResults ?? 20, 100));
+      const matches: Array<{ filePath: string; line: number; preview: string }> = [];
+      await vscode.commands.executeCommand('workbench.action.findInFiles', {
+        query,
+        triggerSearch: true,
+        isRegex: Boolean(options?.isRegex),
+        isCaseSensitive: Boolean(options?.isCaseSensitive),
+        matchWholeWord: Boolean(options?.matchWholeWord),
+        ...(options?.includes ? { filesToInclude: options.includes } : {}),
+      });
+      const uris = await vscode.workspace.findFiles(
+        options?.includes ? new vscode.RelativePattern(this.workspacePath, options.includes) : '**/*',
+        '**/{node_modules,dist,build,.git,.next,.turbo,.cache}/**',
+        Math.max(maxResults * 5, 50),
+      );
+      const regex = options?.isRegex
+        ? new RegExp(query, `${options.isCaseSensitive ? '' : 'i'}g`)
+        : null;
+      const needle = options?.isCaseSensitive ? query : query.toLowerCase();
+      for (const uri of uris) {
+        if (matches.length >= maxResults) {
+          break;
+        }
+        try {
+          const document = await vscode.workspace.openTextDocument(uri);
+          for (let index = 0; index < document.lineCount; index += 1) {
+            if (matches.length >= maxResults) {
+              break;
+            }
+            const text = document.lineAt(index).text;
+            const haystack = options?.isCaseSensitive ? text : text.toLowerCase();
+            const matched = regex ? regex.test(text) : haystack.includes(needle);
+            if (!matched) {
+              if (regex) {
+                regex.lastIndex = 0;
+              }
+              continue;
+            }
+            if (regex) {
+              regex.lastIndex = 0;
+            }
+            const preview = text.trim().replace(/\s+/g, ' ');
+            matches.push({
+              filePath: uri.fsPath,
+              line: index,
+              preview,
+            });
+          }
+        } catch {
+          continue;
+        }
+      }
+      const lines =
+        matches.length > 0
+          ? matches.map((match) => `- ${this.asWorkspaceRelative(match.filePath)}:${match.line + 1} — ${match.preview}`)
+          : ['(no matches)'];
+      return Object.freeze({
+        success: true,
+        content: lines.join('\n'),
+        meta: Object.freeze({
+          query,
+          matches: matches.length,
+          ...(options?.includes ? { includes: options.includes } : {}),
+          operation: 'workspace_search',
+        }),
+      });
+    } catch (error) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: String(error),
+      });
+    }
+  }
+
+  private async findReferencesTool(
+    filePath: string,
+    options?: Readonly<{
+      line?: number;
+      character?: number;
+      symbol?: string;
+      maxResults?: number;
+    }>,
+  ): Promise<ToolResult> {
+    try {
+      const targetPath = this.resolveWorkspaceFilePath(filePath);
+      const document = await vscode.workspace.openTextDocument(vscode.Uri.file(targetPath));
+      const editor = await vscode.window.showTextDocument(document, { preview: false, preserveFocus: true });
+
+      let position: vscode.Position | null = null;
+      if (typeof options?.line === 'number') {
+        const line = Math.max(0, Math.min(options.line - 1, document.lineCount - 1));
+        const character = Math.max(0, Math.min((options.character ?? 1) - 1, document.lineAt(line).text.length));
+        position = new vscode.Position(line, character);
+      } else if (options?.symbol) {
+        const text = document.getText();
+        const index = text.indexOf(options.symbol);
+        if (index >= 0) {
+          position = document.positionAt(index);
+        }
+      }
+
+      if (!position) {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: 'Unable to determine a symbol position for vscode_find_references. Provide line/character or a symbol that exists in the file.',
+        });
+      }
+
+      editor.selection = new vscode.Selection(position, position);
+      editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+      const references =
+        (await vscode.commands.executeCommand<vscode.Location[]>(
+          'vscode.executeReferenceProvider',
+          document.uri,
+          position,
+        )) ?? [];
+      const maxResults = Math.max(1, Math.min(options?.maxResults ?? 20, 100));
+      const lines = references.slice(0, maxResults).map((location) => {
+        const relative = this.asWorkspaceRelative(location.uri.fsPath);
+        return `- ${relative}:${location.range.start.line + 1}:${location.range.start.character + 1}`;
+      });
+      return Object.freeze({
+        success: true,
+        content: lines.length > 0 ? lines.join('\n') : '(no references)',
+        meta: Object.freeze({
+          filePath: targetPath,
+          referencesCount: references.length,
+          operation: 'find_references',
+        }),
+      });
+    } catch (error) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: String(error),
+      });
+    }
+  }
+
+  private async executeExtensionCommandTool(
+    commandId: string,
+    title: string,
+    extensionId: string,
+  ): Promise<ToolResult> {
+    try {
+      await vscode.commands.executeCommand(commandId);
+      const label = title.trim() || commandId;
+      this.appendLog('info', `Executed public extension command ${commandId} from ${extensionId}.`);
+      return Object.freeze({
+        success: true,
+        content: `Executed extension command "${label}" from ${extensionId}.`,
+        meta: Object.freeze({
+          commandId,
+          extensionId,
+          operation: 'extension_command',
+        }),
+      });
+    } catch (error) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `Extension command failed (${commandId}): ${String(error)}`,
+      });
+    }
+  }
+
+  private async searchExtensionToolsTool(query: string, maxResults = 8): Promise<ToolResult> {
+    try {
+      const trimmed = query.trim();
+      if (!trimmed) {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: 'search_extension_tools requires a non-empty query.',
+        });
+      }
+
+      const groups = searchExtensionToolGroups(
+        this.extensionToolGroups,
+        trimmed,
+        Math.max(1, Math.min(maxResults, 12)),
+        8,
+      );
+
+      if (groups.length === 0) {
+        return Object.freeze({
+          success: true,
+          content: '(no matching local extension tools)',
+          meta: Object.freeze({
+            query: trimmed,
+            groups: 0,
+            operation: 'search_extension_tools',
+          }),
+        });
+      }
+
+      const lines: string[] = [];
+      for (const group of groups) {
+        lines.push(`## ${group.label} [${group.extensionId}]`);
+        lines.push(group.description);
+        for (const tool of group.tools) {
+          const enabled = this.extensionToolToggles[tool.key] === true ? 'enabled' : 'disabled';
+          lines.push(`- key=${tool.key}`);
+          lines.push(`  tool=${tool.qualifiedName}`);
+          lines.push(`  command=${tool.command}`);
+          lines.push(`  status=${enabled}`);
+          lines.push(`  desc=${tool.description}`);
+        }
+        lines.push('');
+      }
+
+      return Object.freeze({
+        success: true,
+        content: lines.join('\n').trim(),
+        meta: Object.freeze({
+          query: trimmed,
+          groups: groups.length,
+          operation: 'search_extension_tools',
+        }),
+      });
+    } catch (error) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: String(error),
+      });
+    }
+  }
+
+  private async activateExtensionToolsTool(toolKeys: readonly string[]): Promise<ToolResult> {
+    try {
+      const normalizedKeys = [...new Set(toolKeys.map((item) => item.trim()).filter(Boolean))];
+      if (normalizedKeys.length === 0) {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: 'activate_extension_tools requires at least one tool key.',
+        });
+      }
+
+      const discovered = new Map(
+        this.extensionToolGroups.flatMap((group) =>
+          group.tools.map((tool) => [tool.key, { group, tool }] as const),
+        ),
+      );
+      const valid = normalizedKeys.filter((key) => discovered.has(key));
+      if (valid.length === 0) {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: 'None of the provided tool keys matched the local extension tool catalog.',
+        });
+      }
+
+      const nextToggles = {
+        ...this.extensionToolToggles,
+        ...Object.fromEntries(valid.map((key) => [key, true])),
+      };
+      await this.applyExtensionToolToggles(nextToggles, {
+        logMessage: `Activated ${valid.length} extension tool(s) from local catalog.`,
+      });
+
+      const lines = valid.map((key) => {
+        const item = discovered.get(key)!;
+        return `- ${item.tool.qualifiedName} (${item.group.label})`;
+      });
+
+      return Object.freeze({
+        success: true,
+        content: `Activated extension tools:\n${lines.join('\n')}`,
+        meta: Object.freeze({
+          activatedCount: valid.length,
+          operation: 'activate_extension_tools',
+          toolKeys: Object.freeze(valid),
+        }),
+      });
+    } catch (error) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: String(error),
+      });
+    }
+  }
+
   private async updateContextFileSelection(
     updates: readonly Readonly<{ filePath: string; selected: boolean }>[],
   ): Promise<void> {
@@ -2391,7 +3373,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     toolName: string;
     details: readonly string[];
   }): boolean {
-    if (approval.toolName !== 'run_project_command') {
+    if (approval.toolName !== 'run_project_command' && approval.toolName !== 'run_terminal_command') {
       return false;
     }
 
@@ -2983,7 +3965,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     });
 
     const result = await this.runInternalRepairTurn({
-      config: loadConfig(),
+      config: this.getEffectiveConfig(),
       agentType: this.selectedAgent,
       userMessage: Object.freeze({
         id: `background-complete-${Date.now()}`,
@@ -3013,6 +3995,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     this.qualityDetails = Object.freeze({
       validationSummary: update.validationSummary ?? this.qualityDetails.validationSummary,
       reviewSummary: update.reviewSummary ?? this.qualityDetails.reviewSummary,
+      reviewFindings: update.reviewFindings ?? this.qualityDetails.reviewFindings ?? Object.freeze([]),
     });
     void this.postMessage({
       type: 'quality-updated',

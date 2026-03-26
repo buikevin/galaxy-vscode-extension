@@ -9,9 +9,13 @@
 import type { ChangeEvent, ClipboardEvent, Dispatch, SetStateAction } from "react";
 import type {
   ApprovalRequestPayload,
+  ExtensionToolGroup,
   FigmaAttachment,
   MessageAttachment,
+  QualityDetails,
   QualityPreferences,
+  ToolCapabilities,
+  ToolToggles,
   ToolApprovalDecision,
   WebviewMessage,
 } from "@shared/protocol";
@@ -43,8 +47,18 @@ type UseComposerActionsOptions = Readonly<{
   figmaAttachments: readonly FigmaAttachment[];
   /** Attached local files/images. */
   localAttachments: readonly LocalAttachment[];
-  /** Current review/validate/full-access preferences. */
+  /** Current review/validate/full-access preference snapshot. */
   qualityPreferences: QualityPreferences;
+  /** Current quality details mirrored from the host. */
+  qualityDetails: QualityDetails;
+  /** Current tool capability groups. */
+  toolCapabilities: ToolCapabilities;
+  /** Current individual tool toggles. */
+  toolToggles: ToolToggles;
+  /** Current discovered extension tool groups. */
+  extensionToolGroups: readonly ExtensionToolGroup[];
+  /** Current individual extension tool toggles. */
+  extensionToolToggles: Readonly<Record<string, boolean>>;
   /** Current approval popup payload. */
   approvalRequest: ApprovalRequestPayload | null;
   /** Current retryable request. */
@@ -85,6 +99,14 @@ type UseComposerActionsOptions = Readonly<{
   setIsPlusMenuOpen: Dispatch<SetStateAction<boolean>>;
   /** Update quality preferences state. */
   setQualityPreferences: Dispatch<SetStateAction<QualityPreferences>>;
+  /** Update tool capability state. */
+  setToolCapabilities: Dispatch<SetStateAction<ToolCapabilities>>;
+  /** Update tool toggle state. */
+  setToolToggles: Dispatch<SetStateAction<ToolToggles>>;
+  /** Update extension tool toggle state. */
+  setExtensionToolToggles: Dispatch<
+    SetStateAction<Readonly<Record<string, boolean>>>
+  >;
   /** Update approval popup state. */
   setApprovalRequest: Dispatch<SetStateAction<ApprovalRequestPayload | null>>;
 }>;
@@ -97,6 +119,32 @@ export function useComposerActions(options: UseComposerActionsOptions) {
     options.setQualityPreferences(next);
     postHostMessage({
       type: "quality-set",
+      payload: next,
+    } satisfies WebviewMessage);
+  }
+
+  function updateToolCapabilities(next: ToolCapabilities): void {
+    options.setToolCapabilities(next);
+    postHostMessage({
+      type: "tool-capabilities-set",
+      payload: next,
+    } satisfies WebviewMessage);
+  }
+
+  function updateToolToggles(next: ToolToggles): void {
+    options.setToolToggles(next);
+    postHostMessage({
+      type: "tool-toggles-set",
+      payload: next,
+    } satisfies WebviewMessage);
+  }
+
+  function updateExtensionToolToggles(
+    next: Readonly<Record<string, boolean>>
+  ): void {
+    options.setExtensionToolToggles(next);
+    postHostMessage({
+      type: "extension-tool-toggles-set",
       payload: next,
     } satisfies WebviewMessage);
   }
@@ -350,8 +398,8 @@ export function useComposerActions(options: UseComposerActionsOptions) {
         (attachment) => attachment.importId
       ),
       attachmentIds,
-      reviewEnabled: options.qualityPreferences.reviewEnabled,
-      validateEnabled: options.qualityPreferences.validateEnabled,
+      reviewEnabled: options.toolCapabilities.review,
+      validateEnabled: options.toolCapabilities.validation,
       fullAccessEnabled: options.qualityPreferences.fullAccessEnabled,
     } satisfies Omit<PendingRequest, "hasServerResponse">;
 
@@ -396,6 +444,9 @@ export function useComposerActions(options: UseComposerActionsOptions) {
 
   return {
     updateQualityPreferences,
+    updateToolCapabilities,
+    updateToolToggles,
+    updateExtensionToolToggles,
     openFigmaPreview,
     removeFigmaAttachment,
     removeLocalAttachment,

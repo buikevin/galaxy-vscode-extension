@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { appendTelemetryEvent } from '../context/telemetry';
 import type { TrackedFile } from '../runtime/session-tracker';
 import { buildShellEnvironment, checkCommandAvailability, resolveShellProfile } from '../runtime/shell-resolver';
 import { validateCodeTool } from '../tools/file-tools';
@@ -9,6 +10,7 @@ import type {
   ValidationCommand,
   ValidationCommandStreamCallbacks,
   ValidationIssue,
+  ValidationProfileId,
   ValidationRunResult,
 } from './types';
 
@@ -131,6 +133,61 @@ function hasTrackedExtension(sessionFiles: readonly TrackedFile[], extensions: r
   return sessionFiles.some((file) => extSet.has(path.extname(file.filePath).toLowerCase()));
 }
 
+function detectValidationProfiles(
+  workspacePath: string,
+  sessionFiles: readonly TrackedFile[],
+): readonly ValidationProfileId[] {
+  const profiles: ValidationProfileId[] = [];
+  const push = (profile: ValidationProfileId) => {
+    if (!profiles.includes(profile)) {
+      profiles.push(profile);
+    }
+  };
+
+  const hasJs = hasTrackedExtension(sessionFiles, ['.js', '.jsx', '.mjs', '.cjs']);
+  const hasTs = hasTrackedExtension(sessionFiles, ['.ts', '.tsx']);
+  const hasPython = hasTrackedExtension(sessionFiles, ['.py']);
+  const hasJava = hasTrackedExtension(sessionFiles, ['.java', '.kt']);
+  const hasGo = hasTrackedExtension(sessionFiles, ['.go']);
+  const hasRust = hasTrackedExtension(sessionFiles, ['.rs']);
+  const hasPhp = hasTrackedExtension(sessionFiles, ['.php']);
+  const hasShell = hasTrackedExtension(sessionFiles, ['.sh', '.bash', '.zsh']);
+  const hasRuby = hasTrackedExtension(sessionFiles, ['.rb']);
+
+  if (hasFile(workspacePath, 'package.json') || hasJs) {
+    push('javascript');
+  }
+  if (hasFile(workspacePath, 'tsconfig.json') || hasTs) {
+    push('typescript');
+  }
+  if (hasPython || hasFile(workspacePath, 'pyproject.toml') || hasFile(workspacePath, 'requirements.txt') || hasFile(workspacePath, 'setup.py')) {
+    push('python');
+  }
+  if (hasJava || hasFile(workspacePath, 'pom.xml') || hasFile(workspacePath, 'build.gradle') || hasFile(workspacePath, 'build.gradle.kts')) {
+    push('java');
+  }
+  if (hasGo || hasFile(workspacePath, 'go.mod')) {
+    push('go');
+  }
+  if (hasRust || hasFile(workspacePath, 'Cargo.toml')) {
+    push('rust');
+  }
+  if (fs.existsSync(workspacePath) && fs.readdirSync(workspacePath).some((entry) => entry.endsWith('.csproj') || entry.endsWith('.sln'))) {
+    push('dotnet');
+  }
+  if (hasPhp && hasFile(workspacePath, 'composer.json')) {
+    push('php');
+  }
+  if (hasShell && hasFile(workspacePath, '.shellcheckrc')) {
+    push('shell');
+  }
+  if (hasRuby && hasFile(workspacePath, 'Rakefile')) {
+    push('ruby');
+  }
+
+  return Object.freeze(profiles);
+}
+
 function addProjectCommand(
   commands: ValidationCommand[],
   seen: Set<string>,
@@ -166,14 +223,16 @@ function detectProjectCommands(
   const hasPhpFiles = hasTrackedExtension(sessionFiles, ['.php']);
   const hasShellFiles = hasTrackedExtension(sessionFiles, ['.sh', '.bash', '.zsh']);
   const hasRubyFiles = hasTrackedExtension(sessionFiles, ['.rb']);
+  const profiles = new Set(detectValidationProfiles(workspacePath, sessionFiles));
 
-  if (packageScripts.lint) {
+  if ((profiles.has('javascript') || profiles.has('typescript')) && packageScripts.lint) {
     addProjectCommand(commands, seenCommands, {
       id: `${nodePackageManager}-lint`,
       label: buildNodeScriptCommand(nodePackageManager, 'lint'),
       command: buildNodeScriptCommand(nodePackageManager, 'lint'),
       cwd: workspacePath,
       kind: 'project',
+      profile: profiles.has('typescript') ? 'typescript' : 'javascript',
       category: 'lint',
     });
   }
@@ -188,50 +247,55 @@ function detectProjectCommands(
       command: buildNodeScriptCommand(nodePackageManager, scriptName),
       cwd: workspacePath,
       kind: 'project',
+      profile: scriptName === 'typecheck' ? 'typescript' : profiles.has('typescript') ? 'typescript' : 'javascript',
       category: 'static-check',
     });
   }
 
-  if (packageScripts.test) {
+  if ((profiles.has('javascript') || profiles.has('typescript')) && packageScripts.test) {
     addProjectCommand(commands, seenCommands, {
       id: `${nodePackageManager}-test`,
       label: buildNodeScriptCommand(nodePackageManager, 'test'),
       command: buildNodeScriptCommand(nodePackageManager, 'test'),
       cwd: workspacePath,
       kind: 'project',
+      profile: profiles.has('typescript') ? 'typescript' : 'javascript',
       category: 'test',
     });
   }
 
-  if (packageScripts.build) {
+  if ((profiles.has('javascript') || profiles.has('typescript')) && packageScripts.build) {
     addProjectCommand(commands, seenCommands, {
       id: `${nodePackageManager}-build`,
       label: buildNodeScriptCommand(nodePackageManager, 'build'),
       command: buildNodeScriptCommand(nodePackageManager, 'build'),
       cwd: workspacePath,
       kind: 'project',
+      profile: profiles.has('typescript') ? 'typescript' : 'javascript',
       category: 'build',
     });
   }
 
-  if (hasFile(workspacePath, 'tsconfig.json')) {
+  if (profiles.has('typescript') && hasFile(workspacePath, 'tsconfig.json')) {
     addProjectCommand(commands, seenCommands, {
       id: `${nodePackageManager}-tsc-noemit`,
       label: buildNodeExecCommand(nodePackageManager, 'tsc', ['--noEmit']),
       command: buildNodeExecCommand(nodePackageManager, 'tsc', ['--noEmit']),
       cwd: workspacePath,
       kind: 'project',
+      profile: 'typescript',
       category: 'static-check',
     });
   }
 
-  if (hasFile(workspacePath, 'Cargo.toml')) {
+  if (profiles.has('rust')) {
     addProjectCommand(commands, seenCommands, {
       id: 'cargo-check',
       label: 'cargo check',
       command: 'cargo check',
       cwd: workspacePath,
       kind: 'project',
+      profile: 'rust',
       category: 'static-check',
     });
     addProjectCommand(commands, seenCommands, {
@@ -240,6 +304,7 @@ function detectProjectCommands(
       command: 'cargo test',
       cwd: workspacePath,
       kind: 'project',
+      profile: 'rust',
       category: 'test',
     });
     addProjectCommand(commands, seenCommands, {
@@ -248,17 +313,19 @@ function detectProjectCommands(
       command: 'cargo build',
       cwd: workspacePath,
       kind: 'project',
+      profile: 'rust',
       category: 'build',
     });
   }
 
-  if (hasFile(workspacePath, 'go.mod')) {
+  if (profiles.has('go')) {
     addProjectCommand(commands, seenCommands, {
       id: 'go-test',
       label: 'go test ./...',
       command: 'go test ./...',
       cwd: workspacePath,
       kind: 'project',
+      profile: 'go',
       category: 'test',
     });
     addProjectCommand(commands, seenCommands, {
@@ -267,11 +334,13 @@ function detectProjectCommands(
       command: 'go build ./...',
       cwd: workspacePath,
       kind: 'project',
+      profile: 'go',
       category: 'build',
     });
   }
 
   if (
+    profiles.has('python') &&
     hasPythonFiles &&
     (hasFile(workspacePath, 'pyproject.toml') ||
       hasFile(workspacePath, 'requirements.txt') ||
@@ -288,6 +357,7 @@ function detectProjectCommands(
         command: 'ruff check .',
         cwd: workspacePath,
         kind: 'project',
+        profile: 'python',
         category: 'lint',
       });
     }
@@ -299,6 +369,7 @@ function detectProjectCommands(
         command: 'mypy .',
         cwd: workspacePath,
         kind: 'project',
+        profile: 'python',
         category: 'static-check',
       });
     }
@@ -315,18 +386,20 @@ function detectProjectCommands(
         command: 'pytest',
         cwd: workspacePath,
         kind: 'project',
+        profile: 'python',
         category: 'test',
       });
     }
   }
 
-  if (hasFile(workspacePath, 'pom.xml')) {
+  if (profiles.has('java') && hasFile(workspacePath, 'pom.xml')) {
     addProjectCommand(commands, seenCommands, {
       id: 'maven-compile',
       label: 'mvn -q -DskipTests compile',
       command: 'mvn -q -DskipTests compile',
       cwd: workspacePath,
       kind: 'project',
+      profile: 'java',
       category: 'static-check',
     });
     addProjectCommand(commands, seenCommands, {
@@ -335,11 +408,12 @@ function detectProjectCommands(
       command: 'mvn -q test',
       cwd: workspacePath,
       kind: 'project',
+      profile: 'java',
       category: 'test',
     });
   }
 
-  if (hasFile(workspacePath, 'build.gradle') || hasFile(workspacePath, 'build.gradle.kts')) {
+  if (profiles.has('java') && (hasFile(workspacePath, 'build.gradle') || hasFile(workspacePath, 'build.gradle.kts'))) {
     const gradleExecutable = hasFile(workspacePath, 'gradlew') ? './gradlew' : 'gradle';
     addProjectCommand(commands, seenCommands, {
       id: 'gradle-classes',
@@ -347,6 +421,7 @@ function detectProjectCommands(
       command: `${gradleExecutable} classes`,
       cwd: workspacePath,
       kind: 'project',
+      profile: 'java',
       category: 'static-check',
     });
     addProjectCommand(commands, seenCommands, {
@@ -355,18 +430,20 @@ function detectProjectCommands(
       command: `${gradleExecutable} test`,
       cwd: workspacePath,
       kind: 'project',
+      profile: 'java',
       category: 'test',
     });
   }
 
   const rootEntries = fs.existsSync(workspacePath) ? fs.readdirSync(workspacePath) : [];
-  if (rootEntries.some((entry) => entry.endsWith('.csproj') || entry.endsWith('.sln'))) {
+  if (profiles.has('dotnet') && rootEntries.some((entry) => entry.endsWith('.csproj') || entry.endsWith('.sln'))) {
     addProjectCommand(commands, seenCommands, {
       id: 'dotnet-build',
       label: 'dotnet build --nologo',
       command: 'dotnet build --nologo',
       cwd: workspacePath,
       kind: 'project',
+      profile: 'dotnet',
       category: 'static-check',
     });
     addProjectCommand(commands, seenCommands, {
@@ -375,6 +452,7 @@ function detectProjectCommands(
       command: 'dotnet test --nologo',
       cwd: workspacePath,
       kind: 'project',
+      profile: 'dotnet',
       category: 'test',
     });
   }
@@ -390,6 +468,7 @@ function detectProjectCommands(
         command: `make ${target}`,
         cwd: workspacePath,
         kind: 'project',
+        profile: profiles.has('typescript') ? 'typescript' : profiles.has('javascript') ? 'javascript' : profiles.has('python') ? 'python' : 'javascript',
         category: 'lint',
       });
     }
@@ -404,6 +483,7 @@ function detectProjectCommands(
         command: `make ${target}`,
         cwd: workspacePath,
         kind: 'project',
+        profile: profiles.has('typescript') ? 'typescript' : profiles.has('javascript') ? 'javascript' : profiles.has('python') ? 'python' : 'javascript',
         category: 'static-check',
       });
     }
@@ -415,12 +495,13 @@ function detectProjectCommands(
         command: 'make test',
         cwd: workspacePath,
         kind: 'project',
+        profile: profiles.has('typescript') ? 'typescript' : profiles.has('javascript') ? 'javascript' : profiles.has('python') ? 'python' : 'javascript',
         category: 'test',
       });
     }
   }
 
-  if (hasPhpFiles && composerText) {
+  if (profiles.has('php') && hasPhpFiles && composerText) {
     if (composerText.includes('phpstan')) {
       addProjectCommand(commands, seenCommands, {
         id: 'phpstan-analyse',
@@ -428,6 +509,7 @@ function detectProjectCommands(
         command: 'vendor/bin/phpstan analyse',
         cwd: workspacePath,
         kind: 'project',
+        profile: 'php',
         category: 'static-check',
       });
     }
@@ -438,34 +520,58 @@ function detectProjectCommands(
         command: 'vendor/bin/phpunit',
         cwd: workspacePath,
         kind: 'project',
+        profile: 'php',
         category: 'test',
       });
     }
   }
 
-  if (hasShellFiles && hasFile(workspacePath, '.shellcheckrc')) {
+  if (profiles.has('shell') && hasShellFiles && hasFile(workspacePath, '.shellcheckrc')) {
     addProjectCommand(commands, seenCommands, {
       id: 'shellcheck-recursive',
       label: 'shellcheck recursive',
       command: "find . -type f \\( -name '*.sh' -o -name '*.bash' -o -name '*.zsh' \\) -print0 | xargs -0 shellcheck",
       cwd: workspacePath,
       kind: 'project',
+      profile: 'shell',
       category: 'lint',
     });
   }
 
-  if (hasRubyFiles && hasFile(workspacePath, 'Rakefile')) {
+  if (profiles.has('ruby') && hasRubyFiles && hasFile(workspacePath, 'Rakefile')) {
     addProjectCommand(commands, seenCommands, {
       id: 'rake-test',
       label: 'rake test',
       command: 'rake test',
       cwd: workspacePath,
       kind: 'project',
+      profile: 'ruby',
       category: 'test',
     });
   }
 
   return Object.freeze(commands);
+}
+
+function buildValidationSelectionSummary(
+  workspacePath: string,
+  profiles: readonly ValidationProfileId[],
+  commands: readonly ValidationCommand[],
+  usedFileSafetyNet: boolean,
+): string {
+  const profileList = [...profiles].sort();
+  appendTelemetryEvent(workspacePath, {
+    kind: 'validation_selection',
+    mode: commands.length > 0 ? 'project' : usedFileSafetyNet ? 'file' : 'none',
+    profiles: Object.freeze(profileList),
+    commandCount: commands.length,
+    usedFileSafetyNet,
+  });
+  const commandList = commands.map((command) => `${command.profile}/${command.category}:${command.command}`);
+  if (commandList.length > 0) {
+    return `Selected validation profiles: ${profileList.length > 0 ? profileList.join(', ') : 'none'} | commands=${commandList.join(' ; ')}`;
+  }
+  return `Selected validation profiles: ${profileList.length > 0 ? profileList.join(', ') : 'none'} | commands=none${usedFileSafetyNet ? ' | using file safety net' : ''}`;
 }
 
 function maybeResolvePath(cwd: string, filePath: string): string {
@@ -715,6 +821,7 @@ async function runProjectCommand(
           success,
           commandId: command.id,
           command: command.command,
+          profile: command.profile,
           category: command.category,
           durationMs,
           summary: `${command.label} ${suffix}`,
@@ -767,6 +874,7 @@ function runFileSafetyNetValidation(sessionFiles: readonly TrackedFile[]): reado
         success: result.success,
         commandId: `file:${tracked.filePath}`,
         command: `validate_code ${tracked.filePath}`,
+        profile: 'file',
         category: 'file',
         durationMs: Date.now() - startedAt,
         summary: result.success
@@ -814,11 +922,19 @@ export async function runFinalValidation(opts: {
   sessionFiles: readonly TrackedFile[];
   streamCallbacks?: ValidationCommandStreamCallbacks;
 }): Promise<FinalValidationResult> {
+  const profiles = detectValidationProfiles(opts.workspacePath, opts.sessionFiles);
   const commands = detectProjectCommands(opts.workspacePath, opts.sessionFiles).filter(isCommandAvailable);
   const lintCommands = commands.filter((command) => command.category === 'lint');
   const staticCommands = commands.filter((command) => command.category === 'static-check');
   const testCommands = commands.filter((command) => command.category === 'test');
   const runs: ValidationRunResult[] = [];
+  const shouldRunFileSafetyNet = staticCommands.length === 0;
+  const selectionSummary = buildValidationSelectionSummary(
+    opts.workspacePath,
+    profiles,
+    commands,
+    shouldRunFileSafetyNet,
+  );
 
   if (lintCommands.length > 0 || staticCommands.length > 0) {
     const [lintRuns, staticRuns] = await Promise.all([
@@ -833,6 +949,7 @@ export async function runFinalValidation(opts: {
       return Object.freeze({
         success: false,
         mode: 'project',
+        selectionSummary,
         runs: Object.freeze(runs),
         summary: failedStaticGate.summary,
       });
@@ -848,13 +965,13 @@ export async function runFinalValidation(opts: {
       return Object.freeze({
         success: false,
         mode: 'project',
+        selectionSummary,
         runs: Object.freeze(runs),
         summary: failedTest.summary,
       });
     }
   }
 
-  const shouldRunFileSafetyNet = staticCommands.length === 0;
   if (shouldRunFileSafetyNet) {
     const fileRuns = runFileSafetyNetValidation(opts.sessionFiles);
     runs.push(...fileRuns);
@@ -864,6 +981,7 @@ export async function runFinalValidation(opts: {
       return Object.freeze({
         success: false,
         mode: runs.length === fileRuns.length ? 'file' : 'project',
+        selectionSummary,
         runs: Object.freeze(runs),
         summary: failedFileRun.summary,
       });
@@ -873,6 +991,7 @@ export async function runFinalValidation(opts: {
       return Object.freeze({
         success: true,
         mode: 'none',
+        selectionSummary,
         runs: Object.freeze([]),
         summary: 'No validation profile detected for changed files.',
       });
@@ -881,6 +1000,7 @@ export async function runFinalValidation(opts: {
     return Object.freeze({
       success: true,
       mode: runs.length === fileRuns.length ? 'file' : 'project',
+      selectionSummary,
       runs: Object.freeze(runs),
       summary: buildSuccessSummary(runs),
     });
@@ -890,6 +1010,7 @@ export async function runFinalValidation(opts: {
     return Object.freeze({
       success: true,
       mode: 'none',
+      selectionSummary,
       runs: Object.freeze([]),
       summary: 'No validation profile detected for changed files.',
     });
@@ -898,6 +1019,7 @@ export async function runFinalValidation(opts: {
   return Object.freeze({
     success: true,
     mode: 'project',
+    selectionSummary,
     runs: Object.freeze(runs),
     summary: buildSuccessSummary(runs),
   });
@@ -911,7 +1033,7 @@ export function formatValidationSummary(result: FinalValidationResult): string {
   lines.push(result.summary);
 
   result.runs.forEach((run) => {
-    lines.push(`- ${run.success ? 'PASS' : 'FAIL'} [${run.category}] \`${run.command}\``);
+    lines.push(`- ${run.success ? 'PASS' : 'FAIL'} [${run.profile}/${run.category}] \`${run.command}\``);
     if (!run.success && run.rawOutputPreview.trim()) {
       lines.push('');
       lines.push('```text');

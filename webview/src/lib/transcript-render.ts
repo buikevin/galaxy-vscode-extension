@@ -194,12 +194,26 @@ export function getToolLabel(message: ChatMessage, toolPath: string): string {
       : "";
 
   switch (message.toolName) {
+    case "find_test_files":
+      return `Tìm file test liên quan${normalizedPath ? ` (${normalizedPath})` : ""}`;
+    case "get_latest_test_failure":
+      return "Lấy lỗi test gần nhất";
+    case "get_latest_review_findings":
+      return "Lấy review findings gần nhất";
+    case "get_next_review_finding":
+      return "Lấy review finding tiếp theo";
+    case "dismiss_review_finding":
+      return "Dismiss review finding";
+    case "insert_file_at_line":
+      return `Chèn nội dung theo dòng${normalizedPath ? ` (${normalizedPath})` : ""}`;
     case "write_file":
       return `${operation === "create" ? "Tạo file" : "Ghi file"}${normalizedPath ? ` (${normalizedPath})` : ""}`;
     case "edit_file":
       return `Sửa file${normalizedPath ? ` (${normalizedPath})` : ""}`;
     case "edit_file_range":
       return `Sửa file theo dòng${normalizedPath ? ` (${normalizedPath})` : ""}`;
+    case "multi_edit_file_ranges":
+      return `Sửa nhiều vùng dòng${normalizedPath ? ` (${normalizedPath})` : ""}`;
     case "grep":
       return `Tìm kiếm${normalizedPath ? ` (${shortenPath(toolPath)})` : ""}`;
     case "head":
@@ -207,9 +221,29 @@ export function getToolLabel(message: ChatMessage, toolPath: string): string {
     case "tail":
       return `Xem cuối file${normalizedPath ? ` (${normalizedPath})` : ""}`;
     case "validate_code":
-      return "Kiểm tra mã";
+      return "Quality Gate: Kiểm tra file";
     case "request_code_review":
-      return "Review code";
+      return "Quality Gate: Review code";
+    case "run_terminal_command":
+      return "Chạy terminal";
+    case "await_terminal_command":
+      return "Chờ terminal";
+    case "get_terminal_output":
+      return "Đọc output terminal";
+    case "kill_terminal_command":
+      return "Dừng terminal";
+    case "vscode_open_diff":
+      return normalizedPath ? `Mở diff native (${normalizedPath})` : "Mở diff native";
+    case "vscode_show_problems":
+      return normalizedPath ? `Xem Problems (${normalizedPath})` : "Xem Problems";
+    case "vscode_workspace_search":
+      return query ? `Tìm kiếm workspace (${query})` : "Tìm kiếm workspace";
+    case "vscode_find_references":
+      return normalizedPath ? `Tìm references (${normalizedPath})` : "Tìm references";
+    case "search_extension_tools":
+      return query ? `Tìm extension tools (${query})` : "Tìm extension tools";
+    case "activate_extension_tools":
+      return "Bật extension tools";
     case "galaxy_design_project_info":
       return normalizedPath
         ? `Kiểm tra Galaxy Design (${normalizedPath})`

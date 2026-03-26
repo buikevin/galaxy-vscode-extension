@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
 import { tavily } from '@tavily/core';
-import type { GalaxyConfig } from '../config/types';
+import type { GalaxyConfig, ToolCapabilityConfig } from '../config/types';
+import type { ExtensionToolGroup, ExtensionToolItem } from '../shared/protocol';
 import { resolveAttachmentStoredPath } from '../attachments/attachment-store';
 import { getProjectStorageInfo } from '../context/project-store';
 import { getCachedReadResult, storeReadCache } from '../context/rag-metadata-store';
@@ -13,7 +14,12 @@ import {
   galaxyDesignProjectInfoTool,
   galaxyDesignRegistryTool,
 } from './galaxy-design-tools';
-import { runProjectCommandTool } from './project-command-tools';
+import {
+  awaitManagedProjectCommandTool,
+  getManagedProjectCommandOutputTool,
+  killManagedProjectCommandTool,
+  runProjectCommandTool,
+} from './project-command-tools';
 import { readDocumentFile } from './document-reader';
 
 export type ToolResult = Readonly<{
@@ -44,6 +50,40 @@ export type FileToolContext = Readonly<{
   config: GalaxyConfig;
   revealFile: (filePath: string, range?: RevealRange) => Promise<void>;
   refreshWorkspaceFiles: () => Promise<void>;
+  openTrackedDiff?: (filePath: string) => Promise<ToolResult>;
+  showProblems?: (filePath?: string) => Promise<ToolResult>;
+  workspaceSearch?: (query: string, options?: Readonly<{
+    includes?: string;
+    maxResults?: number;
+    isRegex?: boolean;
+    isCaseSensitive?: boolean;
+    matchWholeWord?: boolean;
+  }>) => Promise<ToolResult>;
+  findReferences?: (
+    filePath: string,
+    options?: Readonly<{
+      line?: number;
+      character?: number;
+      symbol?: string;
+      maxResults?: number;
+    }>,
+  ) => Promise<ToolResult>;
+  executeExtensionCommand?: (
+    commandId: string,
+    title: string,
+    extensionId: string,
+  ) => Promise<ToolResult>;
+  searchExtensionTools?: (
+    query: string,
+    maxResults?: number,
+  ) => Promise<ToolResult>;
+  activateExtensionTools?: (
+    toolKeys: readonly string[],
+  ) => Promise<ToolResult>;
+  getLatestTestFailure?: () => Promise<ToolResult>;
+  getLatestReviewFindings?: () => Promise<ToolResult>;
+  getNextReviewFinding?: () => Promise<ToolResult>;
+  dismissReviewFinding?: (findingId: string) => Promise<ToolResult>;
   onProjectCommandStart?: (payload: Readonly<{ toolCallId: string; commandText: string; cwd: string; startedAt: number }>) => Promise<void> | void;
   onProjectCommandChunk?: (payload: Readonly<{ toolCallId: string; chunk: string }>) => Promise<void> | void;
   onProjectCommandEnd?: (payload: Readonly<{ toolCallId: string; exitCode: number; success: boolean; durationMs: number; background?: boolean }>) => Promise<void> | void;
@@ -795,6 +835,81 @@ function createRegex(pattern: string): RegExp {
   }
 }
 
+function findTestFilesTool(workspaceRoot: string, rawPath: string): ToolResult {
+  try {
+    const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
+    const rel = toDisplayPath(resolved, workspaceRoot);
+    const ext = path.extname(resolved);
+    const base = path.basename(resolved, ext);
+    const dir = path.dirname(resolved);
+    const isTestFile = /\.(test|spec)$/.test(base) || dir.includes(`${path.sep}__tests__`);
+    const sourceBase = base.replace(/\.(test|spec)$/, '');
+    const candidates = new Set<string>();
+
+    const walk = (currentDir: string): void => {
+      if (!fs.existsSync(currentDir)) {
+        return;
+      }
+      for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+        const absolute = path.join(currentDir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist' || entry.name === 'build') {
+            continue;
+          }
+          walk(absolute);
+          continue;
+        }
+        const entryExt = path.extname(entry.name);
+        const entryBase = path.basename(entry.name, entryExt);
+        if (isTestFile) {
+          if (entryBase === sourceBase && entryExt !== '.snap') {
+            candidates.add(absolute);
+          }
+        } else if (
+          entryBase === `${base}.test` ||
+          entryBase === `${base}.spec` ||
+          entryBase === `${sourceBase}.test` ||
+          entryBase === `${sourceBase}.spec`
+        ) {
+          candidates.add(absolute);
+        }
+      }
+    };
+
+    const searchRoots = new Set<string>([
+      dir,
+      path.join(workspaceRoot, '__tests__'),
+      workspaceRoot,
+    ]);
+    for (const root of searchRoots) {
+      walk(root);
+    }
+
+    const results = [...candidates]
+      .filter((candidate) => candidate !== resolved)
+      .slice(0, 20)
+      .map((candidate) => toDisplayPath(candidate, workspaceRoot));
+
+    return Object.freeze({
+      success: true,
+      content: results.length > 0
+        ? [`Related test/source files for ${rel}:`, ...results.map((item) => `- ${item}`)].join('\n')
+        : `No related test/source files found for ${rel}.`,
+      meta: Object.freeze({
+        filePath: resolved,
+        relatedFiles: Object.freeze(results),
+        resultCount: results.length,
+      }),
+    });
+  } catch (error) {
+    return Object.freeze({
+      success: false,
+      content: '',
+      error: String(error),
+    });
+  }
+}
+
 function readFileTool(workspaceRoot: string, rawPath: string, options?: { maxLines?: number; offset?: number }): ToolResult {
   try {
     const resolved = resolveReadablePath(workspaceRoot, rawPath);
@@ -884,6 +999,13 @@ function writeFileTool(workspaceRoot: string, rawPath: string, content: string):
   try {
     const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
     const existedBefore = fs.existsSync(resolved);
+    if (existedBefore) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `Refusing to overwrite existing file ${rawPath} with write_file. Use edit_file_range or multi_edit_file_ranges instead.`,
+      });
+    }
     captureOriginal(resolved);
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
     fs.writeFileSync(resolved, content, 'utf-8');
@@ -986,6 +1108,7 @@ function editFileRangeTool(
   startLine: number,
   endLine: number,
   newContent: string,
+  expectedTotalLines?: number,
 ): ToolResult {
   try {
     const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
@@ -1008,6 +1131,13 @@ function editFileRangeTool(
     captureOriginal(resolved);
     const original = fs.readFileSync(resolved, 'utf-8');
     const originalLines = original.split('\n');
+    if (Number.isFinite(expectedTotalLines) && expectedTotalLines! > 0 && originalLines.length !== expectedTotalLines) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `File ${rawPath} changed since the last read. expected_total_lines=${expectedTotalLines}, current_total_lines=${originalLines.length}. Read the file again before editing.`,
+      });
+    }
 
     if (startLine > originalLines.length + 1) {
       return Object.freeze({
@@ -1044,6 +1174,197 @@ function editFileRangeTool(
         rangeEdit: true,
         startLine,
         endLine,
+        ...(Number.isFinite(expectedTotalLines) && expectedTotalLines! > 0
+          ? { expectedTotalLines }
+          : {}),
+      }),
+    });
+  } catch (error) {
+    return Object.freeze({
+      success: false,
+      content: '',
+      error: String(error),
+    });
+  }
+}
+
+function insertFileAtLineTool(
+  workspaceRoot: string,
+  rawPath: string,
+  line: number,
+  contentToInsert: string,
+  expectedTotalLines?: number,
+): ToolResult {
+  try {
+    const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
+    if (!fs.existsSync(resolved)) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `File not found: ${rawPath}`,
+      });
+    }
+    if (!Number.isFinite(line) || line < 1) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `Invalid line for ${rawPath}. line must be 1-based and >= 1.`,
+      });
+    }
+
+    captureOriginal(resolved);
+    const original = fs.readFileSync(resolved, 'utf-8');
+    const originalLines = original.split('\n');
+    if (
+      typeof expectedTotalLines === 'number' &&
+      Number.isFinite(expectedTotalLines) &&
+      expectedTotalLines > 0 &&
+      originalLines.length !== expectedTotalLines
+    ) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `File changed since the last read. Expected ${expectedTotalLines} total lines in ${rawPath}, but found ${originalLines.length}. Read the file again before editing.`,
+      });
+    }
+    if (line > originalLines.length + 1) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `line ${line} is outside ${rawPath} (${originalLines.length} lines).`,
+      });
+    }
+
+    const insertedLines = contentToInsert.split('\n');
+    const updatedLines = [...originalLines];
+    updatedLines.splice(line - 1, 0, ...insertedLines);
+    fs.writeFileSync(resolved, updatedLines.join('\n'), 'utf-8');
+    trackFileWrite(resolved);
+
+    return Object.freeze({
+      success: true,
+      content: `Inserted content into ${toDisplayPath(resolved, workspaceRoot)} before line ${line}`,
+      meta: Object.freeze({
+        filePath: resolved,
+        operation: 'edit',
+        existedBefore: true,
+        changedLineRanges: Object.freeze([
+          Object.freeze({
+            startLine: line,
+            endLine: Math.max(line, line + insertedLines.length - 1),
+          }),
+        ]),
+        insertEdit: true,
+        startLine: line,
+      }),
+    });
+  } catch (error) {
+    return Object.freeze({
+      success: false,
+      content: '',
+      error: String(error),
+    });
+  }
+}
+
+function multiEditFileRangesTool(
+  workspaceRoot: string,
+  rawPath: string,
+  edits: readonly Readonly<{
+    start_line: number;
+    end_line: number;
+    new_content: string;
+  }>[],
+  expectedTotalLines?: number,
+): ToolResult {
+  try {
+    const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
+    if (!fs.existsSync(resolved)) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `File not found: ${rawPath}`,
+      });
+    }
+    if (!Array.isArray(edits) || edits.length === 0) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `No edits provided for ${rawPath}.`,
+      });
+    }
+
+    captureOriginal(resolved);
+    const original = fs.readFileSync(resolved, 'utf-8');
+    const originalLines = original.split('\n');
+    if (Number.isFinite(expectedTotalLines) && expectedTotalLines! > 0 && originalLines.length !== expectedTotalLines) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `File ${rawPath} changed since the last read. expected_total_lines=${expectedTotalLines}, current_total_lines=${originalLines.length}. Read the file again before editing.`,
+      });
+    }
+
+    const normalizedEdits = edits.map((edit, index) => {
+      const startLine = Number(edit.start_line);
+      const endLine = Number(edit.end_line);
+      if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || startLine < 1 || endLine < startLine) {
+        throw new Error(`Invalid range for edit ${index + 1} in ${rawPath}. start_line and end_line must be 1-based and end_line >= start_line.`);
+      }
+      if (startLine > originalLines.length + 1) {
+        throw new Error(`start_line ${startLine} is outside ${rawPath} (${originalLines.length} lines).`);
+      }
+      return Object.freeze({
+        startLine,
+        endLine,
+        newContent: String(edit.new_content ?? ''),
+      });
+    });
+
+    const sorted = [...normalizedEdits].sort((left, right) => right.startLine - left.startLine);
+    for (let index = 0; index < sorted.length - 1; index += 1) {
+      const current = sorted[index];
+      const next = sorted[index + 1];
+      if (next.endLine >= current.startLine) {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: `Overlapping edit ranges detected in ${rawPath}.`,
+        });
+      }
+    }
+
+    let updatedLines = [...originalLines];
+    for (const edit of sorted) {
+      updatedLines = [
+        ...updatedLines.slice(0, edit.startLine - 1),
+        ...edit.newContent.split('\n'),
+        ...updatedLines.slice(edit.endLine),
+      ];
+    }
+
+    fs.writeFileSync(resolved, updatedLines.join('\n'), 'utf-8');
+    trackFileWrite(resolved);
+
+    return Object.freeze({
+      success: true,
+      content: `Edited ${toDisplayPath(resolved, workspaceRoot)} with ${normalizedEdits.length} targeted range edit(s)`,
+      meta: Object.freeze({
+        filePath: resolved,
+        operation: 'edit',
+        existedBefore: true,
+        multiRangeEdit: true,
+        changedLineRanges: Object.freeze(
+          normalizedEdits.map((edit) =>
+            Object.freeze({
+              startLine: edit.startLine,
+              endLine: Math.max(edit.startLine, edit.startLine + edit.newContent.split('\n').length - 1),
+            }),
+          ),
+        ),
+        ...(Number.isFinite(expectedTotalLines) && expectedTotalLines! > 0
+          ? { expectedTotalLines }
+          : {}),
       }),
     });
   } catch (error) {
@@ -1492,6 +1813,43 @@ function p(call: ToolCall, key: string, fallback = ''): string {
   return String(call.params[key] ?? fallback).trim();
 }
 
+type DiscoveredExtensionTool = Readonly<{
+  group: ExtensionToolGroup;
+  tool: ExtensionToolItem;
+}>;
+
+function getAvailableExtensionTools(config: GalaxyConfig): readonly DiscoveredExtensionTool[] {
+  return Object.freeze(
+    (config.availableExtensionToolGroups ?? []).flatMap((group) =>
+      group.tools.map((tool) =>
+        Object.freeze({
+          group,
+          tool,
+        }),
+      ),
+    ),
+  );
+}
+
+function findDiscoveredExtensionTool(
+  config: GalaxyConfig,
+  rawName: string,
+): DiscoveredExtensionTool | null {
+  const normalizedRaw = String(rawName ?? '').trim().toLowerCase();
+  if (!normalizedRaw) {
+    return null;
+  }
+
+  return (
+    getAvailableExtensionTools(config).find(
+      ({ tool }) =>
+        tool.qualifiedName.trim().toLowerCase() === normalizedRaw ||
+        tool.command.trim().toLowerCase() === normalizedRaw ||
+        tool.key.trim().toLowerCase() === normalizedRaw,
+    ) ?? null
+  );
+}
+
 export function normalizeToolName(raw: string): string {
   const lowered = String(raw ?? '').toLowerCase().trim();
   const base = lowered.split(/[./]/).pop() ?? lowered;
@@ -1502,12 +1860,36 @@ export function normalizeToolName(raw: string): string {
       return 'read_file';
     case 'writefile':
       return 'write_file';
+    case 'insertfileatline':
+      return 'insert_file_at_line';
     case 'editfile':
       return 'edit_file';
+    case 'multieditfileranges':
+      return 'multi_edit_file_ranges';
+    case 'getnextreviewfinding':
+      return 'get_next_review_finding';
+    case 'dismissreviewfinding':
+      return 'dismiss_review_finding';
     case 'listdir':
       return 'list_dir';
     case 'runprojectcommand':
       return 'run_project_command';
+    case 'runterminalcommand':
+      return 'run_terminal_command';
+    case 'awaitterminalcommand':
+      return 'await_terminal_command';
+    case 'getterminaloutput':
+      return 'get_terminal_output';
+    case 'killterminalcommand':
+      return 'kill_terminal_command';
+    case 'vscodeopendiff':
+      return 'vscode_open_diff';
+    case 'vscodeshowproblems':
+      return 'vscode_show_problems';
+    case 'vscodeworkspacesearch':
+      return 'vscode_workspace_search';
+    case 'vscodefindreferences':
+      return 'vscode_find_references';
     case 'searchweb':
       return 'search_web';
     case 'extractweb':
@@ -1536,6 +1918,29 @@ export function normalizeToolName(raw: string): string {
 }
 
 export async function executeToolAsync(call: ToolCall, toolContext: FileToolContext): Promise<ToolResult> {
+  const extensionTool = findDiscoveredExtensionTool(toolContext.config, call.name);
+  if (extensionTool) {
+    if (toolContext.config.extensionToolToggles[extensionTool.tool.key] !== true) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `Extension tool is disabled: ${extensionTool.tool.qualifiedName}`,
+      });
+    }
+    if (!toolContext.executeExtensionCommand) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `Extension command execution is not available for ${extensionTool.tool.qualifiedName}.`,
+      });
+    }
+    return toolContext.executeExtensionCommand(
+      extensionTool.tool.command,
+      extensionTool.tool.title,
+      extensionTool.group.extensionId,
+    );
+  }
+
   const toolName = normalizeToolName(call.name);
 
   switch (toolName) {
@@ -1544,8 +1949,43 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
         maxLines: Number(call.params.maxLines ?? 200),
         offset: Number(call.params.offset ?? 0),
       });
+    case 'find_test_files':
+      return findTestFilesTool(toolContext.workspaceRoot, p(call, 'path'));
+    case 'get_latest_test_failure':
+      if (!toolContext.getLatestTestFailure) {
+        return Object.freeze({ success: false, content: '', error: 'Latest test failure is not available in this context.' });
+      }
+      return toolContext.getLatestTestFailure();
+    case 'get_latest_review_findings':
+      if (!toolContext.getLatestReviewFindings) {
+        return Object.freeze({ success: false, content: '', error: 'Latest review findings are not available in this context.' });
+      }
+      return toolContext.getLatestReviewFindings();
+    case 'get_next_review_finding':
+      if (!toolContext.getNextReviewFinding) {
+        return Object.freeze({ success: false, content: '', error: 'Next review finding is not available in this context.' });
+      }
+      return toolContext.getNextReviewFinding();
+    case 'dismiss_review_finding':
+      if (!toolContext.dismissReviewFinding) {
+        return Object.freeze({ success: false, content: '', error: 'Dismissing review findings is not available in this context.' });
+      }
+      return toolContext.dismissReviewFinding(p(call, 'finding_id'));
     case 'write_file': {
       const result = writeFileTool(toolContext.workspaceRoot, p(call, 'path'), String(call.params.content ?? ''));
+      if (result.success && typeof result.meta?.filePath === 'string') {
+        await toolContext.refreshWorkspaceFiles();
+      }
+      return result;
+    }
+    case 'insert_file_at_line': {
+      const result = insertFileAtLineTool(
+        toolContext.workspaceRoot,
+        p(call, 'path'),
+        Number(call.params.line ?? 0),
+        String(call.params.content ?? ''),
+        Number(call.params.expected_total_lines ?? 0),
+      );
       if (result.success && typeof result.meta?.filePath === 'string') {
         await toolContext.refreshWorkspaceFiles();
       }
@@ -1571,6 +2011,25 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
         Number(call.params.start_line ?? 0),
         Number(call.params.end_line ?? 0),
         String(call.params.new_content ?? ''),
+        Number(call.params.expected_total_lines ?? 0),
+      );
+      if (result.success && typeof result.meta?.filePath === 'string') {
+        await toolContext.refreshWorkspaceFiles();
+      }
+      return result;
+    }
+    case 'multi_edit_file_ranges': {
+      const result = multiEditFileRangesTool(
+        toolContext.workspaceRoot,
+        p(call, 'path'),
+        Array.isArray(call.params.edits)
+          ? (call.params.edits as Array<{
+              start_line: number;
+              end_line: number;
+              new_content: string;
+            }>)
+          : [],
+        Number(call.params.expected_total_lines ?? 0),
       );
       if (result.success && typeof result.meta?.filePath === 'string') {
         await toolContext.refreshWorkspaceFiles();
@@ -1658,12 +2117,14 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
         });
       }
     case 'run_project_command':
+    case 'run_terminal_command':
       return runProjectCommandTool(
         toolContext.workspaceRoot,
         p(call, 'command', p(call, 'commandId')),
         {
           cwd: p(call, 'cwd'),
           maxChars: Number(call.params.maxChars ?? 8_000),
+          ...(toolName === 'run_terminal_command' ? { asyncStartOnly: true } : {}),
           stream: typeof call.params.toolCallId === 'string'
             ? {
                 onStart: async ({ commandText, cwd, startedAt }) => {
@@ -1704,6 +2165,62 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
               }
             : undefined,
         },
+      );
+    case 'await_terminal_command':
+      return awaitManagedProjectCommandTool(p(call, 'commandId'), {
+        timeoutMs: Number(call.params.timeoutMs ?? 15_000),
+        maxChars: Number(call.params.maxChars ?? 8_000),
+      });
+    case 'get_terminal_output':
+      return getManagedProjectCommandOutputTool(p(call, 'commandId'), {
+        maxChars: Number(call.params.maxChars ?? 8_000),
+      });
+    case 'kill_terminal_command':
+      return killManagedProjectCommandTool(p(call, 'commandId'));
+    case 'vscode_open_diff':
+      if (!toolContext.openTrackedDiff) {
+        return Object.freeze({ success: false, content: '', error: 'VS Code native diff is not available in this context.' });
+      }
+      return toolContext.openTrackedDiff(p(call, 'path'));
+    case 'vscode_show_problems':
+      if (!toolContext.showProblems) {
+        return Object.freeze({ success: false, content: '', error: 'VS Code problems view is not available in this context.' });
+      }
+      return toolContext.showProblems(p(call, 'path'));
+    case 'vscode_workspace_search':
+      if (!toolContext.workspaceSearch) {
+        return Object.freeze({ success: false, content: '', error: 'VS Code workspace search is not available in this context.' });
+      }
+      return toolContext.workspaceSearch(p(call, 'query'), {
+        includes: p(call, 'includes'),
+        maxResults: Number(call.params.maxResults ?? 20),
+        isRegex: Boolean(call.params.isRegex ?? false),
+        isCaseSensitive: Boolean(call.params.isCaseSensitive ?? false),
+        matchWholeWord: Boolean(call.params.matchWholeWord ?? false),
+      });
+    case 'vscode_find_references':
+      if (!toolContext.findReferences) {
+        return Object.freeze({ success: false, content: '', error: 'VS Code references provider is not available in this context.' });
+      }
+      return toolContext.findReferences(p(call, 'path'), {
+        line: typeof call.params.line === 'number' ? Number(call.params.line) : undefined,
+        character: typeof call.params.character === 'number' ? Number(call.params.character) : undefined,
+        symbol: p(call, 'symbol'),
+        maxResults: Number(call.params.maxResults ?? 20),
+      });
+    case 'search_extension_tools':
+      if (!toolContext.searchExtensionTools) {
+        return Object.freeze({ success: false, content: '', error: 'Extension tool search is not available in this context.' });
+      }
+      return toolContext.searchExtensionTools(p(call, 'query'), Number(call.params.maxResults ?? 8));
+    case 'activate_extension_tools':
+      if (!toolContext.activateExtensionTools) {
+        return Object.freeze({ success: false, content: '', error: 'Extension tool activation is not available in this context.' });
+      }
+      return toolContext.activateExtensionTools(
+        Array.isArray(call.params.tool_keys)
+          ? (call.params.tool_keys as unknown[]).map((item) => String(item ?? '').trim()).filter(Boolean)
+          : [],
       );
     case 'galaxy_design_project_info':
       return galaxyDesignProjectInfoTool(toolContext.workspaceRoot, p(call, 'path'));
@@ -1748,7 +2265,60 @@ export function getToolFilePath(call: ToolCall): string {
 
 export function isCodeWriteTool(toolName: string): boolean {
   const normalized = normalizeToolName(toolName);
-  return normalized === 'write_file' || normalized === 'edit_file' || normalized === 'edit_file_range';
+  return normalized === 'write_file' || normalized === 'insert_file_at_line' || normalized === 'edit_file' || normalized === 'edit_file_range' || normalized === 'multi_edit_file_ranges';
+}
+
+function getToolCapability(toolName: string): keyof ToolCapabilityConfig | null {
+  const normalized = normalizeToolName(toolName);
+  switch (normalized) {
+    case 'read_file':
+    case 'find_test_files':
+    case 'get_latest_test_failure':
+    case 'get_latest_review_findings':
+    case 'get_next_review_finding':
+    case 'dismiss_review_finding':
+    case 'grep':
+    case 'list_dir':
+    case 'head':
+    case 'tail':
+    case 'read_document':
+      return 'readProject';
+    case 'write_file':
+    case 'insert_file_at_line':
+    case 'edit_file':
+    case 'edit_file_range':
+    case 'multi_edit_file_ranges':
+      return 'editFiles';
+    case 'run_project_command':
+    case 'run_terminal_command':
+    case 'await_terminal_command':
+    case 'get_terminal_output':
+    case 'kill_terminal_command':
+      return 'runCommands';
+    case 'search_web':
+    case 'extract_web':
+    case 'map_web':
+    case 'crawl_web':
+      return 'webResearch';
+    case 'validate_code':
+      return 'validation';
+    case 'request_code_review':
+      return 'review';
+    case 'vscode_open_diff':
+    case 'vscode_show_problems':
+    case 'vscode_workspace_search':
+    case 'vscode_find_references':
+    case 'search_extension_tools':
+    case 'activate_extension_tools':
+      return 'vscodeNative';
+    case 'galaxy_design_project_info':
+    case 'galaxy_design_registry':
+    case 'galaxy_design_init':
+    case 'galaxy_design_add':
+      return 'galaxyDesign';
+    default:
+      return null;
+  }
 }
 
 const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
@@ -1766,8 +2336,57 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
     }),
   }),
   Object.freeze({
+    name: 'find_test_files',
+    description: 'Find likely related test files for a source file, or likely source files for a test file.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        path: Object.freeze({ type: 'string', description: 'Source or test file path inside the workspace' }),
+      }),
+      required: Object.freeze(['path']),
+    }),
+  }),
+  Object.freeze({
+    name: 'get_latest_test_failure',
+    description: 'Get the latest persisted test failure from the current workspace, if one exists.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({}),
+      required: Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
+    name: 'get_latest_review_findings',
+    description: 'Get the latest persisted code review findings from the current workspace, if they exist.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({}),
+      required: Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
+    name: 'get_next_review_finding',
+    description: 'Get the next open review finding from the latest persisted review results.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({}),
+      required: Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
+    name: 'dismiss_review_finding',
+    description: 'Dismiss one persisted review finding by id after you have handled or rejected it.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        finding_id: Object.freeze({ type: 'string', description: 'Exact id of the review finding to dismiss' }),
+      }),
+      required: Object.freeze(['finding_id']),
+    }),
+  }),
+  Object.freeze({
     name: 'write_file',
-    description: 'Write or overwrite an entire file. Prefer this for new files or full rewrites.',
+    description: 'Create a new file. This tool refuses to overwrite an existing file.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
@@ -1775,6 +2394,20 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
         content: Object.freeze({ type: 'string', description: 'Full file content to write' }),
       }),
       required: Object.freeze(['path', 'content']),
+    }),
+  }),
+  Object.freeze({
+    name: 'insert_file_at_line',
+    description: 'Insert content before a specific line in an existing file. Prefer this for adding imports, props, or small blocks without rewriting a whole range.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        path: Object.freeze({ type: 'string', description: 'File path inside the workspace' }),
+        line: Object.freeze({ type: 'number', description: '1-based line number before which the new content will be inserted' }),
+        content: Object.freeze({ type: 'string', description: 'Content to insert' }),
+        expected_total_lines: Object.freeze({ type: 'number', description: 'Total line count from the most recent read_file result for this file. Use it to avoid inserting into a stale snapshot.' }),
+      }),
+      required: Object.freeze(['path', 'line', 'content']),
     }),
   }),
   Object.freeze({
@@ -1787,8 +2420,34 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
         start_line: Object.freeze({ type: 'number', description: '1-based start line, inclusive' }),
         end_line: Object.freeze({ type: 'number', description: '1-based end line, inclusive' }),
         new_content: Object.freeze({ type: 'string', description: 'Replacement content for the target line range' }),
+        expected_total_lines: Object.freeze({ type: 'number', description: 'Total line count from the most recent read_file result for this file. Use it to avoid editing stale line ranges.' }),
       }),
       required: Object.freeze(['path', 'start_line', 'end_line', 'new_content']),
+    }),
+  }),
+  Object.freeze({
+    name: 'multi_edit_file_ranges',
+    description: 'Apply multiple targeted line-range edits to one existing file in a single call. Prefer this when you need to change several places in the same file after a recent read_file result.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        path: Object.freeze({ type: 'string', description: 'File path inside the workspace' }),
+        expected_total_lines: Object.freeze({ type: 'number', description: 'Total line count from the most recent read_file result for this file. Use it to avoid editing stale line ranges.' }),
+        edits: Object.freeze({
+          type: 'array',
+          description: 'Non-overlapping range edits, based on the current file line numbers.',
+          items: Object.freeze({
+            type: 'object',
+            properties: Object.freeze({
+              start_line: Object.freeze({ type: 'number', description: '1-based start line, inclusive' }),
+              end_line: Object.freeze({ type: 'number', description: '1-based end line, inclusive' }),
+              new_content: Object.freeze({ type: 'string', description: 'Replacement content for that range' }),
+            }),
+            required: Object.freeze(['start_line', 'end_line', 'new_content']),
+          }),
+        }),
+      }),
+      required: Object.freeze(['path', 'edits']),
     }),
   }),
   Object.freeze({
@@ -1935,8 +2594,57 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
 
 const ACTION_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
   Object.freeze({
+    name: 'run_terminal_command',
+    description: 'Start a terminal command in the workspace and return immediately with a command id. Prefer this over run_project_command for long-running commands.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        command: Object.freeze({ type: 'string', description: 'Exact command to run in the workspace shell' }),
+        cwd: Object.freeze({ type: 'string', description: 'Optional working directory inside the workspace' }),
+        maxChars: Object.freeze({ type: 'number', description: 'Maximum output characters to track in memory, default 8000' }),
+      }),
+      required: Object.freeze(['command']),
+    }),
+  }),
+  Object.freeze({
+    name: 'await_terminal_command',
+    description: 'Wait for a previously started terminal command to finish, or return that it is still running after a timeout.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        commandId: Object.freeze({ type: 'string', description: 'Command id returned by run_terminal_command' }),
+        timeoutMs: Object.freeze({ type: 'number', description: 'How long to wait before returning still-running status (default 15000)' }),
+        maxChars: Object.freeze({ type: 'number', description: 'Maximum tail output characters to include (default 8000)' }),
+      }),
+      required: Object.freeze(['commandId']),
+    }),
+  }),
+  Object.freeze({
+    name: 'get_terminal_output',
+    description: 'Read the current tail output of a previously started terminal command without waiting for completion.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        commandId: Object.freeze({ type: 'string', description: 'Command id returned by run_terminal_command' }),
+        maxChars: Object.freeze({ type: 'number', description: 'Maximum tail output characters to include (default 8000)' }),
+      }),
+      required: Object.freeze(['commandId']),
+    }),
+  }),
+  Object.freeze({
+    name: 'kill_terminal_command',
+    description: 'Send a termination signal to a previously started terminal command.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        commandId: Object.freeze({ type: 'string', description: 'Command id returned by run_terminal_command' }),
+      }),
+      required: Object.freeze(['commandId']),
+    }),
+  }),
+  Object.freeze({
     name: 'run_project_command',
-    description: 'Run a workspace command for build, test, lint, git, filesystem setup, or other project actions. Execution depends on local command permissions.',
+    description: 'Legacy compatibility shim for running a workspace command directly. Prefer run_terminal_command plus await/get/kill terminal tools for new flows.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
@@ -1968,6 +2676,89 @@ const QUALITY_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
       type: 'object',
       properties: Object.freeze({}),
       required: Object.freeze([]),
+    }),
+  }),
+]);
+
+const VSCODE_NATIVE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
+  Object.freeze({
+    name: 'vscode_open_diff',
+    description: 'Open the tracked diff for a workspace file in the native VS Code diff editor.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        path: Object.freeze({ type: 'string', description: 'Workspace file path to open in native diff' }),
+      }),
+      required: Object.freeze(['path']),
+    }),
+  }),
+  Object.freeze({
+    name: 'vscode_show_problems',
+    description: 'Show the native Problems panel and return a compact summary of diagnostics, optionally filtered to one file.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        path: Object.freeze({ type: 'string', description: 'Optional workspace file path to filter diagnostics' }),
+      }),
+      required: Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
+    name: 'vscode_workspace_search',
+    description: 'Use native VS Code workspace text search and return a compact summary of matches.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        query: Object.freeze({ type: 'string', description: 'Search query' }),
+        includes: Object.freeze({ type: 'string', description: 'Optional include glob, for example src/**/*.ts' }),
+        maxResults: Object.freeze({ type: 'number', description: 'Maximum number of matches to summarize (default 20)' }),
+        isRegex: Object.freeze({ type: 'boolean', description: 'Treat query as regex' }),
+        isCaseSensitive: Object.freeze({ type: 'boolean', description: 'Use case-sensitive search' }),
+        matchWholeWord: Object.freeze({ type: 'boolean', description: 'Match whole words only' }),
+      }),
+      required: Object.freeze(['query']),
+    }),
+  }),
+  Object.freeze({
+    name: 'vscode_find_references',
+    description: 'Use the native VS Code references provider for a symbol in a file, based on line/character or a best-effort symbol match.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        path: Object.freeze({ type: 'string', description: 'Workspace file path containing the symbol' }),
+        line: Object.freeze({ type: 'number', description: '1-based line number for the symbol position' }),
+        character: Object.freeze({ type: 'number', description: '1-based character for the symbol position' }),
+        symbol: Object.freeze({ type: 'string', description: 'Optional symbol text to locate when line/character is unavailable' }),
+        maxResults: Object.freeze({ type: 'number', description: 'Maximum references to summarize (default 20)' }),
+      }),
+      required: Object.freeze(['path']),
+    }),
+  }),
+  Object.freeze({
+    name: 'search_extension_tools',
+    description: 'Search the locally installed VS Code extension tool catalog. Use this when you need a domain-specific extension tool such as prisma, python, git, nx, or similar.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        query: Object.freeze({ type: 'string', description: 'Domain or keyword to search for, for example prisma, python, git, nx' }),
+        maxResults: Object.freeze({ type: 'number', description: 'Maximum number of extension groups to return (default 8)' }),
+      }),
+      required: Object.freeze(['query']),
+    }),
+  }),
+  Object.freeze({
+    name: 'activate_extension_tools',
+    description: 'Activate specific discovered extension tools by their tool keys so they become available in the runtime tool schema for later turns.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        tool_keys: Object.freeze({
+          type: 'array',
+          items: Object.freeze({ type: 'string' }),
+          description: 'Exact tool keys returned by search_extension_tools',
+        }),
+      }),
+      required: Object.freeze(['tool_keys']),
     }),
   }),
 ]);
@@ -2029,25 +2820,45 @@ const GALAXY_DESIGN_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze(
 ]);
 
 export function isToolEnabled(toolName: string, config: GalaxyConfig): boolean {
-  const normalized = normalizeToolName(toolName);
-  switch (normalized) {
-    case 'run_project_command':
-      return config.toolSafety.enableProjectCommandTool;
-    case 'validate_code':
-      return config.quality.test;
-    case 'request_code_review':
-      return config.quality.review;
-    default:
-      return true;
+  const extensionTool = findDiscoveredExtensionTool(config, toolName);
+  if (extensionTool) {
+    return config.extensionToolToggles[extensionTool.tool.key] === true;
   }
+
+  const normalized = normalizeToolName(toolName);
+  const capability = getToolCapability(normalized);
+  const capabilityEnabled = capability ? config.toolCapabilities[capability] : true;
+  const toolEnabled = normalized in config.toolToggles
+    ? config.toolToggles[normalized as keyof GalaxyConfig['toolToggles']]
+    : true;
+  return capabilityEnabled && toolEnabled;
 }
 
 export function getEnabledToolDefinitions(config: GalaxyConfig): readonly ToolDefinition[] {
+  const fileTools = FILE_TOOL_DEFINITIONS.filter((definition) => isToolEnabled(definition.name, config));
+  const actionTools = ACTION_TOOL_DEFINITIONS.filter((definition) => isToolEnabled(definition.name, config));
   const qualityTools = QUALITY_TOOL_DEFINITIONS.filter((definition) => isToolEnabled(definition.name, config));
+  const vscodeNativeTools = VSCODE_NATIVE_TOOL_DEFINITIONS.filter((definition) => isToolEnabled(definition.name, config));
+  const galaxyDesignTools = GALAXY_DESIGN_TOOL_DEFINITIONS.filter((definition) => isToolEnabled(definition.name, config));
+  const extensionTools = getAvailableExtensionTools(config)
+    .filter(({ tool }) => config.extensionToolToggles[tool.key] === true)
+    .map(({ group, tool }) =>
+      Object.freeze({
+        name: tool.qualifiedName,
+        description: `Run the public VS Code extension command "${tool.command}" from ${group.label}. ${tool.description}`,
+        parameters: Object.freeze({
+          type: 'object',
+          properties: Object.freeze({}),
+          required: Object.freeze([]),
+        }),
+      } satisfies ToolDefinition),
+    );
   return Object.freeze([
-    ...FILE_TOOL_DEFINITIONS,
-    ...ACTION_TOOL_DEFINITIONS.filter((definition) => definition.name === 'run_project_command' && isToolEnabled(definition.name, config)),
+    ...fileTools,
+    ...actionTools,
     ...qualityTools,
-    ...GALAXY_DESIGN_TOOL_DEFINITIONS,
+    ...vscodeNativeTools,
+    ...galaxyDesignTools,
+    ...extensionTools,
   ]);
 }

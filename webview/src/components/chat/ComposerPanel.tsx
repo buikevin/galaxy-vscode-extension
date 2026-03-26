@@ -6,7 +6,7 @@
  * @desc Sticky composer panel rendered at the bottom of the Galaxy Code chat view.
  */
 
-import { ChevronDown, SendHorizontal } from "lucide-react";
+import { ChevronDown, Plus, SendHorizontal } from "lucide-react";
 import { AttachmentList } from "@webview/components/chat/AttachmentList";
 import { ChangeSummaryCard } from "@webview/components/chat/ChangeSummaryCard";
 import { ComposerActivityBanner } from "@webview/components/chat/ComposerActivityBanner";
@@ -29,6 +29,9 @@ export function ComposerPanel() {
           onKeep={composer.onKeepChanges}
           onRevertAll={composer.onRevertAll}
           onReview={composer.onReview}
+          reviewFindings={composer.qualityDetails.reviewFindings}
+          onDismissReviewFinding={composer.onDismissReviewFinding}
+          onApplyReviewFinding={composer.onApplyReviewFinding}
         />
       ) : null}
 
@@ -82,15 +85,52 @@ export function ComposerPanel() {
 
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-transparent text-foreground transition-colors hover:bg-[rgba(255,255,255,0.15)]"
+            title="Thêm ảnh và file"
+            onClick={composer.onOpenFilePicker}
+          >
+            <Plus className="h-4 w-4" />
+          </button>
+          <input
+            ref={composer.fileInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={composer.onFileSelection}
+          />
+          <div className="relative w-[176px]">
+            <select
+              value={
+                composer.qualityPreferences.fullAccessEnabled
+                  ? "full"
+                  : "default"
+              }
+              onChange={(event) =>
+                composer.onUpdateQualityPreferences({
+                  ...composer.qualityPreferences,
+                  fullAccessEnabled: event.target.value === "full",
+                })
+              }
+              className="h-10 w-full appearance-none rounded-[16px] bg-transparent px-4 pr-10 text-sm text-foreground outline-none transition-colors hover:bg-[rgba(255,255,255,0.15)] focus:bg-[rgba(255,255,255,0.12)]"
+            >
+              <option value="default">Default permission</option>
+              <option value="full">Full access</option>
+            </select>
+            <ChevronDown className="absolute w-4 h-4 -translate-y-1/2 pointer-events-none right-3 top-1/2 text-muted-foreground" />
+          </div>
           <PlusMenu
             anchorRef={composer.plusMenuAnchorRef}
-            fileInputRef={composer.fileInputRef}
             isOpen={composer.isPlusMenuOpen}
-            qualityPreferences={composer.qualityPreferences}
+            toolCapabilities={composer.toolCapabilities}
+            toolToggles={composer.toolToggles}
+            extensionToolGroups={composer.extensionToolGroups}
+            extensionToolToggles={composer.extensionToolToggles}
             onToggleOpen={composer.onTogglePlusMenu}
-            onOpenFilePicker={composer.onOpenFilePicker}
-            onUpdateQualityPreferences={composer.onUpdateQualityPreferences}
-            onFileSelection={composer.onFileSelection}
+            onUpdateToolCapabilities={composer.onUpdateToolCapabilities}
+            onUpdateToolToggles={composer.onUpdateToolToggles}
+            onUpdateExtensionToolToggles={composer.onUpdateExtensionToolToggles}
           />
           <div className="relative w-[116px]">
             <select

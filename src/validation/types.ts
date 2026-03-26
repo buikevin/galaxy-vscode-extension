@@ -1,9 +1,22 @@
+export type ValidationProfileId =
+  | 'javascript'
+  | 'typescript'
+  | 'python'
+  | 'java'
+  | 'go'
+  | 'rust'
+  | 'dotnet'
+  | 'php'
+  | 'shell'
+  | 'ruby';
+
 export type ValidationCommand = Readonly<{
   id: string;
   label: string;
   command: string;
   cwd: string;
   kind: 'project' | 'file';
+  profile: ValidationProfileId | 'file';
   category: 'lint' | 'static-check' | 'test' | 'build' | 'file';
 }>;
 
@@ -20,6 +33,7 @@ export type ValidationRunResult = Readonly<{
   success: boolean;
   commandId: string;
   command: string;
+  profile: ValidationCommand['profile'];
   category: ValidationCommand['category'];
   durationMs: number;
   summary: string;
@@ -30,6 +44,7 @@ export type ValidationRunResult = Readonly<{
 export type FinalValidationResult = Readonly<{
   success: boolean;
   mode: 'project' | 'file' | 'none';
+  selectionSummary: string;
   runs: readonly ValidationRunResult[];
   summary: string;
 }>;

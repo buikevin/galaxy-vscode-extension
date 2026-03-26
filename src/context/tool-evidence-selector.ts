@@ -55,6 +55,7 @@ function getEvidenceSearchText(evidence: ToolEvidence): string {
     case 'write_file':
     case 'edit_file':
     case 'edit_file_range':
+    case 'multi_edit_file_ranges':
       return `${evidence.summary} ${evidence.operation}`;
   }
 }
@@ -338,7 +339,7 @@ function deriveStaleEvidence(evidence: readonly ToolEvidence[]): readonly ToolEv
 
     derived[index] = stale ? Object.freeze({ ...item, stale: true }) : item;
 
-    if (item.toolName === 'write_file' || item.toolName === 'edit_file' || item.toolName === 'edit_file_range') {
+    if (item.toolName === 'write_file' || item.toolName === 'edit_file' || item.toolName === 'edit_file_range' || item.toolName === 'multi_edit_file_ranges') {
       markPathInvalidation(invalidatedFiles, invalidatedDirectories, item.filePath);
       continue;
     }
@@ -409,6 +410,7 @@ function formatEvidence(evidence: ToolEvidence): string {
     case 'write_file':
     case 'edit_file':
     case 'edit_file_range':
+    case 'multi_edit_file_ranges':
       return `- ${evidence.filePath} ${evidence.operation}${evidence.changedLineRanges.length > 0 ? ` lines ${evidence.changedLineRanges.map((range) => `${range.startLine}-${range.endLine}`).join(', ')}` : ''}`;
     case 'validate_code':
       return `- Validation for ${evidence.filePath}: ${evidence.reportSummary}`;
@@ -468,7 +470,7 @@ function buildAntiLoopGuardrails(
       return;
     }
 
-    if (item.toolName === 'write_file' || item.toolName === 'edit_file' || item.toolName === 'edit_file_range') {
+    if (item.toolName === 'write_file' || item.toolName === 'edit_file' || item.toolName === 'edit_file_range' || item.toolName === 'multi_edit_file_ranges') {
       writeCounts.set(targetPath, (writeCounts.get(targetPath) ?? 0) + 1);
       return;
     }

@@ -12,10 +12,14 @@ import type {
   CommandStreamChunkPayload,
   CommandStreamEndPayload,
   CommandStreamStartPayload,
+  ExtensionToolGroup,
   FileItem,
   FigmaAttachment,
   HostMessage,
   QualityPreferences,
+  QualityDetails,
+  ToolCapabilities,
+  ToolToggles,
   WebviewMessage,
 } from "@shared/protocol";
 import type { LocalAttachment, PreviewAsset } from "@webview/entities/attachments";
@@ -76,6 +80,16 @@ type UseHostMessagesOptions = Readonly<{
   setSelectedFiles: Dispatch<SetStateAction<string[]>>;
   /** Update quality preferences from host. */
   setQualityPreferences: Dispatch<SetStateAction<QualityPreferences>>;
+  /** Update latest quality details from host. */
+  setQualityDetails: Dispatch<SetStateAction<QualityDetails>>;
+  /** Update tool capabilities from host. */
+  setToolCapabilities: Dispatch<SetStateAction<ToolCapabilities>>;
+  /** Update tool toggles from host. */
+  setToolToggles: Dispatch<SetStateAction<ToolToggles>>;
+  /** Update discovered extension tool groups from host. */
+  setExtensionToolGroups: Dispatch<SetStateAction<readonly ExtensionToolGroup[]>>;
+  /** Update extension tool toggles from host. */
+  setExtensionToolToggles: Dispatch<SetStateAction<Readonly<Record<string, boolean>>>>;
   /** Update change summary box state. */
   setChangeSummary: Dispatch<
     SetStateAction<import("@shared/protocol").ChangeSummary>
@@ -180,6 +194,11 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
             .map((file: FileItem) => file.path)
         );
         options.setQualityPreferences(message.payload.qualityPreferences);
+        options.setQualityDetails(message.payload.qualityDetails);
+        options.setToolCapabilities(message.payload.toolCapabilities);
+        options.setToolToggles(message.payload.toolToggles);
+        options.setExtensionToolGroups(message.payload.extensionToolGroups);
+        options.setExtensionToolToggles(message.payload.extensionToolToggles);
         options.setChangeSummary(message.payload.changeSummary);
         if (message.payload.changeSummary.fileCount === 0) {
           options.setKeptChangeSummaryKey("");
@@ -322,6 +341,18 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         return;
       case "quality-preferences-updated":
         options.setQualityPreferences(message.payload);
+        return;
+      case "quality-updated":
+        options.setQualityDetails(message.payload);
+        return;
+      case "tool-capabilities-updated":
+        options.setToolCapabilities(message.payload);
+        return;
+      case "tool-toggles-updated":
+        options.setToolToggles(message.payload);
+        return;
+      case "extension-tool-toggles-updated":
+        options.setExtensionToolToggles(message.payload);
         return;
       case "change-summary-updated":
         options.setChangeSummary(message.payload);

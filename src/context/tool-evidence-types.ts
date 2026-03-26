@@ -49,7 +49,7 @@ export type FileReadEvidence = ToolEvidenceBase & Readonly<{
 }>;
 
 export type FileWriteEvidence = ToolEvidenceBase & Readonly<{
-  toolName: 'write_file' | 'edit_file' | 'edit_file_range';
+  toolName: 'write_file' | 'edit_file' | 'edit_file_range' | 'multi_edit_file_ranges';
   filePath: string;
   operation: 'create' | 'overwrite' | 'edit';
   existedBefore: boolean;

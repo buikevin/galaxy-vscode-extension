@@ -18,8 +18,12 @@ import {
 import type {
   AgentType,
   ChangeSummary,
+  ExtensionToolGroup,
   FigmaAttachment,
+  QualityDetails,
   QualityPreferences,
+  ToolCapabilities,
+  ToolToggles,
 } from "@shared/protocol";
 import type { LocalAttachment } from "@webview/entities/attachments";
 
@@ -57,6 +61,16 @@ export type ComposerContextValue = Readonly<{
   agents: readonly AgentType[];
   /** Review/validate/full-access preferences. */
   qualityPreferences: QualityPreferences;
+  /** Latest quality output including persisted review findings. */
+  qualityDetails: QualityDetails;
+  /** Capability groups shown in Configure Tools. */
+  toolCapabilities: ToolCapabilities;
+  /** Individual tool toggles shown inside each capability group. */
+  toolToggles: ToolToggles;
+  /** Public tools discovered from installed VS Code extensions. */
+  extensionToolGroups: readonly ExtensionToolGroup[];
+  /** Individual toggles for discovered extension tools. */
+  extensionToolToggles: Readonly<Record<string, boolean>>;
   /** Whether the plus-menu popup is currently visible. */
   isPlusMenuOpen: boolean;
   /** Current prompt token count. */
@@ -85,6 +99,10 @@ export type ComposerContextValue = Readonly<{
   onRevertAll: () => void;
   /** Open the Galaxy Diff review panel. */
   onReview: () => void;
+  /** Dismiss one review finding from the latest review result. */
+  onDismissReviewFinding: (findingId: string) => void;
+  /** Run a focused repair turn for one review finding. */
+  onApplyReviewFinding: (findingId: string) => void;
   /** Open preview for one attached Figma design. */
   onOpenFigmaPreview: (attachment: FigmaAttachment) => void;
   /** Remove one Figma attachment from the composer. */
@@ -105,6 +123,12 @@ export type ComposerContextValue = Readonly<{
   onOpenFilePicker: () => void;
   /** Apply new quality preference values. */
   onUpdateQualityPreferences: (next: QualityPreferences) => void;
+  /** Apply new tool capability values. */
+  onUpdateToolCapabilities: (next: ToolCapabilities) => void;
+  /** Apply new tool toggle values. */
+  onUpdateToolToggles: (next: ToolToggles) => void;
+  /** Apply new extension-tool toggle values. */
+  onUpdateExtensionToolToggles: (next: Readonly<Record<string, boolean>>) => void;
   /** Handle actual file-input change events. */
   onFileSelection: (event: ChangeEvent<HTMLInputElement>) => void;
   /** Update the selected agent. */

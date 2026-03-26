@@ -197,7 +197,8 @@ export function createToolEvidence(opts: {
   if (
     toolName === 'write_file' ||
     toolName === 'edit_file' ||
-    toolName === 'edit_file_range'
+    toolName === 'edit_file_range' ||
+    toolName === 'multi_edit_file_ranges'
   ) {
     const evidence: FileWriteEvidence = Object.freeze({
       ...base,

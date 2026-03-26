@@ -11,8 +11,12 @@ import { ActionIcon } from "@webview/components/chat/ActionIcon";
 import type {
   AgentType,
   ChangeSummary,
+  ExtensionToolGroup,
   FigmaAttachment,
+  QualityDetails,
   QualityPreferences,
+  ToolCapabilities,
+  ToolToggles,
   WebviewMessage,
 } from "@shared/protocol";
 import type { LocalAttachment, PreviewAsset } from "@webview/entities/attachments";
@@ -66,8 +70,18 @@ type UseChatViewModelOptions = Readonly<{
   activeShellSessions: readonly ActiveShellSession[];
   /** Timestamp used to compute live shell durations. */
   shellNow: number;
-  /** Review/validate/full-access settings. */
+  /** Review/validate/full-access settings mirrored from the host. */
   qualityPreferences: QualityPreferences;
+  /** Latest quality details including persisted review findings. */
+  qualityDetails: QualityDetails;
+  /** Capability groups shown in Configure Tools. */
+  toolCapabilities: ToolCapabilities;
+  /** Individual tool toggles shown inside each capability group. */
+  toolToggles: ToolToggles;
+  /** Discovered extension tool groups rendered below built-in groups. */
+  extensionToolGroups: readonly ExtensionToolGroup[];
+  /** Individual extension tool toggles. */
+  extensionToolToggles: Readonly<Record<string, boolean>>;
   /** Expanded grouped-action/tool ids. */
   expandedItems: readonly string[];
   /** Expanded message ids. */
@@ -126,6 +140,12 @@ type UseChatViewModelOptions = Readonly<{
   handleComposerPaste: ComposerContextValue["onPaste"];
   /** Update quality preferences. */
   updateQualityPreferences: (next: QualityPreferences) => void;
+  /** Update tool capability preferences. */
+  updateToolCapabilities: (next: ToolCapabilities) => void;
+  /** Update individual tool preferences. */
+  updateToolToggles: (next: ToolToggles) => void;
+  /** Update extension-tool preferences. */
+  updateExtensionToolToggles: (next: Readonly<Record<string, boolean>>) => void;
   /** Execute one slash command suggestion. */
   executeSlashCommand: (id: SlashCommandItem["id"]) => void;
   /** Available slash-command suggestions. */
@@ -317,10 +337,10 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
     }
 
     const normalized = statusText.trim().toLowerCase();
-    if (normalized.includes("running code review")) {
+    if (normalized.includes("review quality gate") || normalized.includes("running code review")) {
       return "Đang review code";
     }
-    if (normalized.includes("running final validation")) {
+    if (normalized.includes("validation quality gate") || normalized.includes("running final validation")) {
       return "Đang validate code";
     }
     return "Thinking";
@@ -341,6 +361,11 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
     selectedAgent: options.selectedAgent,
     agents: options.agents,
     qualityPreferences: options.qualityPreferences,
+    qualityDetails: options.qualityDetails,
+    toolCapabilities: options.toolCapabilities,
+    toolToggles: options.toolToggles,
+    extensionToolGroups: options.extensionToolGroups,
+    extensionToolToggles: options.extensionToolToggles,
     isPlusMenuOpen: options.isPlusMenuOpen,
     promptTokens: options.promptTokens,
     tokenUsagePercent,
@@ -357,6 +382,16 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
       postHostMessage({ type: "revert-all-changes" } satisfies WebviewMessage),
     onReview: () =>
       postHostMessage({ type: "review-open" } satisfies WebviewMessage),
+    onDismissReviewFinding: (findingId) =>
+      postHostMessage({
+        type: "review-finding-dismiss",
+        payload: { findingId },
+      } satisfies WebviewMessage),
+    onApplyReviewFinding: (findingId) =>
+      postHostMessage({
+        type: "review-finding-apply",
+        payload: { findingId },
+      } satisfies WebviewMessage),
     onOpenFigmaPreview: options.openFigmaPreview,
     onRemoveFigmaAttachment: options.removeFigmaAttachment,
     onOpenLocalPreview: (attachment) => {
@@ -400,6 +435,9 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
       options.setIsPlusMenuOpen((current) => !current),
     onOpenFilePicker: () => options.fileInputRef.current?.click(),
     onUpdateQualityPreferences: options.updateQualityPreferences,
+    onUpdateToolCapabilities: options.updateToolCapabilities,
+    onUpdateToolToggles: options.updateToolToggles,
+    onUpdateExtensionToolToggles: options.updateExtensionToolToggles,
     onFileSelection: options.handleFileSelection,
     onSelectedAgentChange: options.setSelectedAgent,
     onExecuteSlashCommand: options.executeSlashCommand,
