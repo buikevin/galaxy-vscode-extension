@@ -2,7 +2,7 @@
   "name": "galaxy-code-vscode",
   "displayName": "Galaxy Code",
   "description": "AI-powered coding assistant with a Galaxy chat experience for VS Code.",
-  "version": "0.1.48",
+  "version": "0.1.49",
   "publisher": "kevinbui",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -25,7 +25,7 @@
   "keywords": [
     "ai",
     "assistant",
-  "chat",
+    "chat",
     "coding",
     "productivity"
   ],
@@ -160,6 +160,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-toast": "^1.2.15",
     "@tavily/core": "^0.7.2",
+    "chromadb": "^3.4.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.542.0",
@@ -170,6 +171,8 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^3.3.1",
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "0.20.8",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

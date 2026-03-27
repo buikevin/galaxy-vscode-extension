@@ -481,7 +481,7 @@ function buildAntiLoopGuardrails(
   });
 
   const repeatedWrites = [...writeCounts.entries()].filter(([, count]) => count >= 3);
-  const repeatedReads = [...readCounts.entries()].filter(([, count]) => count >= 4);
+  const repeatedReads = [...readCounts.entries()].filter(([, count]) => count >= 3);
   const refreshSteps = readPlanProgress.filter((item) => item.status === 'needs_refresh');
 
   if (repeatedWrites.length === 0 && repeatedReads.length === 0 && refreshSteps.length === 0) {
@@ -499,6 +499,25 @@ function buildAntiLoopGuardrails(
     lines.push('If a step only needs refresh, reread the narrow affected region instead of restarting the whole plan.');
   }
   lines.push('Prefer the next pending step or a user-facing summary when the current file has already been inspected and edited multiple times.');
+  return lines.join('\n').trim();
+}
+
+function buildEvidenceReuseBlock(readPlanProgress: readonly ReadPlanProgressItem[]): string {
+  const confirmed = readPlanProgress.filter((item) => item.status === 'confirmed');
+  const refresh = readPlanProgress.filter((item) => item.status === 'needs_refresh');
+  if (confirmed.length === 0 && refresh.length === 0) {
+    return '';
+  }
+
+  const lines = ['[REUSE EXISTING EVIDENCE FIRST]'];
+  if (confirmed.length > 0) {
+    lines.push(`Already confirmed: ${confirmed.map((item) => item.label).join('; ')}`);
+    lines.push('Do not reread these files broadly unless the file changed, the evidence became stale, or you need exact lines for an edit.');
+  }
+  if (refresh.length > 0) {
+    lines.push(`Refresh only these steps narrowly: ${refresh.map((item) => item.label).join('; ')}`);
+  }
+  lines.push('When reopening analysis, prefer narrow line windows or targeted grep instead of restarting from the top of the file.');
   return lines.join('\n').trim();
 }
 
@@ -523,12 +542,14 @@ export function buildRelevantToolEvidenceBlock(opts: {
   confirmedReadCount: number;
   retrievalLifecycleContent: string;
   antiLoopGuardrailsContent: string;
+  evidenceReuseContent: string;
 }> {
   const evidence = loadRecentToolEvidence(opts.sessionMemory.workspacePath);
   const freshenedEvidence = deriveStaleEvidence(evidence);
   const readPlanProgress = evaluateReadPlanProgress(freshenedEvidence, opts.readPlan ?? []);
   const retrievalLifecycleContent = buildRetrievalLifecycleBlock(readPlanProgress.items);
   const antiLoopGuardrailsContent = buildAntiLoopGuardrails(freshenedEvidence, readPlanProgress.items);
+  const evidenceReuseContent = buildEvidenceReuseBlock(readPlanProgress.items);
   if (freshenedEvidence.length === 0) {
     return Object.freeze({
       content: '',
@@ -543,6 +564,7 @@ export function buildRelevantToolEvidenceBlock(opts: {
       confirmedReadCount: readPlanProgress.confirmedCount,
       retrievalLifecycleContent,
       antiLoopGuardrailsContent,
+      evidenceReuseContent,
     });
   }
 
@@ -604,6 +626,7 @@ export function buildRelevantToolEvidenceBlock(opts: {
       confirmedReadCount: readPlanProgress.confirmedCount,
       retrievalLifecycleContent,
       antiLoopGuardrailsContent,
+      evidenceReuseContent,
     });
   }
 
@@ -634,5 +657,6 @@ export function buildRelevantToolEvidenceBlock(opts: {
     confirmedReadCount: readPlanProgress.confirmedCount,
     retrievalLifecycleContent,
     antiLoopGuardrailsContent,
+    evidenceReuseContent,
   });
 }

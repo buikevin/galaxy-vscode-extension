@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { appendTelemetryEvent } from '../context/telemetry';
+import type { GalaxyConfig } from '../config/types';
 import type { TrackedFile } from '../runtime/session-tracker';
 import { buildShellEnvironment, checkCommandAvailability, resolveShellProfile } from '../runtime/shell-resolver';
 import { validateCodeTool } from '../tools/file-tools';
@@ -145,6 +146,190 @@ function buildNodeExecCommand(packageManager: NodePackageManager, binary: string
   }
 }
 
+type ValidationCommandCategory = ValidationCommand['category'];
+type ValidationPreferencesConfig = GalaxyConfig['validation'];
+
+type PackageScriptCandidate = Readonly<{
+  scriptName: string;
+  category: Exclude<ValidationCommandCategory, 'file'>;
+  profile: ValidationProfileId;
+  score: number;
+}>;
+
+function scoreNodeScriptCategory(
+  scriptName: string,
+  scriptCommand: string,
+  profiles: ReadonlySet<ValidationProfileId>,
+): PackageScriptCandidate | null {
+  const normalizedName = scriptName.trim().toLowerCase();
+  const normalizedCommand = scriptCommand.trim().toLowerCase();
+  if (!normalizedName || !normalizedCommand) {
+    return null;
+  }
+
+  const hasTs = profiles.has('typescript');
+  const baseProfile: ValidationProfileId = hasTs ? 'typescript' : 'javascript';
+
+  const evaluate = (
+    category: Exclude<ValidationCommandCategory, 'file'>,
+    namePatterns: readonly Readonly<{ pattern: RegExp; score: number }>[],
+    commandPatterns: readonly Readonly<{ pattern: RegExp; score: number }>[],
+    profile = baseProfile,
+  ): PackageScriptCandidate | null => {
+    let score = -1;
+    namePatterns.forEach(({ pattern, score: value }) => {
+      if (pattern.test(normalizedName)) {
+        score = Math.max(score, value);
+      }
+    });
+    commandPatterns.forEach(({ pattern, score: value }) => {
+      if (pattern.test(normalizedCommand)) {
+        score = Math.max(score, value);
+      }
+    });
+    if (score < 0) {
+      return null;
+    }
+    return Object.freeze({
+      scriptName,
+      category,
+      profile,
+      score,
+    });
+  };
+
+  const candidates = [
+    evaluate(
+      'lint',
+      [
+        { pattern: /^lint$/, score: 120 },
+        { pattern: /^lint:/, score: 110 },
+        { pattern: /^eslint$/, score: 105 },
+        { pattern: /(^|:)eslint$/, score: 100 },
+        { pattern: /^verify:lint$/, score: 95 },
+      ],
+      [
+        { pattern: /\beslint\b/, score: 100 },
+        { pattern: /\bbiome\b/, score: 96 },
+        { pattern: /\boxlint\b/, score: 94 },
+      ],
+    ),
+    evaluate(
+      'static-check',
+      [
+        { pattern: /^check-types$/, score: 125 },
+        { pattern: /^typecheck$/, score: 124 },
+        { pattern: /^type-check$/, score: 123 },
+        { pattern: /^check:types$/, score: 122 },
+        { pattern: /^types:check$/, score: 121 },
+        { pattern: /^tsc$/, score: 118 },
+        { pattern: /^check$/, score: 96 },
+        { pattern: /^validate$/, score: 92 },
+        { pattern: /^verify$/, score: 90 },
+        { pattern: /(^|:)typecheck$/, score: 116 },
+        { pattern: /(^|:)check-types$/, score: 116 },
+      ],
+      [
+        { pattern: /\btsc\b.*--noemit\b/, score: 120 },
+        { pattern: /\btsc\b/, score: 112 },
+        { pattern: /\bvue-tsc\b/, score: 111 },
+        { pattern: /\bflow\b/, score: 95 },
+      ],
+      'typescript',
+    ),
+    evaluate(
+      'test',
+      [
+        { pattern: /^test$/, score: 120 },
+        { pattern: /^test:unit$/, score: 116 },
+        { pattern: /^test:ci$/, score: 114 },
+        { pattern: /^unit$/, score: 108 },
+        { pattern: /^unit:/, score: 106 },
+        { pattern: /^vitest$/, score: 105 },
+        { pattern: /^jest$/, score: 104 },
+        { pattern: /^test:/, score: 100 },
+      ],
+      [
+        { pattern: /\bvitest\b/, score: 108 },
+        { pattern: /\bjest\b/, score: 107 },
+        { pattern: /\bmocha\b/, score: 100 },
+        { pattern: /\bava\b/, score: 98 },
+        { pattern: /\bplaywright test\b/, score: 94 },
+      ],
+    ),
+    evaluate(
+      'build',
+      [
+        { pattern: /^build$/, score: 115 },
+        { pattern: /^build:check$/, score: 113 },
+        { pattern: /^compile$/, score: 108 },
+        { pattern: /^compile:/, score: 106 },
+        { pattern: /^build:/, score: 102 },
+      ],
+      [
+        { pattern: /\bnext build\b/, score: 108 },
+        { pattern: /\bvite build\b/, score: 106 },
+        { pattern: /\bwebpack\b/, score: 102 },
+        { pattern: /\brollup\b/, score: 100 },
+      ],
+    ),
+  ].filter((candidate): candidate is PackageScriptCandidate => Boolean(candidate));
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  return candidates.sort((a, b) => b.score - a.score || a.scriptName.localeCompare(b.scriptName))[0] ?? null;
+}
+
+export function selectNodeValidationScripts(
+  packageScripts: Readonly<Record<string, string>>,
+  profiles: ReadonlySet<ValidationProfileId>,
+  validationPreferences?: ValidationPreferencesConfig,
+): readonly PackageScriptCandidate[] {
+  const bestByCategory = new Map<Exclude<ValidationCommandCategory, 'file'>, PackageScriptCandidate>();
+
+  Object.entries(packageScripts).forEach(([scriptName, scriptCommand]) => {
+    const candidate = scoreNodeScriptCategory(scriptName, scriptCommand, profiles);
+    if (!candidate) {
+      return;
+    }
+    const existing = bestByCategory.get(candidate.category);
+    if (!existing || candidate.score > existing.score || (candidate.score === existing.score && candidate.scriptName.localeCompare(existing.scriptName) < 0)) {
+      bestByCategory.set(candidate.category, candidate);
+    }
+  });
+
+  const findPreferred = (category: Exclude<ValidationCommandCategory, 'file'>): PackageScriptCandidate | null => {
+    const preferenceKey = category === 'static-check' ? 'staticCheck' : category;
+    const preferredItems = validationPreferences?.[preferenceKey] ?? [];
+    for (const preferredItem of preferredItems) {
+      const normalizedPreferred = preferredItem.trim().toLowerCase();
+      if (!normalizedPreferred) {
+        continue;
+      }
+      const exactScriptName = Object.keys(packageScripts).find((scriptName) => scriptName.trim().toLowerCase() === normalizedPreferred);
+      if (exactScriptName) {
+        return scoreNodeScriptCategory(exactScriptName, packageScripts[exactScriptName] ?? '', profiles);
+      }
+      const commandMatch = Object.entries(packageScripts).find(([, scriptCommand]) => scriptCommand.trim().toLowerCase().includes(normalizedPreferred));
+      if (commandMatch) {
+        return scoreNodeScriptCategory(commandMatch[0], commandMatch[1], profiles);
+      }
+    }
+    return null;
+  };
+
+  return Object.freeze(
+    ['lint', 'static-check', 'test', 'build']
+      .map((category) => {
+        const typedCategory = category as Exclude<ValidationCommandCategory, 'file'>;
+        return findPreferred(typedCategory) ?? bestByCategory.get(typedCategory);
+      })
+      .filter((candidate): candidate is PackageScriptCandidate => Boolean(candidate)),
+  );
+}
+
 function readTextFile(filePath: string): string {
   try {
     return fs.readFileSync(filePath, 'utf-8');
@@ -230,6 +415,7 @@ function addProjectCommand(
 function detectProjectCommands(
   workspacePath: string,
   sessionFiles: readonly TrackedFile[],
+  validationPreferences?: ValidationPreferencesConfig,
 ): readonly ValidationCommand[] {
   const commands: ValidationCommand[] = [];
   const seenCommands = new Set<string>();
@@ -250,57 +436,22 @@ function detectProjectCommands(
   const hasShellFiles = hasTrackedExtension(sessionFiles, ['.sh', '.bash', '.zsh']);
   const hasRubyFiles = hasTrackedExtension(sessionFiles, ['.rb']);
   const profiles = new Set(detectValidationProfiles(workspacePath, sessionFiles));
+  const selectedNodeScripts =
+    profiles.has('javascript') || profiles.has('typescript')
+      ? selectNodeValidationScripts(packageScripts, profiles, validationPreferences)
+      : Object.freeze([]);
 
-  if ((profiles.has('javascript') || profiles.has('typescript')) && packageScripts.lint) {
+  selectedNodeScripts.forEach((candidate) => {
     addProjectCommand(commands, seenCommands, {
-      id: `${nodePackageManager}-lint`,
-      label: buildNodeScriptCommand(nodePackageManager, 'lint'),
-      command: buildNodeScriptCommand(nodePackageManager, 'lint'),
+      id: `${nodePackageManager}-${candidate.category}-${candidate.scriptName.replace(/[^a-z0-9_-]+/gi, '-')}`,
+      label: buildNodeScriptCommand(nodePackageManager, candidate.scriptName),
+      command: buildNodeScriptCommand(nodePackageManager, candidate.scriptName),
       cwd: workspacePath,
       kind: 'project',
-      profile: profiles.has('typescript') ? 'typescript' : 'javascript',
-      category: 'lint',
+      profile: candidate.profile,
+      category: candidate.category,
     });
-  }
-
-  for (const scriptName of ['check-types', 'typecheck', 'check']) {
-    if (!packageScripts[scriptName]) {
-      continue;
-    }
-    addProjectCommand(commands, seenCommands, {
-      id: `${nodePackageManager}-${scriptName}`,
-      label: buildNodeScriptCommand(nodePackageManager, scriptName),
-      command: buildNodeScriptCommand(nodePackageManager, scriptName),
-      cwd: workspacePath,
-      kind: 'project',
-      profile: scriptName === 'typecheck' ? 'typescript' : profiles.has('typescript') ? 'typescript' : 'javascript',
-      category: 'static-check',
-    });
-  }
-
-  if ((profiles.has('javascript') || profiles.has('typescript')) && packageScripts.build) {
-    addProjectCommand(commands, seenCommands, {
-      id: `${nodePackageManager}-build`,
-      label: buildNodeScriptCommand(nodePackageManager, 'build'),
-      command: buildNodeScriptCommand(nodePackageManager, 'build'),
-      cwd: workspacePath,
-      kind: 'project',
-      profile: profiles.has('typescript') ? 'typescript' : 'javascript',
-      category: 'build',
-    });
-  }
-
-  if ((profiles.has('javascript') || profiles.has('typescript')) && packageScripts.test) {
-    addProjectCommand(commands, seenCommands, {
-      id: `${nodePackageManager}-test`,
-      label: buildNodeScriptCommand(nodePackageManager, 'test'),
-      command: buildNodeScriptCommand(nodePackageManager, 'test'),
-      cwd: workspacePath,
-      kind: 'project',
-      profile: profiles.has('typescript') ? 'typescript' : 'javascript',
-      category: 'test',
-    });
-  }
+  });
 
   if ((profiles.has('javascript') || profiles.has('typescript')) && !packageScripts.lint && packageDependencyNames.has('eslint')) {
     addProjectCommand(commands, seenCommands, {
@@ -317,9 +468,7 @@ function detectProjectCommands(
   if (
     profiles.has('typescript') &&
     hasFile(workspacePath, 'tsconfig.json') &&
-    !packageScripts['check-types'] &&
-    !packageScripts.typecheck &&
-    !packageScripts.check
+    !selectedNodeScripts.some((candidate) => candidate.category === 'static-check')
   ) {
     addProjectCommand(commands, seenCommands, {
       id: `${nodePackageManager}-tsc-noemit`,
@@ -611,11 +760,24 @@ function buildValidationSelectionSummary(
     commandCount: commands.length,
     usedFileSafetyNet,
   });
-  const commandList = commands.map((command) => `${command.profile}/${command.category}:${command.command}`);
-  if (commandList.length > 0) {
-    return `Selected validation profiles: ${profileList.length > 0 ? profileList.join(', ') : 'none'} | commands=${commandList.join(' ; ')}`;
+  const byCategory = new Map<ValidationCommand['category'], ValidationCommand>();
+  commands.forEach((command) => {
+    if (!byCategory.has(command.category)) {
+      byCategory.set(command.category, command);
+    }
+  });
+  const lines = [`Selected validation profiles: ${profileList.length > 0 ? profileList.join(', ') : 'none'}`];
+  lines.push('Validation command selection:');
+  (['lint', 'static-check', 'test', 'build'] as const).forEach((category) => {
+    const selected = byCategory.get(category);
+    lines.push(`- ${category}: ${selected ? selected.command : 'none'}`);
+  });
+  if (usedFileSafetyNet) {
+    lines.push('- file-safety-net: enabled because no project-level static-check command was selected');
+  } else {
+    lines.push('- file-safety-net: disabled');
   }
-  return `Selected validation profiles: ${profileList.length > 0 ? profileList.join(', ') : 'none'} | commands=none${usedFileSafetyNet ? ' | using file safety net' : ''}`;
+  return lines.join('\n');
 }
 
 function maybeResolvePath(cwd: string, filePath: string): string {
@@ -964,10 +1126,11 @@ function buildSuccessSummary(runs: readonly ValidationRunResult[]): string {
 export async function runFinalValidation(opts: {
   workspacePath: string;
   sessionFiles: readonly TrackedFile[];
+  config?: Pick<GalaxyConfig, 'validation'>;
   streamCallbacks?: ValidationCommandStreamCallbacks;
 }): Promise<FinalValidationResult> {
   const profiles = detectValidationProfiles(opts.workspacePath, opts.sessionFiles);
-  const commands = detectProjectCommands(opts.workspacePath, opts.sessionFiles).filter(isCommandAvailable);
+  const commands = detectProjectCommands(opts.workspacePath, opts.sessionFiles, opts.config?.validation).filter(isCommandAvailable);
   const lintCommands = commands.filter((command) => command.category === 'lint');
   const staticCommands = commands.filter((command) => command.category === 'static-check');
   const testCommands = commands.filter((command) => command.category === 'test');

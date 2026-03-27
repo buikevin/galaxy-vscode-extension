@@ -644,7 +644,7 @@ export async function buildPromptContext(opts: {
 
   const notesContent = opts.notes.trim() ? `[NOTES]\n${opts.notes.trim()}` : '';
   const systemPlatformContent = buildSystemPlatformContent();
-  const taskMemory = queryRelevantTaskMemory(
+  const taskMemory = await queryRelevantTaskMemory(
     opts.sessionMemory.workspacePath,
     queryText,
     3,
@@ -657,7 +657,7 @@ export async function buildPromptContext(opts: {
       `${opts.sessionMemory.lastFinalAssistantConclusion.trim()}\n\n` +
       'Treat this as the most recent authoritative conclusion from the previous completed turn. Prefer continuing from it instead of restarting the analysis from scratch. If you need to reopen the analysis, explain what current evidence contradicts it or what new information is missing.'
     : '';
-  const syntaxIndexBlock = buildSyntaxIndexContext({
+  const syntaxIndexBlock = await buildSyntaxIndexContext({
     workspacePath: opts.sessionMemory.workspacePath,
     candidateFiles: retrievalSeedPaths,
     queryText,
@@ -856,6 +856,14 @@ export async function buildPromptContext(opts: {
   );
   if (antiLoopGuardrailsMessage) {
     messages.push(antiLoopGuardrailsMessage);
+  }
+
+  const evidenceReuseMessage = buildContextMessage(
+    evidenceBlock.evidenceReuseContent,
+    `ctx-evidence-reuse-${Date.now()}`,
+  );
+  if (evidenceReuseMessage) {
+    messages.push(evidenceReuseMessage);
   }
 
   const syntaxIndexMessage = buildContextMessage(syntaxIndexBlock.content, `ctx-syntax-index-${Date.now()}`);

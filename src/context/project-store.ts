@@ -57,6 +57,9 @@ export type ProjectStorageInfo = Readonly<{
   workspacePath: string;
   projectDirName: string;
   projectDirPath: string;
+  chromaDirPath: string;
+  chromaLogPath: string;
+  chromaStatePath: string;
   localGalaxyDirPath: string;
   localSettingsPath: string;
   projectMetaPath: string;
@@ -117,6 +120,9 @@ export function getProjectStorageInfo(workspacePath: string): ProjectStorageInfo
     workspacePath: resolvedPath,
     projectDirName,
     projectDirPath,
+    chromaDirPath: path.join(projectDirPath, 'chroma'),
+    chromaLogPath: path.join(projectDirPath, 'chroma.log'),
+    chromaStatePath: path.join(projectDirPath, 'chroma-state.json'),
     localGalaxyDirPath,
     localSettingsPath,
     projectMetaPath: path.join(projectDirPath, 'project.json'),
@@ -145,6 +151,7 @@ export function getProjectStorageInfo(workspacePath: string): ProjectStorageInfo
 export function ensureProjectStorage(info: ProjectStorageInfo): void {
   ensureDir(getProjectsDir());
   ensureDir(info.projectDirPath);
+  ensureDir(info.chromaDirPath);
   ensureDir(info.localGalaxyDirPath);
   ensureDir(info.figmaAssetsDirPath);
   ensureDir(info.attachmentsDirPath);

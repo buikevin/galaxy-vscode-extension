@@ -36,11 +36,19 @@ export interface ToolCapabilityConfig {
   galaxyDesign: boolean;
 }
 
+export interface ValidationPreferencesConfig {
+  lint: readonly string[];
+  staticCheck: readonly string[];
+  test: readonly string[];
+  build: readonly string[];
+}
+
 export interface GalaxyConfig {
   agent: AgentConfig[];
   quality: QualityConfig;
   toolSafety: ToolSafetyConfig;
   toolCapabilities: ToolCapabilityConfig;
+  validation: ValidationPreferencesConfig;
   toolToggles: ToolToggles;
   extensionToolToggles: Readonly<Record<string, boolean>>;
   availableExtensionToolGroups?: readonly ExtensionToolGroup[];
@@ -68,6 +76,12 @@ export const DEFAULT_CONFIG: GalaxyConfig = {
     review: true,
     vscodeNative: true,
     galaxyDesign: true,
+  },
+  validation: {
+    lint: [],
+    staticCheck: [],
+    test: [],
+    build: [],
   },
   toolToggles: {
     read_file: true,

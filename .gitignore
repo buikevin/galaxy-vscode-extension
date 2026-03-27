@@ -5,3 +5,5 @@ dist/
 *.vsix
 *.log
 .DS_Store
+
+out/*

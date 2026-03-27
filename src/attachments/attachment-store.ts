@@ -1,8 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { ChromaClient } from 'chromadb';
 import { ensureProjectStorage, getProjectStorageInfo } from '../context/project-store';
+import { resolveChromaUrl } from '../context/chroma-manager';
+import { embedTexts } from '../context/gemini-embeddings';
 import { findFigmaImport } from '../figma/design-store';
 import type { FigmaImportRecord } from '../figma/design-types';
 import type { FigmaAttachment, LocalAttachmentPayload, MessageAttachment } from '../shared/protocol';
@@ -29,6 +32,20 @@ type AttachmentRecord = Readonly<{
 
 const MAX_CONTEXT_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_CHARS = 6_000;
+const MAX_ATTACHMENT_SNIPPETS = 2;
+const ATTACHMENT_CHUNK_TARGET_CHARS = 1_400;
+const ATTACHMENT_CHUNK_MIN_CHARS = 240;
+const ATTACHMENT_CHUNK_OVERLAP_CHARS = 180;
+const ATTACHMENT_CHROMA_TIMEOUT_MS = 2_500;
+const MANUAL_EMBEDDING_FUNCTION = Object.freeze({
+  name: "galaxy-manual-embedding",
+  async generate(): Promise<number[][]> {
+    throw new Error("Manual embeddings only. Provide embeddings explicitly.");
+  },
+  async generateForQueries(): Promise<number[][]> {
+    throw new Error("Manual embeddings only. Provide query embeddings explicitly.");
+  },
+});
 const TEXT_ATTACHMENT_EXTENSIONS = new Set([
   '.txt',
   '.md',
@@ -144,6 +161,61 @@ function truncateContent(content: string): string {
   return `${content.slice(0, MAX_ATTACHMENT_CHARS)}\n...[truncated]`;
 }
 
+function normalizeWhitespace(content: string): string {
+  return content.replace(/\r\n/g, '\n').replace(/\s+/g, ' ').trim();
+}
+
+function buildAttachmentCollectionName(workspaceId: string): string {
+  return `galaxy-attachment-chunks-v2-${workspaceId.replace(/[^a-z0-9_-]+/gi, '-').toLowerCase()}`;
+}
+
+function createAttachmentChunkId(record: AttachmentRecord, sourceVersion: string, chunkIndex: number): string {
+  return createHash('sha1')
+    .update(`${record.id}:${record.storedPath}:${sourceVersion}:${chunkIndex}`)
+    .digest('hex');
+}
+
+function chunkAttachmentContent(content: string): readonly string[] {
+  const normalized = content.replace(/\r\n/g, '\n').trim();
+  if (!normalized) {
+    return Object.freeze([]);
+  }
+
+  const paragraphs = normalized
+    .split(/\n{2,}/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (paragraphs.length === 0) {
+    return Object.freeze([normalized]);
+  }
+
+  const chunks: string[] = [];
+  let current = '';
+  paragraphs.forEach((paragraph) => {
+    const next = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (next.length <= ATTACHMENT_CHUNK_TARGET_CHARS || current.length < ATTACHMENT_CHUNK_MIN_CHARS) {
+      current = next;
+      return;
+    }
+    chunks.push(current);
+    current = current.slice(-ATTACHMENT_CHUNK_OVERLAP_CHARS) + paragraph;
+  });
+  if (current.trim()) {
+    chunks.push(current.trim());
+  }
+  return Object.freeze(chunks.map((chunk) => chunk.trim()).filter(Boolean));
+}
+
+function buildAttachmentEmbeddingDocument(record: AttachmentRecord, chunkText: string, chunkIndex: number, chunkCount: number): string {
+  return [
+    `Attachment: ${record.originalName}`,
+    `Stored path: ${record.storedPath}`,
+    `MIME type: ${record.mimeType}`,
+    `Chunk ${chunkIndex + 1} of ${chunkCount}`,
+    chunkText,
+  ].join('\n');
+}
+
 function stripXmlTags(content: string): string {
   return content
     .replace(/<[^>]+>/g, ' ')
@@ -195,6 +267,23 @@ function extractSpecialAttachmentText(record: AttachmentRecord): string | null {
   }
 
   return null;
+}
+
+async function extractAttachmentText(record: AttachmentRecord): Promise<string | null> {
+  if (isTextAttachment(record)) {
+    try {
+      return fs.readFileSync(record.storedPath, 'utf-8');
+    } catch {
+      return null;
+    }
+  }
+
+  const parsed = await readDocumentFile(record.storedPath);
+  if (parsed.success && parsed.content.trim()) {
+    return parsed.content;
+  }
+
+  return extractSpecialAttachmentText(record);
 }
 
 function isTextAttachment(record: AttachmentRecord): boolean {
@@ -250,6 +339,106 @@ function buildLocalAttachmentPayload(record: AttachmentRecord): LocalAttachmentP
     isImage: record.mimeType.startsWith('image/'),
     ...(readPreviewDataUrl(record) ? { previewDataUrl: readPreviewDataUrl(record) } : {}),
   });
+}
+
+async function queryAttachmentSemanticSnippets(opts: {
+  workspacePath: string;
+  record: AttachmentRecord;
+  queryText: string;
+  limit: number;
+}): Promise<readonly string[]> {
+  const query = opts.queryText.trim();
+  if (!query) {
+    return Object.freeze([]);
+  }
+
+  const chromaPath = await resolveChromaUrl(opts.workspacePath);
+  if (!chromaPath) {
+    return Object.freeze([]);
+  }
+
+  const storage = getProjectStorageInfo(opts.workspacePath);
+  const stat = fs.statSync(opts.record.storedPath);
+  const sourceVersion = `${stat.mtimeMs}:${stat.size}`;
+  const rawContent = await extractAttachmentText(opts.record);
+  const normalizedContent = rawContent ? normalizeWhitespace(rawContent) : '';
+  if (!normalizedContent) {
+    return Object.freeze([]);
+  }
+
+  const chunks = chunkAttachmentContent(normalizedContent);
+  if (chunks.length === 0) {
+    return Object.freeze([]);
+  }
+
+  try {
+    const client = new ChromaClient({ path: chromaPath });
+    const collection = await Promise.race([
+      client.getOrCreateCollection({
+        name: buildAttachmentCollectionName(storage.workspaceId),
+        embeddingFunction: MANUAL_EMBEDDING_FUNCTION,
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), ATTACHMENT_CHROMA_TIMEOUT_MS)),
+    ]);
+    if (!collection) {
+      return Object.freeze([]);
+    }
+
+    const embeddingInputs = chunks.map((chunk, chunkIndex) =>
+      buildAttachmentEmbeddingDocument(opts.record, chunk, chunkIndex, chunks.length),
+    );
+    const embeddings = await embedTexts(embeddingInputs, 'RETRIEVAL_DOCUMENT');
+    if (!embeddings || embeddings.length !== chunks.length) {
+      return Object.freeze([]);
+    }
+
+    await Promise.race([
+      collection.upsert({
+        ids: chunks.map((_, chunkIndex) => createAttachmentChunkId(opts.record, sourceVersion, chunkIndex)),
+        documents: chunks.map((chunk) => truncateContent(chunk)),
+        embeddings: embeddings.map((embedding) => [...embedding]),
+        metadatas: chunks.map((_, chunkIndex) => ({
+          sourceId: opts.record.id,
+          sourceVersion,
+          storedPath: opts.record.storedPath,
+          originalName: opts.record.originalName,
+          mimeType: opts.record.mimeType,
+          chunkIndex,
+          chunkCount: chunks.length,
+        })),
+      }),
+      new Promise<void>((resolve) => setTimeout(() => resolve(), ATTACHMENT_CHROMA_TIMEOUT_MS)),
+    ]);
+
+    const queryEmbedding = (await embedTexts([query], 'RETRIEVAL_QUERY'))?.[0] ?? null;
+    if (!queryEmbedding) {
+      return Object.freeze([]);
+    }
+
+    const result = await Promise.race([
+      collection.query({
+        queryEmbeddings: [[...queryEmbedding]],
+        nResults: Math.max(1, opts.limit),
+        where: {
+          sourceId: opts.record.id,
+          sourceVersion,
+        },
+        include: ['documents', 'distances'],
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), ATTACHMENT_CHROMA_TIMEOUT_MS)),
+    ]);
+    if (!result) {
+      return Object.freeze([]);
+    }
+
+    const snippets = (result.documents?.[0] ?? [])
+      .map((document) => normalizeWhitespace(document ?? ''))
+      .filter(Boolean)
+      .slice(0, opts.limit);
+    return Object.freeze(snippets);
+  } catch {
+    return Object.freeze([]);
+  }
 }
 
 function writePreviewAsset(storageDir: string, baseName: string, figmaRecord: FigmaImportRecord): { previewPath?: string; mimeType: string } {
@@ -484,7 +673,11 @@ export function buildAttachmentImagePaths(workspacePath: string, attachmentIds: 
     });
 }
 
-export async function buildAttachmentContextNote(workspacePath: string, attachmentIds: readonly string[]): Promise<string> {
+export async function buildAttachmentContextNote(
+  workspacePath: string,
+  attachmentIds: readonly string[],
+  queryText = '',
+): Promise<string> {
   if (attachmentIds.length === 0) {
     return '';
   }
@@ -500,12 +693,24 @@ export async function buildAttachmentContextNote(workspacePath: string, attachme
   }
 
   const sections = await Promise.all(records.map(async (record) => {
-    if (!isTextAttachment(record)) {
-      const parsed = await readDocumentFile(record.storedPath);
-      const extractedText = parsed.success && parsed.content.trim()
-        ? parsed.content
-        : extractSpecialAttachmentText(record);
-      if (extractedText?.trim()) {
+    const semanticSnippets = await queryAttachmentSemanticSnippets({
+      workspacePath,
+      record,
+      queryText,
+      limit: MAX_ATTACHMENT_SNIPPETS,
+    });
+    if (semanticSnippets.length > 0) {
+      return [
+        `### ATTACHMENT: ${record.originalName}`,
+        `Stored path: ${record.storedPath}`,
+        `Semantic snippets most relevant to the current request:`,
+        ...semanticSnippets.map((snippet, index) => `[Snippet ${index + 1}] ${snippet}`),
+      ].join('\n');
+    }
+
+    const extractedText = await extractAttachmentText(record);
+    if (extractedText?.trim()) {
+      if (!isTextAttachment(record)) {
         return [
           `### ATTACHMENT: ${record.originalName}`,
           `Stored path: ${record.storedPath}`,
@@ -513,30 +718,19 @@ export async function buildAttachmentContextNote(workspacePath: string, attachme
           truncateContent(extractedText),
         ].join('\n');
       }
-
-      return [
-        `### ATTACHMENT: ${record.originalName}`,
-        `Stored path: ${record.storedPath}`,
-        `Read document with path "${record.storedPath}".`,
-        `A non-text attachment is included (${record.mimeType}). Its binary content could not be extracted into plain text for the prompt.`,
-      ].join('\n');
-    }
-
-    try {
-      const raw = fs.readFileSync(record.storedPath, 'utf-8');
       return [
         `### ATTACHMENT: ${record.originalName}`,
         `Stored path: ${record.storedPath}`,
         `Read file with path "${record.storedPath}".`,
-        truncateContent(raw),
-      ].join('\n');
-    } catch {
-      return [
-        `### ATTACHMENT: ${record.originalName}`,
-        `Stored path: ${record.storedPath}`,
-        `Failed to read the attachment content.`,
+        truncateContent(extractedText),
       ].join('\n');
     }
+
+    return [
+      `### ATTACHMENT: ${record.originalName}`,
+      `Stored path: ${record.storedPath}`,
+      `Failed to read the attachment content.`,
+    ].join('\n');
   }));
 
   return sections.length > 0

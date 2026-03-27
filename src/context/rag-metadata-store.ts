@@ -1,5 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
+import { ChromaClient } from 'chromadb';
 import { ensureProjectStorage, getProjectStorageInfo } from './project-store';
+import { resolveChromaUrl } from './chroma-manager';
+import { cosineSimilarityEmbedding, embedTexts, getGeminiEmbeddingModel } from './gemini-embeddings';
 
 type SyntaxMetadataRecord = Readonly<{
   relativePath: string;
@@ -25,6 +28,8 @@ type SemanticMetadataChunk = Readonly<{
   exported?: boolean;
   startLine?: number;
   endLine?: number;
+  description?: string;
+  descriptionSource?: string;
   mtimeMs: number;
   embeddingModel?: string;
   indexedAt: number;
@@ -68,6 +73,18 @@ export type TaskMemoryEntryRecord = Readonly<{
 const TASK_MEMORY_MIN_ASSISTANT_CHARS = 24;
 const TASK_MEMORY_RETENTION_DAYS = 45;
 const TASK_MEMORY_MAX_ENTRIES = 250;
+const TASK_MEMORY_EMBED_BATCH_SIZE = 24;
+const TASK_MEMORY_SEMANTIC_CANDIDATE_LIMIT = 80;
+const TASK_MEMORY_CHROMA_TIMEOUT_MS = 1500;
+const MANUAL_EMBEDDING_FUNCTION = Object.freeze({
+  name: "galaxy-manual-embedding",
+  async generate(): Promise<number[][]> {
+    throw new Error("Manual embeddings only. Provide embeddings explicitly.");
+  },
+  async generateForQueries(): Promise<number[][]> {
+    throw new Error("Manual embeddings only. Provide query embeddings explicitly.");
+  },
+});
 
 export type TaskMemoryFindingRecord = Readonly<{
   id: string;
@@ -282,11 +299,23 @@ function withDatabase<T>(workspacePath: string, fn: (db: DatabaseSync) => T): T 
       indexed_at INTEGER NOT NULL
     );
   `);
+  ensureSemanticChunkColumns(db);
 
   try {
     return fn(db);
   } finally {
     db.close();
+  }
+}
+
+function ensureSemanticChunkColumns(db: DatabaseSync): void {
+  const columns = db.prepare(`PRAGMA table_info(semantic_chunks)`).all() as Array<{ name: string }>;
+  const existing = new Set(columns.map((column) => column.name));
+  if (!existing.has('description')) {
+    db.exec(`ALTER TABLE semantic_chunks ADD COLUMN description TEXT;`);
+  }
+  if (!existing.has('description_source')) {
+    db.exec(`ALTER TABLE semantic_chunks ADD COLUMN description_source TEXT;`);
   }
 }
 
@@ -378,9 +407,9 @@ export function syncSemanticMetadata(
     const upsertChunk = db.prepare(`
       INSERT INTO semantic_chunks (
         id, file_path, kind, title, title_lower, symbol_name, symbol_name_lower,
-        exported, start_line, end_line, mtime_ms, embedding_model, indexed_at
+        exported, start_line, end_line, description, description_source, mtime_ms, embedding_model, indexed_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         file_path = excluded.file_path,
         kind = excluded.kind,
@@ -391,6 +420,8 @@ export function syncSemanticMetadata(
         exported = excluded.exported,
         start_line = excluded.start_line,
         end_line = excluded.end_line,
+        description = excluded.description,
+        description_source = excluded.description_source,
         mtime_ms = excluded.mtime_ms,
         embedding_model = excluded.embedding_model,
         indexed_at = excluded.indexed_at
@@ -408,6 +439,8 @@ export function syncSemanticMetadata(
         chunk.exported ? 1 : 0,
         chunk.startLine ?? null,
         chunk.endLine ?? null,
+        chunk.description ?? null,
+        chunk.descriptionSource ?? null,
         chunk.mtimeMs,
         chunk.embeddingModel ?? null,
         chunk.indexedAt,
@@ -727,24 +760,233 @@ function safeParseStringArray(raw: string | null): readonly string[] {
   }
 }
 
-export function queryRelevantTaskMemory(
+function buildTaskMemoryEmbeddingDocument(entry: Readonly<{
+  turnKind: string;
+  userIntent: string;
+  assistantConclusion: string;
+  files: readonly string[];
+  attachments: readonly string[];
+}>): string {
+  return [
+    `Turn kind: ${entry.turnKind}`,
+    `User intent: ${entry.userIntent}`,
+    `Assistant conclusion: ${entry.assistantConclusion}`,
+    entry.files.length > 0 ? `Files: ${entry.files.join(', ')}` : '',
+    entry.attachments.length > 0 ? `Attachments: ${entry.attachments.join(', ')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function parseStoredEmbedding(raw: string): readonly number[] | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed)
+      ? Object.freeze(parsed.filter((item): item is number => typeof item === 'number'))
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function queryChromaTaskMemory(opts: {
+  workspacePath: string;
+  workspaceId: string;
+  queryEmbedding: readonly number[];
+  limit: number;
+}): Promise<ReadonlyMap<string, number>> {
+  const chromaPath = await resolveChromaUrl(opts.workspacePath);
+  if (!chromaPath) {
+    return new Map<string, number>();
+  }
+
+  try {
+    const client = new ChromaClient({ path: chromaPath });
+    const collection = await Promise.race([
+      client.getOrCreateCollection({
+        name: `galaxy-task-memory-v2-${opts.workspaceId.replace(/[^a-z0-9_-]+/gi, '-').toLowerCase()}`,
+        embeddingFunction: MANUAL_EMBEDDING_FUNCTION,
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), TASK_MEMORY_CHROMA_TIMEOUT_MS)),
+    ]);
+    if (!collection) {
+      return new Map<string, number>();
+    }
+    const result = await Promise.race([
+      collection.query({
+        queryEmbeddings: [[...opts.queryEmbedding]],
+        nResults: opts.limit,
+        include: ['distances'],
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), TASK_MEMORY_CHROMA_TIMEOUT_MS)),
+    ]);
+    if (!result) {
+      return new Map<string, number>();
+    }
+    const scores = new Map<string, number>();
+    const ids = result.ids[0] ?? [];
+    const distances = result.distances?.[0] ?? [];
+    ids.forEach((id, index) => {
+      const distance = distances[index];
+      scores.set(id, typeof distance === 'number' ? Math.max(0, 1 - distance) : 0);
+    });
+    return scores;
+  } catch {
+    return new Map<string, number>();
+  }
+}
+
+async function ensureTaskMemoryEmbeddings(opts: {
+  workspacePath: string;
+  entries: readonly Readonly<{
+    turnId: string;
+    workspaceId: string;
+    turnKind: string;
+    userIntent: string;
+    assistantConclusion: string;
+    files: readonly string[];
+    attachments: readonly string[];
+    updatedAt: number;
+    createdAt: number;
+  }>[];
+}): Promise<ReadonlyMap<string, readonly number[]>> {
+  const model = getGeminiEmbeddingModel();
+  const cached = new Map<string, readonly number[]>();
+  const pending: Array<(typeof opts.entries)[number]> = [];
+
+  withDatabase(opts.workspacePath, (db) => {
+    const rows = db.prepare(`
+      SELECT entry_turn_id, embedding_model, embedding_vector, indexed_at
+      FROM task_memory_embeddings
+      WHERE entry_turn_id IN (${opts.entries.map(() => '?').join(',')})
+    `).all(...opts.entries.map((entry) => entry.turnId)) as Array<{
+      entry_turn_id: string;
+      embedding_model: string;
+      embedding_vector: string;
+      indexed_at: number;
+    }>;
+    const rowMap = new Map(rows.map((row) => [row.entry_turn_id, row]));
+    opts.entries.forEach((entry) => {
+      const existing = rowMap.get(entry.turnId);
+      const parsedEmbedding = existing ? parseStoredEmbedding(existing.embedding_vector) : null;
+      if (existing && existing.embedding_model === model && parsedEmbedding && existing.indexed_at >= entry.updatedAt) {
+        cached.set(entry.turnId, parsedEmbedding);
+      } else {
+        pending.push(entry);
+      }
+    });
+  });
+
+  for (let index = 0; index < pending.length; index += TASK_MEMORY_EMBED_BATCH_SIZE) {
+    const batch = pending.slice(index, index + TASK_MEMORY_EMBED_BATCH_SIZE);
+    const embeddings = await embedTexts(batch.map((entry) => buildTaskMemoryEmbeddingDocument(entry)), 'RETRIEVAL_DOCUMENT');
+    if (!embeddings || embeddings.length !== batch.length) {
+      continue;
+    }
+    withDatabase(opts.workspacePath, (db) => {
+      const upsert = db.prepare(`
+        INSERT INTO task_memory_embeddings (entry_turn_id, embedding_model, embedding_vector, indexed_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(entry_turn_id) DO UPDATE SET
+          embedding_model = excluded.embedding_model,
+          embedding_vector = excluded.embedding_vector,
+          indexed_at = excluded.indexed_at
+      `);
+      batch.forEach((entry, batchIndex) => {
+        const embedding = embeddings[batchIndex];
+        if (!embedding || embedding.length === 0) {
+          return;
+        }
+        const frozen = Object.freeze([...embedding]);
+        cached.set(entry.turnId, frozen);
+        upsert.run(entry.turnId, model, JSON.stringify(frozen), Date.now());
+      });
+    });
+  }
+
+  return cached;
+}
+
+async function syncTaskMemoryToChroma(opts: {
+  workspacePath: string;
+  workspaceId: string;
+  entries: readonly Readonly<{
+    turnId: string;
+    turnKind: string;
+    userIntent: string;
+    assistantConclusion: string;
+    files: readonly string[];
+    attachments: readonly string[];
+    createdAt: number;
+  }>[];
+  embeddings: ReadonlyMap<string, readonly number[]>;
+}): Promise<void> {
+  const chromaPath = await resolveChromaUrl(opts.workspacePath);
+  if (!chromaPath) {
+    return;
+  }
+
+  try {
+    const client = new ChromaClient({ path: chromaPath });
+    const collection = await Promise.race([
+      client.getOrCreateCollection({
+        name: `galaxy-task-memory-v2-${opts.workspaceId.replace(/[^a-z0-9_-]+/gi, '-').toLowerCase()}`,
+        embeddingFunction: MANUAL_EMBEDDING_FUNCTION,
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), TASK_MEMORY_CHROMA_TIMEOUT_MS)),
+    ]);
+    if (!collection) {
+      return;
+    }
+
+    const ids: string[] = [];
+    const documents: string[] = [];
+    const embeddings: number[][] = [];
+    const metadatas: Record<string, string | number | boolean | null>[] = [];
+    opts.entries.forEach((entry) => {
+      const embedding = opts.embeddings.get(entry.turnId);
+      if (!embedding || embedding.length === 0) {
+        return;
+      }
+      ids.push(entry.turnId);
+      documents.push(buildTaskMemoryEmbeddingDocument(entry));
+      embeddings.push([...embedding]);
+      metadatas.push({
+        turnKind: entry.turnKind,
+        fileCount: entry.files.length,
+        attachmentCount: entry.attachments.length,
+        createdAt: entry.createdAt,
+      });
+    });
+    if (ids.length === 0) {
+      return;
+    }
+    await Promise.race([
+      collection.upsert({ ids, documents, embeddings, metadatas }),
+      new Promise<void>((resolve) => setTimeout(() => resolve(), TASK_MEMORY_CHROMA_TIMEOUT_MS)),
+    ]);
+  } catch {
+    // Best effort only.
+  }
+}
+
+export async function queryRelevantTaskMemory(
   workspacePath: string,
   queryText: string,
   limit = 3,
-): Readonly<{
+): Promise<Readonly<{
   entries: readonly TaskMemoryEntrySummary[];
   findings: readonly TaskMemoryFindingSummary[];
-}> {
+}>> {
   const tokens = tokenizeQuery(queryText);
-  return withDatabase(workspacePath, (db) => {
+  const allEntries = withDatabase(workspacePath, (db) => {
     const allEntries = db.prepare(`
-      SELECT turn_id, turn_kind, user_intent, assistant_conclusion, files_json, attachments_json,
-             confidence, freshness_score, created_at
+      SELECT turn_id, workspace_id, turn_kind, user_intent, assistant_conclusion, files_json, attachments_json,
+             confidence, freshness_score, created_at, updated_at
       FROM task_memory_entries
       ORDER BY created_at DESC
-      LIMIT 40
-    `).all() as Array<{
+      LIMIT ?
+    `).all(TASK_MEMORY_SEMANTIC_CANDIDATE_LIMIT) as Array<{
       turn_id: string;
+      workspace_id: string;
       turn_kind: string;
       user_intent: string;
       assistant_conclusion: string;
@@ -753,39 +995,82 @@ export function queryRelevantTaskMemory(
       confidence: number;
       freshness_score: number;
       created_at: number;
+      updated_at: number;
     }>;
+    return Object.freeze(allEntries.map((entry) => Object.freeze({
+      turnId: entry.turn_id,
+      workspaceId: entry.workspace_id,
+      turnKind: entry.turn_kind,
+      userIntent: entry.user_intent,
+      assistantConclusion: entry.assistant_conclusion,
+      files: safeParseStringArray(entry.files_json),
+      attachments: safeParseStringArray(entry.attachments_json),
+      confidence: entry.confidence,
+      freshnessScore: entry.freshness_score,
+      createdAt: entry.created_at,
+      updatedAt: entry.updated_at,
+    })));
+  });
 
-    const scoredEntries = allEntries
+  if (allEntries.length === 0) {
+    return Object.freeze({
+      entries: Object.freeze([]),
+      findings: Object.freeze([]),
+    });
+  }
+
+  const embeddings = await ensureTaskMemoryEmbeddings({ workspacePath, entries: allEntries });
+  void syncTaskMemoryToChroma({
+    workspacePath,
+    workspaceId: allEntries[0]!.workspaceId,
+    entries: allEntries,
+    embeddings,
+  });
+  const queryEmbedding = queryText.trim()
+    ? (await embedTexts([queryText], 'RETRIEVAL_QUERY'))?.[0] ?? null
+    : null;
+  const chromaScores = queryEmbedding
+    ? await queryChromaTaskMemory({
+        workspacePath,
+        workspaceId: allEntries[0]!.workspaceId,
+        queryEmbedding,
+        limit: Math.max(limit * 3, 8),
+      })
+    : new Map<string, number>();
+
+  const scoredEntries = allEntries
       .map((entry) => {
-        const haystack = `${entry.user_intent}\n${entry.assistant_conclusion}`.toLowerCase();
-        const files = safeParseStringArray(entry.files_json);
-        const attachments = safeParseStringArray(entry.attachments_json);
+        const haystack = `${entry.userIntent}\n${entry.assistantConclusion}`.toLowerCase();
         const tokenHits = tokens.reduce((sum, token) => sum + (haystack.includes(token) ? 1 : 0), 0);
         const fileHits = tokens.reduce(
-          (sum, token) => sum + (files.some((filePath) => filePath.toLowerCase().includes(token)) ? 1 : 0),
+          (sum, token) => sum + (entry.files.some((filePath) => filePath.toLowerCase().includes(token)) ? 1 : 0),
           0,
         );
         const attachmentHits = tokens.reduce(
-          (sum, token) => sum + (attachments.some((item) => item.toLowerCase().includes(token)) ? 1 : 0),
+          (sum, token) => sum + (entry.attachments.some((item) => item.toLowerCase().includes(token)) ? 1 : 0),
           0,
         );
-        const ageMs = Date.now() - entry.created_at;
+        const ageMs = Date.now() - entry.createdAt;
         const recencyBoost = ageMs <= 60 * 60_000 ? 3 : ageMs <= 24 * 60 * 60_000 ? 2 : ageMs <= 7 * 24 * 60 * 60_000 ? 1 : 0;
-        const freshnessWeight = Math.max(0.35, Math.min(1.25, entry.freshness_score || 1));
-        const score = (tokenHits * 5 + fileHits * 4 + attachmentHits * 3 + recencyBoost) * freshnessWeight;
+        const freshnessWeight = Math.max(0.35, Math.min(1.25, entry.freshnessScore || 1));
+        const lexicalScore = (tokenHits * 5 + fileHits * 4 + attachmentHits * 3 + recencyBoost) * freshnessWeight;
+        const localSemanticScore = queryEmbedding
+          ? cosineSimilarityEmbedding(queryEmbedding, embeddings.get(entry.turnId) ?? null)
+          : 0;
+        const chromaScore = chromaScores.get(entry.turnId) ?? 0;
         return {
           entry: Object.freeze({
-            turnId: entry.turn_id,
-            turnKind: entry.turn_kind,
-            userIntent: entry.user_intent,
-            assistantConclusion: entry.assistant_conclusion,
-            files,
-            attachments,
+            turnId: entry.turnId,
+            turnKind: entry.turnKind,
+            userIntent: entry.userIntent,
+            assistantConclusion: entry.assistantConclusion,
+            files: entry.files,
+            attachments: entry.attachments,
             confidence: entry.confidence,
-            freshnessScore: entry.freshness_score,
-            createdAt: entry.created_at,
+            freshnessScore: entry.freshnessScore,
+            createdAt: entry.createdAt,
           } satisfies TaskMemoryEntrySummary),
-          score,
+          score: lexicalScore + Math.max(localSemanticScore, chromaScore) * 9,
         };
       })
       .filter((item) => item.score > 0 || tokens.length === 0)
@@ -793,42 +1078,41 @@ export function queryRelevantTaskMemory(
       .slice(0, limit)
       .map((item) => item.entry);
 
-    const entryTurnIds = scoredEntries.map((entry) => entry.turnId);
-    const findings = entryTurnIds.length > 0
-      ? (db.prepare(
-          `SELECT id, entry_turn_id, kind, summary, file_path, line, status, created_at
-           FROM task_memory_findings
-           WHERE entry_turn_id IN (${entryTurnIds.map(() => '?').join(',')})
-           ORDER BY created_at DESC
-           LIMIT 12`,
-        ).all(...entryTurnIds) as Array<{
-          id: string;
-          entry_turn_id: string;
-          kind: string;
-          summary: string;
-          file_path: string | null;
-          line: number | null;
-          status: string;
-          created_at: number;
-        }>)
-      : [];
+  const entryTurnIds = scoredEntries.map((entry) => entry.turnId);
+  const findings = withDatabase(workspacePath, (db) => entryTurnIds.length > 0
+    ? (db.prepare(
+        `SELECT id, entry_turn_id, kind, summary, file_path, line, status, created_at
+         FROM task_memory_findings
+         WHERE entry_turn_id IN (${entryTurnIds.map(() => '?').join(',')})
+         ORDER BY created_at DESC
+         LIMIT 12`,
+      ).all(...entryTurnIds) as Array<{
+        id: string;
+        entry_turn_id: string;
+        kind: string;
+        summary: string;
+        file_path: string | null;
+        line: number | null;
+        status: string;
+        created_at: number;
+      }>)
+    : []);
 
-    return Object.freeze({
-      entries: Object.freeze(scoredEntries),
-      findings: Object.freeze(
-        findings.map((finding) =>
-          Object.freeze({
-            id: finding.id,
-            entryTurnId: finding.entry_turn_id,
-            kind: finding.kind,
-            summary: finding.summary,
-            ...(finding.file_path ? { filePath: finding.file_path } : {}),
-            ...(typeof finding.line === 'number' ? { line: finding.line } : {}),
-            status: finding.status,
-            createdAt: finding.created_at,
-          } satisfies TaskMemoryFindingSummary),
-        ),
+  return Object.freeze({
+    entries: Object.freeze(scoredEntries),
+    findings: Object.freeze(
+      findings.map((finding) =>
+        Object.freeze({
+          id: finding.id,
+          entryTurnId: finding.entry_turn_id,
+          kind: finding.kind,
+          summary: finding.summary,
+          ...(finding.file_path ? { filePath: finding.file_path } : {}),
+          ...(typeof finding.line === 'number' ? { line: finding.line } : {}),
+          status: finding.status,
+          createdAt: finding.created_at,
+        } satisfies TaskMemoryFindingSummary),
       ),
-    });
+    ),
   });
 }

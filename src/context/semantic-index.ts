@@ -1,22 +1,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { ChromaClient } from 'chromadb';
 import { estimateTokens } from './compaction';
+import { resolveChromaUrl } from './chroma-manager';
+import { extractCodeChunkUnits } from './code-chunk-extractor';
 import { ensureProjectStorage, getProjectStorageInfo } from './project-store';
 import { queryRagHintPaths, syncSemanticMetadata } from './rag-metadata-store';
 import type { SyntaxContextRecordSummary, SyntaxSymbolRecord } from './syntax-index';
 
-const SEMANTIC_INDEX_VERSION = 2;
+const SEMANTIC_INDEX_VERSION = 3;
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_CHUNKS_PER_FILE = 6;
 const MAX_RESULTS = 5;
 const EMBEDDING_BATCH_SIZE = 32;
 const EMBEDDING_TIMEOUT_MS = 2500;
+const SEMANTIC_CHROMA_TIMEOUT_MS = 2500;
 const MAX_EXCERPT_CHARS = 280;
 const MAX_TERMS_PER_CHUNK = 48;
 const MAX_SCAN_DIRS = 24;
 const MAX_SCAN_FILES = 120;
 const DOC_SUFFIXES = ['.md', '.mdx', '.txt', '.json', '.yaml', '.yml'];
-const SOURCE_SUFFIXES = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+const SOURCE_SUFFIXES = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.py', '.go', '.rs', '.java'];
 const STOP_WORDS = new Set([
   'the', 'and', 'for', 'with', 'this', 'that', 'from', 'into', 'when', 'then', 'than',
   'are', 'was', 'were', 'been', 'have', 'has', 'had', 'not', 'but', 'use', 'using',
@@ -27,6 +31,15 @@ const PREFERRED_DIR_NAMES = ['docs', 'doc', 'spec', 'specs', 'src', 'app', 'pack
 const IGNORED_SEGMENTS = new Set(['.git', '.galaxy', 'node_modules', 'dist', 'build', 'out', 'coverage']);
 const GEMINI_EMBEDDING_MODEL = 'gemini-embedding-001';
 const GEMINI_EMBEDDING_API_KEY = 'AIzaSyBBEuo4Hz1d5oCtSxYe0uULMCXtQS-7DF0';
+const MANUAL_EMBEDDING_FUNCTION = Object.freeze({
+  name: 'galaxy-manual-embedding',
+  async generate(): Promise<number[][]> {
+    throw new Error('Manual embeddings only. Provide embeddings explicitly.');
+  },
+  async generateForQueries(): Promise<number[][]> {
+    throw new Error('Manual embeddings only. Provide query embeddings explicitly.');
+  },
+});
 
 type SemanticChunkKind = 'code_symbol' | 'code_module' | 'doc_section';
 
@@ -40,6 +53,8 @@ type SemanticChunkRecord = Readonly<{
   exported?: boolean;
   startLine?: number;
   endLine?: number;
+  description?: string;
+  descriptionSource?: 'comment' | 'signature' | 'module_overview' | 'section_title';
   excerpt: string;
   terms: Readonly<Record<string, number>>;
   magnitude: number;
@@ -139,6 +154,8 @@ function saveStore(workspacePath: string, store: SemanticIndexStore): void {
         ...(typeof chunk.exported === 'boolean' ? { exported: chunk.exported } : {}),
         ...(typeof chunk.startLine === 'number' ? { startLine: chunk.startLine } : {}),
         ...(typeof chunk.endLine === 'number' ? { endLine: chunk.endLine } : {}),
+        ...(chunk.description ? { description: chunk.description } : {}),
+        ...(chunk.descriptionSource ? { descriptionSource: chunk.descriptionSource } : {}),
         mtimeMs: chunk.mtimeMs,
         ...(chunk.embeddingModel ? { embeddingModel: chunk.embeddingModel } : {}),
         indexedAt: chunk.indexedAt,
@@ -247,6 +264,10 @@ function makeChunkId(filePath: string, kind: SemanticChunkKind, title: string, s
   return `${filePath}#${kind}:${title}:${startLine ?? 0}`;
 }
 
+function buildSemanticCollectionName(workspaceId: string): string {
+  return `galaxy-semantic-chunks-v1-${workspaceId.replace(/[^a-z0-9_-]+/gi, '-').toLowerCase()}`;
+}
+
 function createChunk(opts: {
   filePath: string;
   title: string;
@@ -256,8 +277,10 @@ function createChunk(opts: {
   symbol?: SyntaxSymbolRecord;
   startLine?: number;
   endLine?: number;
+  description?: string;
+  descriptionSource?: 'comment' | 'signature' | 'module_overview' | 'section_title';
 }): SemanticChunkRecord {
-  const vector = buildTermVector(`${opts.title}\n${opts.excerpt}`);
+  const vector = buildTermVector(`${opts.title}\n${opts.description ?? ''}\n${opts.excerpt}`);
   return Object.freeze({
     id: makeChunkId(opts.filePath, opts.kind, opts.title, opts.startLine),
     filePath: opts.filePath,
@@ -266,6 +289,8 @@ function createChunk(opts: {
     ...(opts.symbol ? { symbolName: opts.symbol.name, symbolKind: opts.symbol.kind, exported: opts.symbol.exported } : {}),
     ...(typeof opts.startLine === 'number' ? { startLine: opts.startLine } : {}),
     ...(typeof opts.endLine === 'number' ? { endLine: opts.endLine } : {}),
+    ...(opts.description ? { description: opts.description } : {}),
+    ...(opts.descriptionSource ? { descriptionSource: opts.descriptionSource } : {}),
     excerpt: opts.excerpt,
     terms: vector.terms,
     magnitude: vector.magnitude,
@@ -306,6 +331,7 @@ function computeSemanticChunkScore(opts: {
   definitionPaths?: readonly string[];
   referencePaths?: readonly string[];
   queryText: string;
+  chromaScore?: number;
 }): number {
   const lexicalScore = cosineSimilarity(opts.queryTerms, opts.queryMagnitude, opts.chunk.terms, opts.chunk.magnitude);
   const embeddingScore =
@@ -354,47 +380,201 @@ function computeSemanticChunkScore(opts: {
     score += 0.03;
   }
 
+  if (typeof opts.chromaScore === 'number' && opts.chromaScore > 0) {
+    score += opts.chromaScore * 0.2;
+  }
+
   return score;
 }
 
-function buildCodeChunks(relativePath: string, raw: string, mtimeMs: number, record?: SyntaxContextRecordSummary): readonly SemanticChunkRecord[] {
+function normalizeDescription(text: string): string {
+  return normalizeWhitespace(
+    text
+      .replace(/^\/\*+/, '')
+      .replace(/\*+\/$/, '')
+      .replace(/^\s*\/\/\s?/gm, '')
+      .replace(/^\s*#\s?/gm, '')
+      .replace(/^\s*\*\s?/gm, '')
+      .replace(/^\s*--\s?/gm, ''),
+  ).slice(0, 200);
+}
+
+function extractLeadingComment(lines: readonly string[], startLine: number): string | null {
+  const collected: string[] = [];
+  let lineIndex = startLine - 2;
+  let sawComment = false;
+
+  while (lineIndex >= 0 && collected.length < 8) {
+    const line = lines[lineIndex] ?? '';
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (sawComment) {
+        break;
+      }
+      lineIndex -= 1;
+      continue;
+    }
+    const isCommentLine =
+      trimmed.startsWith('//') ||
+      trimmed.startsWith('#') ||
+      trimmed.startsWith('*') ||
+      trimmed.startsWith('/*') ||
+      trimmed.startsWith('*/') ||
+      trimmed.startsWith('--');
+    if (!isCommentLine) {
+      break;
+    }
+    sawComment = true;
+    collected.unshift(line);
+    lineIndex -= 1;
+  }
+
+  const normalized = normalizeDescription(collected.join('\n'));
+  return normalized || null;
+}
+
+function buildSymbolDescription(symbol: SyntaxSymbolRecord, commentText: string | null): Readonly<{
+  description: string;
+  source: 'comment' | 'signature';
+}> {
+  if (commentText) {
+    return Object.freeze({
+      description: commentText,
+      source: 'comment',
+    });
+  }
+
+  const exportedPrefix = symbol.exported ? 'Exported ' : '';
+  const description =
+    symbol.kind === 'class'
+      ? `${exportedPrefix}class ${symbol.name}.`
+      : symbol.kind === 'interface'
+        ? `${exportedPrefix}interface ${symbol.name}.`
+        : symbol.kind === 'enum'
+          ? `${exportedPrefix}enum ${symbol.name}.`
+          : symbol.kind === 'type'
+            ? `${exportedPrefix}type ${symbol.name}.`
+            : symbol.kind === 'const'
+              ? `${exportedPrefix}constant ${symbol.name}.`
+              : `${exportedPrefix}${symbol.kind} ${symbol.name}.`;
+  return Object.freeze({
+    description,
+    source: 'signature',
+  });
+}
+
+function buildModuleOverview(relativePath: string, record: SyntaxContextRecordSummary | undefined, raw: string): Readonly<{
+  description: string;
+  excerpt: string;
+}> {
+  const lines = raw.split(/\r?\n/);
+  const summaryLines: string[] = [`Module: ${relativePath}`];
+  const symbolKinds = new Set((record?.symbols ?? []).map((symbol) => symbol.kind));
+  const exportedSymbols = (record?.symbols ?? []).filter((symbol) => symbol.exported).map((symbol) => symbol.name);
+  const topSymbols = (record?.symbols ?? []).slice(0, 5).map((symbol) => `${symbol.kind} ${symbol.name}`);
+  const imports = record?.imports.slice(0, 6) ?? [];
+
+  if (imports.length > 0) {
+    summaryLines.push(`Imports: ${imports.join(', ')}`);
+  }
+  if (exportedSymbols.length > 0) {
+    summaryLines.push(`Exports: ${exportedSymbols.join(', ')}`);
+  } else if ((record?.exports.length ?? 0) > 0) {
+    summaryLines.push(`Exports: ${record!.exports.slice(0, 6).join(', ')}`);
+  }
+  if (topSymbols.length > 0) {
+    summaryLines.push(`Top symbols: ${topSymbols.join('; ')}`);
+  }
+
+  const descriptionParts = [
+    imports.length > 0 ? `Depends on ${imports.slice(0, 3).join(', ')}.` : '',
+    exportedSymbols.length > 0 ? `Exports ${exportedSymbols.slice(0, 3).join(', ')}.` : '',
+    symbolKinds.size > 0 ? `Contains ${[...symbolKinds].slice(0, 3).join(', ')} symbols.` : '',
+  ].filter(Boolean);
+  const description =
+    descriptionParts.join(' ') ||
+    `Module overview for ${relativePath}.`;
+
+  const excerpt = normalizeWhitespace(
+    [
+      ...summaryLines,
+      '',
+      ...lines.slice(0, 24),
+    ].join('\n'),
+  ).slice(0, MAX_EXCERPT_CHARS);
+
+  return Object.freeze({
+    description,
+    excerpt,
+  });
+}
+
+async function buildCodeChunks(relativePath: string, raw: string, mtimeMs: number, record?: SyntaxContextRecordSummary): Promise<readonly SemanticChunkRecord[]> {
   const chunks: SemanticChunkRecord[] = [];
   const lines = raw.split(/\r?\n/);
-  const symbols = record?.symbols.slice(0, MAX_CHUNKS_PER_FILE - 1) ?? [];
+  const extractedUnits = await extractCodeChunkUnits({ relativePath, content: raw });
+  const fallbackSymbols = record?.symbols.slice(0, MAX_CHUNKS_PER_FILE - 1) ?? [];
+  const units = extractedUnits.length > 0
+    ? extractedUnits.slice(0, MAX_CHUNKS_PER_FILE - 1).map((unit) => Object.freeze({
+        ...unit,
+        excerpt: normalizeWhitespace(raw.slice(unit.startIndex, unit.endIndex)).slice(0, MAX_EXCERPT_CHARS),
+      }))
+    : fallbackSymbols.map((symbol, index) => {
+        const nextLine = fallbackSymbols[index + 1]?.line ?? Math.min(lines.length + 1, symbol.line + 80);
+        const startLine = symbol.line;
+        const endLine = Math.max(startLine, Math.min(lines.length, nextLine - 1, startLine + 80));
+        return Object.freeze({
+          name: symbol.name,
+          kind: symbol.kind,
+          exported: symbol.exported,
+          signature: symbol.signature,
+          startLine,
+          endLine,
+          excerpt: normalizeWhitespace(lines.slice(startLine - 1, endLine).join('\n')).slice(0, MAX_EXCERPT_CHARS),
+        });
+      });
 
-  symbols.forEach((symbol, index) => {
-    const nextLine = symbols[index + 1]?.line ?? Math.min(lines.length + 1, symbol.line + 80);
-    const startLine = symbol.line;
-    const endLine = Math.max(startLine, Math.min(lines.length, nextLine - 1, startLine + 80));
-    const excerpt = normalizeWhitespace(lines.slice(startLine - 1, endLine).join('\n')).slice(0, MAX_EXCERPT_CHARS);
-    if (!excerpt) {
+  units.forEach((unit) => {
+    if (!unit.excerpt) {
       return;
     }
+    const symbol = Object.freeze({
+      name: unit.name,
+      kind: unit.kind,
+      exported: unit.exported,
+      line: unit.startLine,
+      signature: unit.signature,
+    } satisfies SyntaxSymbolRecord);
+    const symbolDescription = buildSymbolDescription(symbol, extractLeadingComment(lines, unit.startLine));
     chunks.push(
       createChunk({
         filePath: relativePath,
-        title: symbol.signature,
+        title: unit.signature,
         kind: 'code_symbol',
-        excerpt,
+        excerpt: unit.excerpt,
         mtimeMs,
         symbol,
-        startLine,
-        endLine,
+        startLine: unit.startLine,
+        endLine: unit.endLine,
+        description: symbolDescription.description,
+        descriptionSource: symbolDescription.source,
       }),
     );
   });
 
-  const moduleExcerpt = normalizeWhitespace(lines.slice(0, 80).join('\n')).slice(0, MAX_EXCERPT_CHARS);
-  if (moduleExcerpt) {
+  const moduleOverview = buildModuleOverview(relativePath, record, raw);
+  if (moduleOverview.excerpt) {
     chunks.unshift(
       createChunk({
         filePath: relativePath,
         title: `${relativePath} module overview`,
         kind: 'code_module',
-        excerpt: moduleExcerpt,
+        excerpt: moduleOverview.excerpt,
         mtimeMs,
         startLine: 1,
         endLine: Math.min(lines.length, 80),
+        description: moduleOverview.description,
+        descriptionSource: 'module_overview',
       }),
     );
   }
@@ -447,6 +627,8 @@ function buildDocChunks(relativePath: string, raw: string, mtimeMs: number): rea
         mtimeMs,
         startLine: section.startLine,
         endLine: section.endLine,
+        description: section.title,
+        descriptionSource: 'section_title',
       }),
     ),
   );
@@ -488,11 +670,11 @@ function scanDocCandidates(workspacePath: string): readonly string[] {
   return Object.freeze([...new Set(results)].slice(0, MAX_SCAN_FILES));
 }
 
-function rebuildChunksForFile(opts: {
+async function rebuildChunksForFile(opts: {
   workspacePath: string;
   relativePath: string;
   recordMap: ReadonlyMap<string, SyntaxContextRecordSummary>;
-}): readonly SemanticChunkRecord[] {
+}): Promise<readonly SemanticChunkRecord[]> {
   const absolutePath = path.join(opts.workspacePath, opts.relativePath);
   let stat: fs.Stats;
   try {
@@ -515,16 +697,16 @@ function rebuildChunksForFile(opts: {
     return buildDocChunks(opts.relativePath, raw, stat.mtimeMs);
   }
   if (isSourceFile(opts.relativePath)) {
-    return buildCodeChunks(opts.relativePath, raw, stat.mtimeMs, opts.recordMap.get(opts.relativePath));
+    return await buildCodeChunks(opts.relativePath, raw, stat.mtimeMs, opts.recordMap.get(opts.relativePath));
   }
   return Object.freeze([]);
 }
 
-function syncStore(opts: {
+async function syncStore(opts: {
   workspacePath: string;
   candidateFiles: readonly string[];
   records: readonly SyntaxContextRecordSummary[];
-}): SemanticIndexStore {
+}): Promise<SemanticIndexStore> {
   const recordMap = new Map(opts.records.map((record) => [record.relativePath, record] as const));
   const currentStore = loadStore(opts.workspacePath);
   const existingChunksByFile = groupChunksByFile(currentStore.chunks);
@@ -532,7 +714,7 @@ function syncStore(opts: {
     .filter((relativePath) => isDocFile(relativePath) || isSourceFile(relativePath));
   const nextChunks: Record<string, SemanticChunkRecord> = {};
 
-  candidateFiles.forEach((relativePath) => {
+  for (const relativePath of candidateFiles) {
     const absolutePath = path.join(opts.workspacePath, relativePath);
     let stat: fs.Stats | null = null;
     try {
@@ -545,17 +727,17 @@ function syncStore(opts: {
       existingChunksByFile.get(relativePath)!.forEach((chunk) => {
         nextChunks[chunk.id] = chunk;
       });
-      return;
+      continue;
     }
 
-    rebuildChunksForFile({
+    (await rebuildChunksForFile({
       workspacePath: opts.workspacePath,
       relativePath,
       recordMap,
-    }).forEach((chunk) => {
+    })).forEach((chunk) => {
       nextChunks[chunk.id] = chunk;
     });
-  });
+  }
 
   const nextStore = Object.freeze({
     version: SEMANTIC_INDEX_VERSION,
@@ -623,7 +805,7 @@ async function ensureChunkEmbeddings(store: SemanticIndexStore): Promise<Semanti
 
   for (let index = 0; index < missing.length; index += EMBEDDING_BATCH_SIZE) {
     const batch = missing.slice(index, index + EMBEDDING_BATCH_SIZE);
-    const inputs = batch.map(([, chunk]) => `${chunk.title}\n${chunk.excerpt}`);
+    const inputs = batch.map(([, chunk]) => `${chunk.title}\n${chunk.description ?? ''}\n${chunk.excerpt}`);
     const embeddings = await embedTexts(inputs, 'RETRIEVAL_DOCUMENT');
     if (!embeddings || embeddings.length !== batch.length) {
       continue;
@@ -656,6 +838,120 @@ async function ensureChunkEmbeddings(store: SemanticIndexStore): Promise<Semanti
   return nextStore;
 }
 
+function buildChromaDocument(chunk: SemanticChunkRecord): string {
+  return [
+    `File: ${chunk.filePath}`,
+    `Title: ${chunk.title}`,
+    chunk.symbolName ? `Symbol: ${chunk.symbolName}` : '',
+    chunk.symbolKind ? `Kind: ${chunk.symbolKind}` : '',
+    chunk.description ? `Description: ${chunk.description}` : '',
+    `Excerpt: ${chunk.excerpt}`,
+  ].filter(Boolean).join('\n');
+}
+
+async function syncChunksToChroma(opts: {
+  workspacePath: string;
+  workspaceId: string;
+  chunks: readonly SemanticChunkRecord[];
+}): Promise<void> {
+  const chromaPath = await resolveChromaUrl(opts.workspacePath);
+  if (!chromaPath || opts.chunks.length === 0) {
+    return;
+  }
+
+  try {
+    const client = new ChromaClient({ path: chromaPath });
+    const collection = await Promise.race([
+      client.getOrCreateCollection({
+        name: buildSemanticCollectionName(opts.workspaceId),
+        embeddingFunction: MANUAL_EMBEDDING_FUNCTION,
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), SEMANTIC_CHROMA_TIMEOUT_MS)),
+    ]);
+    if (!collection) {
+      return;
+    }
+
+    const syncedChunks = opts.chunks.filter((chunk) => chunk.embedding && chunk.embedding.length > 0);
+    if (syncedChunks.length === 0) {
+      return;
+    }
+
+    await Promise.race([
+      collection.upsert({
+        ids: syncedChunks.map((chunk) => chunk.id),
+        documents: syncedChunks.map((chunk) => buildChromaDocument(chunk)),
+        embeddings: syncedChunks.map((chunk) => [...(chunk.embedding ?? [])]),
+        metadatas: syncedChunks.map((chunk) => ({
+          filePath: chunk.filePath,
+          kind: chunk.kind,
+          title: chunk.title,
+          symbolName: chunk.symbolName ?? '',
+          symbolKind: chunk.symbolKind ?? '',
+          exported: Boolean(chunk.exported),
+          startLine: chunk.startLine ?? -1,
+          endLine: chunk.endLine ?? -1,
+          description: chunk.description ?? '',
+          descriptionSource: chunk.descriptionSource ?? '',
+          mtimeMs: chunk.mtimeMs,
+        })),
+      }),
+      new Promise<void>((resolve) => setTimeout(() => resolve(), SEMANTIC_CHROMA_TIMEOUT_MS)),
+    ]);
+  } catch {
+    // Best effort only.
+  }
+}
+
+async function queryChromaChunkScores(opts: {
+  workspacePath: string;
+  workspaceId: string;
+  queryEmbedding: readonly number[];
+  limit: number;
+}): Promise<ReadonlyMap<string, number>> {
+  const chromaPath = await resolveChromaUrl(opts.workspacePath);
+  if (!chromaPath) {
+    return new Map<string, number>();
+  }
+
+  try {
+    const client = new ChromaClient({ path: chromaPath });
+    const collection = await Promise.race([
+      client.getOrCreateCollection({
+        name: buildSemanticCollectionName(opts.workspaceId),
+        embeddingFunction: MANUAL_EMBEDDING_FUNCTION,
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), SEMANTIC_CHROMA_TIMEOUT_MS)),
+    ]);
+    if (!collection) {
+      return new Map<string, number>();
+    }
+
+    const result = await Promise.race([
+      collection.query({
+        queryEmbeddings: [[...opts.queryEmbedding]],
+        nResults: opts.limit,
+        include: ['distances'],
+      }),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), SEMANTIC_CHROMA_TIMEOUT_MS)),
+    ]);
+    if (!result) {
+      return new Map<string, number>();
+    }
+
+    const ids = result.ids[0] ?? [];
+    const distances = result.distances?.[0] ?? [];
+    const scores = new Map<string, number>();
+    ids.forEach((id, index) => {
+      const distance = distances[index];
+      scores.set(id, typeof distance === 'number' ? Math.max(0, 1 - distance) : 0);
+    });
+    return scores;
+  } catch {
+    return new Map<string, number>();
+  }
+}
+
 export async function buildSemanticRetrievalContext(opts: {
   workspacePath: string;
   queryText: string;
@@ -677,14 +973,28 @@ export async function buildSemanticRetrievalContext(opts: {
 
   const sqliteHintPaths = queryRagHintPaths(opts.workspacePath, opts.queryText, 4);
 
-  const syncedStore = syncStore({
+  const syncedStore = await syncStore({
     workspacePath: opts.workspacePath,
     candidateFiles: [...opts.candidateFiles, ...sqliteHintPaths],
     records: opts.records,
   });
   const store = await ensureChunkEmbeddings(syncedStore).catch(() => syncedStore);
+  const storage = getProjectStorageInfo(opts.workspacePath);
+  void syncChunksToChroma({
+    workspacePath: opts.workspacePath,
+    workspaceId: storage.workspaceId,
+    chunks: Object.values(store.chunks),
+  });
   const queryVector = buildTermVector(opts.queryText);
   const queryEmbedding = (await embedTexts([opts.queryText], 'RETRIEVAL_QUERY'))?.[0] ?? null;
+  const chromaScores = queryEmbedding
+    ? await queryChromaChunkScores({
+        workspacePath: opts.workspacePath,
+        workspaceId: storage.workspaceId,
+        queryEmbedding,
+        limit: Math.max(MAX_RESULTS * 3, 12),
+      })
+    : new Map<string, number>();
   const topChunks = Object.values(store.chunks)
     .map((chunk) => {
       const score = computeSemanticChunkScore({
@@ -697,6 +1007,7 @@ export async function buildSemanticRetrievalContext(opts: {
         definitionPaths: opts.definitionPaths,
         referencePaths: opts.referencePaths,
         queryText: opts.queryText,
+        chromaScore: chromaScores.get(chunk.id),
       });
       return Object.freeze({ chunk, score });
     })
@@ -723,6 +1034,9 @@ export async function buildSemanticRetrievalContext(opts: {
     }
     chunkLines.push(`File: ${entry.chunk.filePath}`);
     chunkLines.push(`Chunk: ${entry.chunk.title}`);
+    if (entry.chunk.description) {
+      chunkLines.push(`Description: ${entry.chunk.description}`);
+    }
     chunkLines.push(`Excerpt: ${entry.chunk.excerpt}`);
   });
 

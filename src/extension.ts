@@ -1135,6 +1135,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
               const attachmentContext = await buildAttachmentContextNote(
                 this.workspacePath,
                 attachmentIds,
+                userMessage.content,
               );
               const figmaContext = buildAttachedFigmaContextNote(this.workspacePath, figmaImportIds);
               const baseComponentContext = buildBaseComponentContextNote(this.workspacePath);
@@ -1959,6 +1960,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       const validationResult = await runFinalValidation({
         workspacePath: this.workspacePath,
         sessionFiles,
+        config: this.getEffectiveConfig(),
         streamCallbacks: {
           onStart: async (payload) => this.emitCommandStreamStart(payload),
           onChunk: async (payload) => this.emitCommandStreamChunk(payload),

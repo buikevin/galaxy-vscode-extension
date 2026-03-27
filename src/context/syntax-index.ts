@@ -4,6 +4,7 @@ import * as ts from 'typescript';
 import { estimateTokens } from './compaction';
 import { ensureProjectStorage, getProjectStorageInfo } from './project-store';
 import { syncSyntaxMetadata } from './rag-metadata-store';
+import { parseTreeSitterSourceFile } from './tree-sitter-parser';
 
 const SYNTAX_INDEX_VERSION = 3;
 const MAX_CONTEXT_FILES = 6;
@@ -18,7 +19,7 @@ const MAX_SCAN_DIRS = 48;
 const MAX_SCAN_FILES = 240;
 const MAX_SEED_FILES = 12;
 const MAX_PRIMARY_CONTEXT_FILES = 4;
-const SUPPORTED_SOURCE_SUFFIXES = ['.d.ts', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+const SUPPORTED_SOURCE_SUFFIXES = ['.d.ts', '.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.py', '.go', '.rs', '.java'];
 const IGNORED_SEGMENTS = new Set(['.git', '.galaxy', 'node_modules', 'dist', 'build', 'out', 'coverage']);
 const PREFERRED_DIR_NAMES = ['src', 'app', 'server', 'client', 'components', 'packages', 'libs', 'lib', 'api', 'pages', 'routes', 'webview'];
 
@@ -513,6 +514,18 @@ function collectSymbols(sourceFile: ts.SourceFile): readonly SyntaxSymbolRecord[
 }
 
 function inferLanguage(relativePath: string): string {
+  if (relativePath.endsWith('.py')) {
+    return 'python';
+  }
+  if (relativePath.endsWith('.go')) {
+    return 'go';
+  }
+  if (relativePath.endsWith('.rs')) {
+    return 'rust';
+  }
+  if (relativePath.endsWith('.java')) {
+    return 'java';
+  }
   if (relativePath.endsWith('.tsx')) {
     return 'tsx';
   }
@@ -614,11 +627,11 @@ function resolveImportRecordsWithCompiler(
   return Object.freeze([...resolved.values()].slice(0, MAX_IMPORTS_PER_FILE));
 }
 
-function parseSourceFile(
+async function parseSourceFile(
   workspacePath: string,
   relativePath: string,
   projectConfig: TypeScriptProjectConfig,
-): SyntaxFileRecord | null {
+): Promise<SyntaxFileRecord | null> {
   const absolutePath = path.join(workspacePath, relativePath);
   if (!fs.existsSync(absolutePath)) {
     return null;
@@ -630,6 +643,14 @@ function parseSourceFile(
   }
 
   const content = fs.readFileSync(absolutePath, 'utf-8');
+  if (relativePath.endsWith('.py') || relativePath.endsWith('.go') || relativePath.endsWith('.rs') || relativePath.endsWith('.java')) {
+    return await parseTreeSitterSourceFile({
+      relativePath,
+      content,
+      mtimeMs: stat.mtimeMs,
+    });
+  }
+
   const sourceFile = ts.createSourceFile(
     absolutePath,
     content,
@@ -857,7 +878,7 @@ function buildContextPaths(
   });
 }
 
-function ensureIndexedFiles(workspacePath: string, candidateFiles: readonly string[], queryText: string): Readonly<{
+async function ensureIndexedFiles(workspacePath: string, candidateFiles: readonly string[], queryText: string): Promise<Readonly<{
   files: Readonly<Record<string, SyntaxFileRecord>>;
   records: readonly SyntaxFileRecord[];
   selection: Readonly<{
@@ -866,7 +887,7 @@ function ensureIndexedFiles(workspacePath: string, candidateFiles: readonly stri
     definitionPaths: readonly string[];
     referencePaths: readonly string[];
   }>;
-}> {
+}>> {
   const normalizedCandidates = Object.freeze(
     [...new Set(candidateFiles)]
       .map((filePath) => resolveWorkspaceRelativePath(workspacePath, filePath))
@@ -896,20 +917,20 @@ function ensureIndexedFiles(workspacePath: string, candidateFiles: readonly stri
   const nextFiles: Record<string, SyntaxFileRecord> = { ...store.files };
   let changed = false;
 
-  indexingTargets.forEach((relativePath) => {
+  for (const relativePath of indexingTargets) {
     const absolutePath = path.join(workspacePath, relativePath);
     if (!fs.existsSync(absolutePath)) {
       if (relativePath in nextFiles) {
         delete nextFiles[relativePath];
         changed = true;
       }
-      return;
+      continue;
     }
 
     const stat = fs.statSync(absolutePath);
     const current = nextFiles[relativePath];
     if (!current || current.mtimeMs !== stat.mtimeMs) {
-      const parsed = parseSourceFile(workspacePath, relativePath, projectConfig);
+      const parsed = await parseSourceFile(workspacePath, relativePath, projectConfig);
       if (parsed) {
         nextFiles[relativePath] = parsed;
         changed = true;
@@ -918,7 +939,7 @@ function ensureIndexedFiles(workspacePath: string, candidateFiles: readonly stri
         changed = true;
       }
     }
-  });
+  }
 
   if (changed) {
     saveStore(
@@ -1441,13 +1462,13 @@ function formatRecord(opts: {
   return Object.freeze(lines);
 }
 
-export function buildSyntaxIndexContext(opts: {
+export async function buildSyntaxIndexContext(opts: {
   workspacePath: string;
   candidateFiles: readonly string[];
   queryText?: string;
-}): SyntaxIndexContext {
+}): Promise<SyntaxIndexContext> {
   const workspacePath = path.resolve(opts.workspacePath);
-  const indexed = ensureIndexedFiles(workspacePath, opts.candidateFiles, opts.queryText ?? '');
+  const indexed = await ensureIndexedFiles(workspacePath, opts.candidateFiles, opts.queryText ?? '');
   const records = indexed.records;
   if (records.length === 0) {
     return Object.freeze({

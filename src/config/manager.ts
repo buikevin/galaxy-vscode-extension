@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AgentType } from '../shared/protocol';
-import { DEFAULT_CONFIG, type AgentConfig, type GalaxyConfig, type ToolCapabilityConfig } from './types';
+import { DEFAULT_CONFIG, type AgentConfig, type GalaxyConfig, type ToolCapabilityConfig, type ValidationPreferencesConfig } from './types';
 
 type RawGalaxyConfig = Partial<GalaxyConfig> & {
   review?: boolean;
@@ -32,6 +32,23 @@ function normalizeExtensionToolToggles(
 ): GalaxyConfig['extensionToolToggles'] {
   return Object.freeze({
     ...(input ?? {}),
+  });
+}
+
+function normalizeStringList(value: unknown): readonly string[] {
+  return Object.freeze(
+    Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean)
+      : [],
+  );
+}
+
+function normalizeValidationConfig(input: Partial<ValidationPreferencesConfig> | undefined): ValidationPreferencesConfig {
+  return Object.freeze({
+    lint: normalizeStringList(input?.lint),
+    staticCheck: normalizeStringList(input?.staticCheck),
+    test: normalizeStringList(input?.test),
+    build: normalizeStringList(input?.build),
   });
 }
 
@@ -87,6 +104,7 @@ export function loadConfig(): GalaxyConfig {
     return {
       agent: parsed.agent ?? DEFAULT_CONFIG.agent,
       quality,
+      validation: normalizeValidationConfig(parsed.validation),
       maxToolRounds:
         typeof parsed.maxToolRounds === 'number' || parsed.maxToolRounds === null
           ? parsed.maxToolRounds
@@ -113,6 +131,7 @@ export function saveConfig(config: GalaxyConfig): void {
   const normalizedConfig: GalaxyConfig = {
     ...config,
     toolCapabilities: normalizeToolCapabilities(config.toolCapabilities, config),
+    validation: normalizeValidationConfig(config.validation),
     toolToggles: normalizeToolToggles(config.toolToggles),
     extensionToolToggles: normalizeExtensionToolToggles(config.extensionToolToggles),
   };
