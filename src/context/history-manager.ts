@@ -21,6 +21,7 @@ import {
   normalizeActiveTaskMemory,
   normalizeProjectMemory,
 } from './memory-format';
+import { appendTaskMemoryEntry } from './rag-metadata-store';
 import { createEmptySessionMemory, loadSessionMemory, saveSessionMemory } from './session-store';
 import { clearToolEvidence, createToolEvidence, appendToolEvidence as persistToolEvidence } from './tool-evidence-store';
 
@@ -190,6 +191,22 @@ function buildWorkingSessionHandoff(turn: WorkingTurn, assistantText: string): s
   }
 
   return lines.join('\n');
+}
+
+function inferTaskMemoryTurnKind(turn: WorkingTurn, assistantText: string): 'analysis' | 'implementation' | 'review' | 'validation' | 'repair' {
+  const toolNames = new Set(turn.toolDigests.map((digest) => digest.name));
+  const lowerAssistantText = assistantText.toLowerCase();
+
+  if (toolNames.has('request_code_review') || lowerAssistantText.includes('review finding')) {
+    return 'review';
+  }
+  if (toolNames.has('validate_code')) {
+    return 'validation';
+  }
+  if (toolNames.has('edit_file_range') || toolNames.has('multi_edit_file_ranges') || toolNames.has('write_file') || toolNames.has('edit_file')) {
+    return lowerAssistantText.includes('fix') || lowerAssistantText.includes('repair') ? 'repair' : 'implementation';
+  }
+  return 'analysis';
 }
 
 function estimateWorkingTurnTokens(turn: WorkingTurn | null): number {
@@ -538,9 +555,10 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
         return null;
       }
 
+      const finalAssistantText = opts.assistantText || workingTurn.assistantDraft || workingTurn.compactSummary || '';
       const filesTouched = collectFilesTouched(workingTurn.toolDigests);
       const assistantSummary = summarizeText(
-        opts.assistantText || workingTurn.assistantDraft || workingTurn.compactSummary || 'No final assistant response.',
+        finalAssistantText || 'No final assistant response.',
       );
 
       const digest: TurnDigest = Object.freeze({
@@ -555,7 +573,21 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
         createdAt: Date.now(),
       });
 
-      mergeWorkingSessionIntoMemory(workingTurn, opts.assistantText || workingTurn.assistantDraft || workingTurn.compactSummary || '');
+      mergeWorkingSessionIntoMemory(workingTurn, finalAssistantText);
+      if (finalAssistantText.trim()) {
+        appendTaskMemoryEntry(sessionMemory.workspacePath, {
+          workspaceId: sessionMemory.workspaceId,
+          turnId: workingTurn.turnId,
+          turnKind: inferTaskMemoryTurnKind(workingTurn, finalAssistantText),
+          userIntent: summarizeText(workingTurn.userMessage.content, 1_200),
+          assistantConclusion: summarizeText(finalAssistantText, 2_400),
+          filesJson: JSON.stringify(filesTouched),
+          attachmentsJson: JSON.stringify(extractAttachments(workingTurn.userMessage, workingTurn.contextNote)),
+          confidence: 0.8,
+          freshnessScore: 1,
+          createdAt: Date.now(),
+        });
+      }
       saveSessionMemory(sessionMemory);
       workingTurn = null;
       return digest;

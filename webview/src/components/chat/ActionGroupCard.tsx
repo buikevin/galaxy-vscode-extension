@@ -33,11 +33,11 @@ export function ActionGroupCard(props: ActionGroupCardProps) {
     <div className="space-y-2">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center justify-between rounded-[18px] border border-white/10 bg-white/5 px-3 py-2 text-left"
+        className="flex w-full min-w-0 items-center justify-between rounded-[5px] border border-white/10 bg-white/5 px-3 py-1 text-left"
         onClick={props.onToggle}
       >
         <div className="flex items-center min-w-0 gap-2">
-          <div className="flex items-center gap-1">{props.previewIcons}</div>
+          <div className="flex items-center">{props.previewIcons}</div>
           <span className="min-w-0 max-w-full break-all text-sm font-medium text-foreground [overflow-wrap:anywhere]">
             {props.expanded ? "Thu gọn" : `${props.actionCount} actions`}
           </span>

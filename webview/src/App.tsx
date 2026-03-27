@@ -77,6 +77,13 @@ const DEFAULT_TOOL_TOGGLES: ToolToggles = {
   await_terminal_command: true,
   get_terminal_output: true,
   kill_terminal_command: true,
+  git_status: true,
+  git_diff: true,
+  git_add: true,
+  git_commit: true,
+  git_push: true,
+  git_pull: true,
+  git_checkout: true,
   run_project_command: true,
   validate_code: true,
   request_code_review: true,
@@ -481,8 +488,8 @@ export function App() {
   });
 
   return (
-    <div className="h-screen overflow-hidden bg-background text-foreground">
-      <div className="flex h-screen flex-col gap-2 overflow-hidden bg-[linear-gradient(180deg,#08111f_0%,#0b1220_100%)]">
+    <div className="h-screen overflow-hidden text-foreground">
+      <div className="flex h-screen flex-col gap-2 overflow-hidden">
         {errorText ? (
           <div className="px-3 py-3 mx-2 mt-2 text-sm border rounded-xl border-rose-500/40 bg-rose-500/10 text-rose-100">
             <div className="font-medium text-rose-200">{errorTitle}</div>
@@ -499,8 +506,8 @@ export function App() {
           </div>
         ) : null}
 
-        <Card className="flex-1 min-h-0 overflow-hidden rounded-none border-x-0 border-y-0">
-          <CardContent className="flex flex-col h-full min-h-0 gap-2 p-0">
+        <Card className="flex-1 min-h-0 overflow-hidden rounded-none border-x-0 border-y-0 bg-transparent">
+          <CardContent className="flex flex-col h-full min-h-0 p-0">
             <TranscriptViewProvider value={transcriptContextValue}>
               <ComposerViewProvider value={composerContextValue}>
                 <Transcript />

@@ -232,6 +232,20 @@ export function getToolLabel(message: ChatMessage, toolPath: string): string {
       return "Đọc output terminal";
     case "kill_terminal_command":
       return "Dừng terminal";
+    case "git_status":
+      return "Git status";
+    case "git_diff":
+      return "Git diff";
+    case "git_add":
+      return "Git add";
+    case "git_commit":
+      return "Git commit";
+    case "git_push":
+      return "Git push";
+    case "git_pull":
+      return "Git pull";
+    case "git_checkout":
+      return "Git checkout";
     case "vscode_open_diff":
       return normalizedPath ? `Mở diff native (${normalizedPath})` : "Mở diff native";
     case "vscode_show_problems":

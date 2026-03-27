@@ -30,10 +30,10 @@ type ThinkingCardProps = Readonly<{
  */
 export function ThinkingCard(props: ThinkingCardProps) {
   return (
-    <div className="max-w-full min-w-0 space-y-2 overflow-x-hidden">
+    <div className="max-w-full min-w-0 overflow-x-hidden">
       <button
         type="button"
-        className="flex items-center justify-between w-full min-w-0 px-3 py-2 text-left border rounded-lg border-border/60 bg-background/50"
+        className={`flex items-center justify-between w-full min-w-0 px-3 py-2 text-left border  border-border/60 bg-background/50${props.expanded ? " rounded-t-[8px]" : " rounded-[8px]"}`}
         onClick={props.onToggle}
       >
         <div className="flex items-center min-w-0 gap-2 text-sm font-medium text-foreground">
@@ -52,7 +52,7 @@ export function ThinkingCard(props: ThinkingCardProps) {
         </div>
       </button>
       {props.expanded ? (
-        <div className="max-w-full p-3 overflow-auto border rounded-lg max-h-36 border-border/60 bg-background/60">
+        <div className="max-w-full p-3 overflow-auto border rounded-b-[8x] max-h-36 border-border/60 bg-background/60">
           <div className="min-w-0 max-w-full overflow-x-hidden whitespace-pre-wrap break-all text-xs leading-6 text-muted-foreground [overflow-wrap:anywhere]">
             {props.content}
           </div>

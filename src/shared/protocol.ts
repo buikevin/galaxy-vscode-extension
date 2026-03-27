@@ -118,6 +118,13 @@ export type ToolToggleKey =
   | 'await_terminal_command'
   | 'get_terminal_output'
   | 'kill_terminal_command'
+  | 'git_status'
+  | 'git_diff'
+  | 'git_add'
+  | 'git_commit'
+  | 'git_push'
+  | 'git_pull'
+  | 'git_checkout'
   | 'run_project_command'
   | 'validate_code'
   | 'request_code_review'
@@ -136,17 +143,24 @@ export type ToolToggles = Readonly<Record<ToolToggleKey, boolean>>;
 
 export type ExtensionToolItem = Readonly<{
   key: string;
-  command: string;
-  qualifiedName: string;
+  runtimeName: string;
   title: string;
   description: string;
+  inputSchema?: object;
+  tags: readonly string[];
+  invocation: 'lm_tool' | 'command';
+  commandId?: string;
 }>;
+
+export type ExtensionToolSource = 'lm_tool' | 'mcp_curated';
 
 export type ExtensionToolGroup = Readonly<{
   extensionId: string;
   label: string;
   description: string;
   version: string;
+  source: ExtensionToolSource;
+  recommended?: boolean;
   tools: readonly ExtensionToolItem[];
 }>;
 

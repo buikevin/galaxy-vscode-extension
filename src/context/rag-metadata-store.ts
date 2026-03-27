@@ -52,6 +52,57 @@ type ReadCacheRecord = Readonly<{
   metaJson?: string;
 }>;
 
+export type TaskMemoryEntryRecord = Readonly<{
+  workspaceId: string;
+  turnId: string;
+  turnKind: 'analysis' | 'implementation' | 'review' | 'validation' | 'repair';
+  userIntent: string;
+  assistantConclusion: string;
+  filesJson?: string;
+  attachmentsJson?: string;
+  confidence?: number;
+  freshnessScore?: number;
+  createdAt: number;
+}>;
+
+const TASK_MEMORY_MIN_ASSISTANT_CHARS = 24;
+const TASK_MEMORY_RETENTION_DAYS = 45;
+const TASK_MEMORY_MAX_ENTRIES = 250;
+
+export type TaskMemoryFindingRecord = Readonly<{
+  id: string;
+  entryTurnId: string;
+  kind: 'accepted_finding' | 'review_finding' | 'validation_failure' | 'decision';
+  summary: string;
+  filePath?: string;
+  line?: number;
+  status?: 'open' | 'resolved' | 'dismissed';
+  createdAt: number;
+}>;
+
+export type TaskMemoryEntrySummary = Readonly<{
+  turnId: string;
+  turnKind: string;
+  userIntent: string;
+  assistantConclusion: string;
+  files: readonly string[];
+  attachments: readonly string[];
+  confidence: number;
+  freshnessScore: number;
+  createdAt: number;
+}>;
+
+export type TaskMemoryFindingSummary = Readonly<{
+  id: string;
+  entryTurnId: string;
+  kind: string;
+  summary: string;
+  filePath?: string;
+  line?: number;
+  status: string;
+  createdAt: number;
+}>;
+
 function tokenizeQuery(text: string): readonly string[] {
   return Object.freeze(
     [...new Set(
@@ -61,6 +112,66 @@ function tokenizeQuery(text: string): readonly string[] {
         .filter((token) => token.length >= 2),
     )].slice(0, 12),
   );
+}
+
+function normalizeTaskMemoryText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+function shouldPersistTaskMemoryEntry(entry: TaskMemoryEntryRecord): boolean {
+  const assistantConclusion = normalizeTaskMemoryText(entry.assistantConclusion);
+  const userIntent = normalizeTaskMemoryText(entry.userIntent);
+  if (assistantConclusion.length < TASK_MEMORY_MIN_ASSISTANT_CHARS) {
+    return false;
+  }
+  if (!userIntent) {
+    return false;
+  }
+  const rejectedPatterns = [
+    /^no final assistant response\.?$/i,
+    /^attempting automatic repair/i,
+    /^running (validation|review)/i,
+  ];
+  return !rejectedPatterns.some((pattern) => pattern.test(assistantConclusion));
+}
+
+function pruneTaskMemory(db: DatabaseSync): void {
+  const retentionCutoff = Date.now() - TASK_MEMORY_RETENTION_DAYS * 24 * 60 * 60_000;
+  db.prepare(`
+    DELETE FROM task_memory_findings
+    WHERE entry_turn_id IN (
+      SELECT turn_id FROM task_memory_entries WHERE created_at < ?
+    )
+  `).run(retentionCutoff);
+  db.prepare(`
+    DELETE FROM task_memory_artifacts
+    WHERE entry_turn_id IN (
+      SELECT turn_id FROM task_memory_entries WHERE created_at < ?
+    )
+  `).run(retentionCutoff);
+  db.prepare(`
+    DELETE FROM task_memory_embeddings
+    WHERE entry_turn_id IN (
+      SELECT turn_id FROM task_memory_entries WHERE created_at < ?
+    )
+  `).run(retentionCutoff);
+  db.prepare(`DELETE FROM task_memory_entries WHERE created_at < ?`).run(retentionCutoff);
+
+  const rows = db.prepare(`
+    SELECT turn_id
+    FROM task_memory_entries
+    ORDER BY created_at DESC
+    LIMIT -1 OFFSET ?
+  `).all(TASK_MEMORY_MAX_ENTRIES) as Array<{ turn_id: string }>;
+  if (rows.length === 0) {
+    return;
+  }
+  const staleTurnIds = rows.map((row) => row.turn_id);
+  const placeholders = staleTurnIds.map(() => '?').join(',');
+  db.prepare(`DELETE FROM task_memory_findings WHERE entry_turn_id IN (${placeholders})`).run(...staleTurnIds);
+  db.prepare(`DELETE FROM task_memory_artifacts WHERE entry_turn_id IN (${placeholders})`).run(...staleTurnIds);
+  db.prepare(`DELETE FROM task_memory_embeddings WHERE entry_turn_id IN (${placeholders})`).run(...staleTurnIds);
+  db.prepare(`DELETE FROM task_memory_entries WHERE turn_id IN (${placeholders})`).run(...staleTurnIds);
 }
 
 function withDatabase<T>(workspacePath: string, fn: (db: DatabaseSync) => T): T {
@@ -131,6 +242,45 @@ function withDatabase<T>(workspacePath: string, fn: (db: DatabaseSync) => T): T 
       PRIMARY KEY (file_path, mtime_ms, size_bytes, read_mode, offset_value, limit_value)
     );
     CREATE INDEX IF NOT EXISTS idx_read_cache_file_path ON read_cache(file_path);
+    CREATE TABLE IF NOT EXISTS task_memory_entries (
+      turn_id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      turn_kind TEXT NOT NULL,
+      user_intent TEXT NOT NULL,
+      assistant_conclusion TEXT NOT NULL,
+      files_json TEXT,
+      attachments_json TEXT,
+      confidence REAL NOT NULL,
+      freshness_score REAL NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_memory_entries_created_at ON task_memory_entries(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_task_memory_entries_turn_kind ON task_memory_entries(turn_kind);
+    CREATE TABLE IF NOT EXISTS task_memory_findings (
+      id TEXT PRIMARY KEY,
+      entry_turn_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      file_path TEXT,
+      line INTEGER,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_memory_findings_entry_turn_id ON task_memory_findings(entry_turn_id);
+    CREATE TABLE IF NOT EXISTS task_memory_artifacts (
+      id TEXT PRIMARY KEY,
+      entry_turn_id TEXT NOT NULL,
+      artifact_kind TEXT NOT NULL,
+      value TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_task_memory_artifacts_entry_turn_id ON task_memory_artifacts(entry_turn_id);
+    CREATE TABLE IF NOT EXISTS task_memory_embeddings (
+      entry_turn_id TEXT PRIMARY KEY,
+      embedding_model TEXT NOT NULL,
+      embedding_vector TEXT NOT NULL,
+      indexed_at INTEGER NOT NULL
+    );
   `);
 
   try {
@@ -464,5 +614,221 @@ export function queryRagHintPaths(
         .slice(0, limit)
         .map(([filePath]) => filePath),
     );
+  });
+}
+
+export function appendTaskMemoryEntry(workspacePath: string, entry: TaskMemoryEntryRecord): void {
+  if (!shouldPersistTaskMemoryEntry(entry)) {
+    return;
+  }
+  withDatabase(workspacePath, (db) => {
+    db.prepare(`
+      INSERT INTO task_memory_entries (
+        turn_id,
+        workspace_id,
+        turn_kind,
+        user_intent,
+        assistant_conclusion,
+        files_json,
+        attachments_json,
+        confidence,
+        freshness_score,
+        created_at,
+        updated_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(turn_id) DO UPDATE SET
+        workspace_id = excluded.workspace_id,
+        turn_kind = excluded.turn_kind,
+        user_intent = excluded.user_intent,
+        assistant_conclusion = excluded.assistant_conclusion,
+        files_json = excluded.files_json,
+        attachments_json = excluded.attachments_json,
+        confidence = excluded.confidence,
+        freshness_score = excluded.freshness_score,
+        created_at = excluded.created_at,
+        updated_at = excluded.updated_at
+    `).run(
+      entry.turnId,
+      entry.workspaceId,
+      entry.turnKind,
+      entry.userIntent,
+      entry.assistantConclusion,
+      entry.filesJson ?? null,
+      entry.attachmentsJson ?? null,
+      entry.confidence ?? 0.8,
+      entry.freshnessScore ?? 1,
+      entry.createdAt,
+      Date.now(),
+    );
+    pruneTaskMemory(db);
+  });
+}
+
+export function replaceTaskMemoryFindings(
+  workspacePath: string,
+  entryTurnId: string,
+  findings: readonly TaskMemoryFindingRecord[],
+): void {
+  withDatabase(workspacePath, (db) => {
+    db.prepare(`DELETE FROM task_memory_findings WHERE entry_turn_id = ?`).run(entryTurnId);
+    const insertFinding = db.prepare(`
+      INSERT INTO task_memory_findings (
+        id,
+        entry_turn_id,
+        kind,
+        summary,
+        file_path,
+        line,
+        status,
+        created_at
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    findings.forEach((finding) => {
+      insertFinding.run(
+        finding.id,
+        finding.entryTurnId,
+        finding.kind,
+        finding.summary,
+        finding.filePath ?? null,
+        finding.line ?? null,
+        finding.status ?? 'open',
+        finding.createdAt,
+      );
+    });
+  });
+}
+
+export function updateTaskMemoryFindingStatus(
+  workspacePath: string,
+  findingId: string,
+  status: 'open' | 'resolved' | 'dismissed',
+): void {
+  withDatabase(workspacePath, (db) => {
+    db.prepare(`
+      UPDATE task_memory_findings
+      SET status = ?
+      WHERE id = ?
+    `).run(status, findingId);
+  });
+}
+
+function safeParseStringArray(raw: string | null): readonly string[] {
+  if (!raw) {
+    return Object.freeze([]);
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Object.freeze(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []);
+  } catch {
+    return Object.freeze([]);
+  }
+}
+
+export function queryRelevantTaskMemory(
+  workspacePath: string,
+  queryText: string,
+  limit = 3,
+): Readonly<{
+  entries: readonly TaskMemoryEntrySummary[];
+  findings: readonly TaskMemoryFindingSummary[];
+}> {
+  const tokens = tokenizeQuery(queryText);
+  return withDatabase(workspacePath, (db) => {
+    const allEntries = db.prepare(`
+      SELECT turn_id, turn_kind, user_intent, assistant_conclusion, files_json, attachments_json,
+             confidence, freshness_score, created_at
+      FROM task_memory_entries
+      ORDER BY created_at DESC
+      LIMIT 40
+    `).all() as Array<{
+      turn_id: string;
+      turn_kind: string;
+      user_intent: string;
+      assistant_conclusion: string;
+      files_json: string | null;
+      attachments_json: string | null;
+      confidence: number;
+      freshness_score: number;
+      created_at: number;
+    }>;
+
+    const scoredEntries = allEntries
+      .map((entry) => {
+        const haystack = `${entry.user_intent}\n${entry.assistant_conclusion}`.toLowerCase();
+        const files = safeParseStringArray(entry.files_json);
+        const attachments = safeParseStringArray(entry.attachments_json);
+        const tokenHits = tokens.reduce((sum, token) => sum + (haystack.includes(token) ? 1 : 0), 0);
+        const fileHits = tokens.reduce(
+          (sum, token) => sum + (files.some((filePath) => filePath.toLowerCase().includes(token)) ? 1 : 0),
+          0,
+        );
+        const attachmentHits = tokens.reduce(
+          (sum, token) => sum + (attachments.some((item) => item.toLowerCase().includes(token)) ? 1 : 0),
+          0,
+        );
+        const ageMs = Date.now() - entry.created_at;
+        const recencyBoost = ageMs <= 60 * 60_000 ? 3 : ageMs <= 24 * 60 * 60_000 ? 2 : ageMs <= 7 * 24 * 60 * 60_000 ? 1 : 0;
+        const freshnessWeight = Math.max(0.35, Math.min(1.25, entry.freshness_score || 1));
+        const score = (tokenHits * 5 + fileHits * 4 + attachmentHits * 3 + recencyBoost) * freshnessWeight;
+        return {
+          entry: Object.freeze({
+            turnId: entry.turn_id,
+            turnKind: entry.turn_kind,
+            userIntent: entry.user_intent,
+            assistantConclusion: entry.assistant_conclusion,
+            files,
+            attachments,
+            confidence: entry.confidence,
+            freshnessScore: entry.freshness_score,
+            createdAt: entry.created_at,
+          } satisfies TaskMemoryEntrySummary),
+          score,
+        };
+      })
+      .filter((item) => item.score > 0 || tokens.length === 0)
+      .sort((a, b) => b.score - a.score || b.entry.createdAt - a.entry.createdAt)
+      .slice(0, limit)
+      .map((item) => item.entry);
+
+    const entryTurnIds = scoredEntries.map((entry) => entry.turnId);
+    const findings = entryTurnIds.length > 0
+      ? (db.prepare(
+          `SELECT id, entry_turn_id, kind, summary, file_path, line, status, created_at
+           FROM task_memory_findings
+           WHERE entry_turn_id IN (${entryTurnIds.map(() => '?').join(',')})
+           ORDER BY created_at DESC
+           LIMIT 12`,
+        ).all(...entryTurnIds) as Array<{
+          id: string;
+          entry_turn_id: string;
+          kind: string;
+          summary: string;
+          file_path: string | null;
+          line: number | null;
+          status: string;
+          created_at: number;
+        }>)
+      : [];
+
+    return Object.freeze({
+      entries: Object.freeze(scoredEntries),
+      findings: Object.freeze(
+        findings.map((finding) =>
+          Object.freeze({
+            id: finding.id,
+            entryTurnId: finding.entry_turn_id,
+            kind: finding.kind,
+            summary: finding.summary,
+            ...(finding.file_path ? { filePath: finding.file_path } : {}),
+            ...(typeof finding.line === 'number' ? { line: finding.line } : {}),
+            status: finding.status,
+            createdAt: finding.created_at,
+          } satisfies TaskMemoryFindingSummary),
+        ),
+      ),
+    });
   });
 }

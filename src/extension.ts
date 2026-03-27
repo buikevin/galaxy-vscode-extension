@@ -25,6 +25,7 @@ import {
   saveProjectMeta,
   type ProjectStorageInfo,
 } from './context/project-store';
+import { appendTaskMemoryEntry, replaceTaskMemoryFindings, updateTaskMemoryFindingStatus } from './context/rag-metadata-store';
 import { appendTelemetryEvent, formatTelemetrySummary, loadTelemetrySummary } from './context/telemetry';
 import {
   appendUiTranscriptMessage,
@@ -133,8 +134,27 @@ function getWorkspaceToolToggles(config: GalaxyConfig, meta: ProjectMeta | null)
   });
 }
 
-function getWorkspaceExtensionToolToggles(config: GalaxyConfig, meta: ProjectMeta | null): Readonly<Record<string, boolean>> {
+function getDefaultExtensionToolToggles(
+  groups: readonly ExtensionToolGroup[],
+): Readonly<Record<string, boolean>> {
+  return Object.freeze(
+    Object.fromEntries(
+      groups.flatMap((group) =>
+        group.recommended || group.source === 'mcp_curated'
+          ? group.tools.map((tool) => [tool.key, true] as const)
+          : [],
+      ),
+    ),
+  );
+}
+
+function getWorkspaceExtensionToolToggles(
+  config: GalaxyConfig,
+  meta: ProjectMeta | null,
+  groups: readonly ExtensionToolGroup[],
+): Readonly<Record<string, boolean>> {
   return Object.freeze({
+    ...getDefaultExtensionToolToggles(groups),
     ...config.extensionToolToggles,
     ...(meta?.extensionToolToggles ?? {}),
   });
@@ -184,7 +204,7 @@ function buildEffectiveConfig(
       runCommands: toolCapabilities.runCommands,
     }),
     toolToggles,
-    extensionToolToggles: getWorkspaceExtensionToolToggles(config, meta),
+    extensionToolToggles: getWorkspaceExtensionToolToggles(config, meta, availableExtensionToolGroups),
     availableExtensionToolGroups,
   });
 }
@@ -539,7 +559,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     this.extensionToolGroups = discoverExtensionToolGroups(context.extension.id);
     this.toolCapabilities = getWorkspaceToolCapabilities(config, projectMeta);
     this.toolToggles = getWorkspaceToolToggles(config, projectMeta);
-    this.extensionToolToggles = getWorkspaceExtensionToolToggles(config, projectMeta);
+    this.extensionToolToggles = getWorkspaceExtensionToolToggles(config, projectMeta, this.extensionToolGroups);
     this.qualityPreferences = getQualityPreferencesForWorkspace(config, this.toolCapabilities);
     this.historyManager = createHistoryManager({
       workspacePath: this.workspacePath,
@@ -743,7 +763,11 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     } : null);
     this.toolCapabilities = getWorkspaceToolCapabilities(loadConfig(), loadProjectMeta(this.projectStorage));
     this.toolToggles = getWorkspaceToolToggles(loadConfig(), loadProjectMeta(this.projectStorage));
-    this.extensionToolToggles = getWorkspaceExtensionToolToggles(loadConfig(), loadProjectMeta(this.projectStorage));
+    this.extensionToolToggles = getWorkspaceExtensionToolToggles(
+      loadConfig(),
+      loadProjectMeta(this.projectStorage),
+      this.extensionToolGroups,
+    );
 
     if (opts?.syncVsCodeSettings !== false) {
       await this.syncQualityPreferencesToVsCodeSettingsInternal(this.qualityPreferences);
@@ -812,7 +836,11 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     const persisted = loadConfig();
     this.toolCapabilities = getWorkspaceToolCapabilities(persisted, loadProjectMeta(this.projectStorage));
     this.toolToggles = getWorkspaceToolToggles(persisted, loadProjectMeta(this.projectStorage));
-    this.extensionToolToggles = getWorkspaceExtensionToolToggles(persisted, loadProjectMeta(this.projectStorage));
+    this.extensionToolToggles = getWorkspaceExtensionToolToggles(
+      persisted,
+      loadProjectMeta(this.projectStorage),
+      this.extensionToolGroups,
+    );
     this.qualityPreferences = Object.freeze({
       reviewEnabled: this.toolCapabilities.review,
       validateEnabled: this.toolCapabilities.validation,
@@ -915,6 +943,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     this.extensionToolToggles = getWorkspaceExtensionToolToggles(
       persisted,
       loadProjectMeta(this.projectStorage),
+      this.extensionToolGroups,
     );
 
     await this.postMessage({
@@ -1150,6 +1179,8 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
                         findReferences: async (filePath, options) => this.findReferencesTool(filePath, options),
                         executeExtensionCommand: async (commandId, title, extensionId) =>
                           this.executeExtensionCommandTool(commandId, title, extensionId),
+                        invokeLanguageModelTool: async (toolName, title, extensionId, input) =>
+                          this.invokeLanguageModelToolTool(toolName, title, extensionId, input),
                         searchExtensionTools: async (query, maxResults) =>
                           this.searchExtensionToolsTool(query, maxResults),
                         activateExtensionTools: async (toolKeys) =>
@@ -1600,6 +1631,8 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         findReferences: async (filePath, options) => this.findReferencesTool(filePath, options),
         executeExtensionCommand: async (commandId, title, extensionId) =>
           this.executeExtensionCommandTool(commandId, title, extensionId),
+        invokeLanguageModelTool: async (toolName, title, extensionId, input) =>
+          this.invokeLanguageModelToolTool(toolName, title, extensionId, input),
         searchExtensionTools: async (query, maxResults) =>
           this.searchExtensionToolsTool(query, maxResults),
         activateExtensionTools: async (toolKeys) =>
@@ -1855,6 +1888,32 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
               }
             : null,
         );
+        const reviewEntryTurnId = `review-${Date.now()}`;
+        appendTaskMemoryEntry(this.workspacePath, {
+          workspaceId: this.projectStorage.workspaceId,
+          turnId: reviewEntryTurnId,
+          turnKind: 'review',
+          userIntent: 'Code review findings after implementation.',
+          assistantConclusion: reviewResult.review.slice(0, 2_400),
+          filesJson: JSON.stringify(sessionFiles.map((file) => file.filePath)),
+          confidence: 0.9,
+          freshnessScore: 1,
+          createdAt: Date.now(),
+        });
+        replaceTaskMemoryFindings(
+          this.workspacePath,
+          reviewEntryTurnId,
+          structuredFindings.map((finding) =>
+            Object.freeze({
+              id: finding.id,
+              entryTurnId: reviewEntryTurnId,
+              kind: 'review_finding' as const,
+              summary: `${finding.location}: ${finding.message}`,
+              status: finding.status ?? 'open',
+              createdAt: Date.now(),
+            }),
+          ),
+        );
         this.appendLog(
           'review',
           !reviewResult.hadCritical && !reviewResult.hadWarnings
@@ -1928,9 +1987,50 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
                     }),
                   }
                 : { latestTestFailure: undefined }),
-            }
-          : null,
+              }
+            : null,
       );
+      if (latestFailedRun) {
+        const validationEntryTurnId = `validation-${Date.now()}`;
+        appendTaskMemoryEntry(this.workspacePath, {
+          workspaceId: this.projectStorage.workspaceId,
+          turnId: validationEntryTurnId,
+          turnKind: 'validation',
+          userIntent: 'Final validation result for changed files.',
+          assistantConclusion: latestFailedRun.summary.slice(0, 2_400),
+          filesJson: JSON.stringify(sessionFiles.map((file) => file.filePath)),
+          confidence: 0.95,
+          freshnessScore: 1,
+          createdAt: Date.now(),
+        });
+        replaceTaskMemoryFindings(
+          this.workspacePath,
+          validationEntryTurnId,
+          (latestFailedRun.issues.length > 0
+            ? latestFailedRun.issues.map((issue, index) =>
+                Object.freeze({
+                  id: `validation-${validationEntryTurnId}-${index + 1}`,
+                  entryTurnId: validationEntryTurnId,
+                  kind: 'validation_failure' as const,
+                  summary: issue.message,
+                  ...(issue.filePath ? { filePath: issue.filePath } : {}),
+                  ...(typeof issue.line === 'number' ? { line: issue.line } : {}),
+                  status: 'open' as const,
+                  createdAt: Date.now(),
+                }),
+              )
+            : [
+                Object.freeze({
+                  id: `validation-${validationEntryTurnId}-summary`,
+                  entryTurnId: validationEntryTurnId,
+                  kind: 'validation_failure' as const,
+                  summary: latestFailedRun.summary,
+                  status: 'open' as const,
+                  createdAt: Date.now(),
+                }),
+              ]),
+        );
+      }
       this.appendLog(
         'validation',
         validationResult.success ? 'Final validation passed.' : 'Final validation failed.',
@@ -2205,6 +2305,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     this.updateQualityDetails({
       reviewFindings: Object.freeze(nextFindings),
     });
+    updateTaskMemoryFindingStatus(this.workspacePath, trimmedId, 'dismissed');
 
     return Object.freeze({
       success: true,
@@ -2311,7 +2412,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
 
   private async postInit(): Promise<void> {
     this.updateWorkbenchChrome();
-    this.extensionToolGroups = discoverExtensionToolGroups(this.context.extension.id);
+    this.refreshExtensionToolGroups();
     const files = await this.getWorkspaceFiles();
     const changeSummary = this.buildChangeSummaryPayload();
     const meta = loadProjectMeta(this.projectStorage);
@@ -2958,8 +3059,68 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  private async invokeLanguageModelToolTool(
+    toolName: string,
+    title: string,
+    extensionId: string,
+    input: Readonly<Record<string, unknown>>,
+  ): Promise<ToolResult> {
+    try {
+      const result = await vscode.lm.invokeTool(
+        toolName,
+        {
+          toolInvocationToken: undefined,
+          input: { ...input },
+        },
+      );
+      const parts = result.content.map((part) => {
+        if (part instanceof vscode.LanguageModelTextPart) {
+          return part.value;
+        }
+        if (part instanceof vscode.LanguageModelDataPart) {
+          const decoded = Buffer.from(part.data).toString('utf8');
+          if (part.mimeType.includes('json')) {
+            return decoded;
+          }
+          return decoded;
+        }
+        if (part instanceof vscode.LanguageModelPromptTsxPart) {
+          return JSON.stringify(part.value, null, 2);
+        }
+        try {
+          return JSON.stringify(part, null, 2);
+        } catch {
+          return String(part);
+        }
+      });
+      const label = title.trim() || toolName;
+      const content = parts.filter(Boolean).join('\n').trim();
+      this.appendLog('info', `Invoked LM tool ${toolName} from ${extensionId}.`);
+      return Object.freeze({
+        success: true,
+        content: content || `Invoked language model tool "${label}" from ${extensionId}.`,
+        meta: Object.freeze({
+          toolName,
+          extensionId,
+          operation: 'lm_tool',
+        }),
+      });
+    } catch (error) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `Language model tool failed (${toolName}): ${String(error)}`,
+      });
+    }
+  }
+
+  private refreshExtensionToolGroups(): void {
+    this.extensionToolGroups = discoverExtensionToolGroups(this.context.extension.id);
+  }
+
   private async searchExtensionToolsTool(query: string, maxResults = 8): Promise<ToolResult> {
     try {
+      this.refreshExtensionToolGroups();
       const trimmed = query.trim();
       if (!trimmed) {
         return Object.freeze({
@@ -2992,11 +3153,15 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       for (const group of groups) {
         lines.push(`## ${group.label} [${group.extensionId}]`);
         lines.push(group.description);
+        lines.push(`source=${group.source}${group.recommended ? ' recommended' : ''}`);
         for (const tool of group.tools) {
           const enabled = this.extensionToolToggles[tool.key] === true ? 'enabled' : 'disabled';
           lines.push(`- key=${tool.key}`);
-          lines.push(`  tool=${tool.qualifiedName}`);
-          lines.push(`  command=${tool.command}`);
+          lines.push(`  tool=${tool.runtimeName}`);
+          lines.push(`  invocation=${tool.invocation}`);
+          if (tool.commandId) {
+            lines.push(`  command=${tool.commandId}`);
+          }
           lines.push(`  status=${enabled}`);
           lines.push(`  desc=${tool.description}`);
         }
@@ -3023,6 +3188,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
 
   private async activateExtensionToolsTool(toolKeys: readonly string[]): Promise<ToolResult> {
     try {
+      this.refreshExtensionToolGroups();
       const normalizedKeys = [...new Set(toolKeys.map((item) => item.trim()).filter(Boolean))];
       if (normalizedKeys.length === 0) {
         return Object.freeze({
@@ -3056,7 +3222,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
 
       const lines = valid.map((key) => {
         const item = discovered.get(key)!;
-        return `- ${item.tool.qualifiedName} (${item.group.label})`;
+        return `- ${item.tool.runtimeName} (${item.group.label})`;
       });
 
       return Object.freeze({

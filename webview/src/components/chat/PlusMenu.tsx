@@ -100,6 +100,13 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
     label: "Run Commands",
     description: "Cho phép agent chạy command trong terminal.",
     tools: [
+      { key: "git_status", label: "git_status", description: "Đọc trạng thái working tree Git." },
+      { key: "git_diff", label: "git_diff", description: "Đọc git diff, staged hoặc unstaged." },
+      { key: "git_add", label: "git_add", description: "Stage file hoặc thư mục bằng git add." },
+      { key: "git_commit", label: "git_commit", description: "Tạo commit Git với message cụ thể." },
+      { key: "git_push", label: "git_push", description: "Push branch hiện tại hoặc branch chỉ định." },
+      { key: "git_pull", label: "git_pull", description: "Pull thay đổi mới từ remote." },
+      { key: "git_checkout", label: "git_checkout", description: "Checkout branch/ref hoặc tạo branch mới." },
       { key: "run_terminal_command", label: "run_terminal_command", description: "Tạo command terminal mới." },
       { key: "await_terminal_command", label: "await_terminal_command", description: "Chờ command nền hoàn thành." },
       { key: "get_terminal_output", label: "get_terminal_output", description: "Lấy output command đã chạy." },
@@ -208,7 +215,10 @@ export function PlusMenu(props: PlusMenuProps) {
   );
 
   const selectedBuiltInToolCount = Object.values(props.toolToggles).filter(Boolean).length;
-  const selectedExtensionToolCount = props.extensionToolGroups.reduce(
+  const activeExtensionToolGroups = props.extensionToolGroups.filter((group) =>
+    group.tools.some((tool) => props.extensionToolToggles[tool.key] === true)
+  );
+  const selectedExtensionToolCount = activeExtensionToolGroups.reduce(
     (total, group) =>
       total +
       group.tools.filter((tool) => props.extensionToolToggles[tool.key] === true).length,
@@ -383,13 +393,13 @@ export function PlusMenu(props: PlusMenuProps) {
               );
             })}
 
-            {props.extensionToolGroups.length > 0 ? (
+            {activeExtensionToolGroups.length > 0 ? (
               <>
                 <div className="mt-3 px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Installed Extension Tools
+                  Activated Extension & MCP Tools
                 </div>
 
-                {props.extensionToolGroups.map((group) => {
+                {activeExtensionToolGroups.map((group) => {
                   const groupState = getExtensionGroupState(group);
                   const isExpanded = expandedGroups[group.extensionId] ?? false;
 
@@ -431,6 +441,11 @@ export function PlusMenu(props: PlusMenuProps) {
                         >
                           <div className="text-sm font-medium text-foreground">
                             {group.label}
+                            {group.source === "mcp_curated" ? (
+                              <span className="ml-2 rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-sky-300">
+                                MCP / Curated
+                              </span>
+                            ) : null}
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {group.description}
@@ -457,11 +472,11 @@ export function PlusMenu(props: PlusMenuProps) {
                                     props.extensionToolToggles[tool.key] !== true
                                   )
                                 }
-                                title={tool.qualifiedName}
+                                title={tool.runtimeName}
                               />
                               <div className="min-w-0">
                                 <div className="text-sm text-foreground">
-                                  {tool.qualifiedName}
+                                  {tool.runtimeName}
                                 </div>
                                 <div className="text-xs text-muted-foreground">
                                   {tool.description}
@@ -476,12 +491,6 @@ export function PlusMenu(props: PlusMenuProps) {
                 })}
               </>
             ) : null}
-          </div>
-
-          <div className="px-3 pb-1 text-xs leading-5 text-muted-foreground">
-            Mỗi group là một capability runtime. Bạn có thể tick từng tool con để test hẹp hơn.
-            `Review` và `Validation` vẫn là quality gate blocking, còn `Galaxy Diff`
-            chỉ là giao diện xem diff.
           </div>
         </div>
       ) : null}

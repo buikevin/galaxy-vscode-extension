@@ -22,7 +22,8 @@ export function ComposerPanel() {
   const composer = useComposerContext();
 
   return (
-    <div className="sticky bottom-0 mt-auto space-y-2 rounded-[20px] border border-white/10 bg-white/5 p-2.5 shadow-[0_16px_40px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+    <>
+    <div className="sticky bottom-0  space-y-2 rounded-[10px] border border-white/10 bg-white/5 p-2 shadow-[0_16px_40px_rgba(0,0,0,0.28)] backdrop-blur-xl mt-2">
       {composer.showChangeSummaryBox ? (
         <ChangeSummaryCard
           summary={composer.changeSummary}
@@ -84,7 +85,7 @@ export function ComposerPanel() {
       ) : null}
 
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center">
           <button
             type="button"
             className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-transparent text-foreground transition-colors hover:bg-[rgba(255,255,255,0.15)]"
@@ -100,6 +101,49 @@ export function ComposerPanel() {
             className="hidden"
             onChange={composer.onFileSelection}
           />
+          <div className="relative w-[116px]">
+            <select
+              value={composer.selectedAgent}
+              onChange={(event) =>
+                composer.onSelectedAgentChange(event.target.value as typeof composer.selectedAgent)
+              }
+              className="h-10 w-full appearance-none rounded-[16px] bg-transparent px-4 pr-10 text-base text-foreground outline-none transition-colors hover:bg-[rgba(255,255,255,0.15)] focus:bg-[rgba(255,255,255,0.12)]"
+            >
+              {composer.agents.map((agent:string) => (
+                <option key={agent} value={agent}>
+                  {agent}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="absolute w-4 h-4 -translate-y-1/2 pointer-events-none right-3 top-1/2 text-muted-foreground" />
+          </div>
+          <div
+            className="relative flex items-center justify-center w-10 h-10 rounded-full shrink-0"
+            style={{
+              background: `conic-gradient(rgb(56 189 248) ${composer.tokenUsageDegrees}deg, rgba(255,255,255,0.1) ${composer.tokenUsageDegrees}deg 360deg)`,
+            }}
+            title={`${composer.promptTokens} / ${composer.maxContextTokens} tokens`}
+          >
+            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#1e293b] text-[10px] font-semibold text-foreground">
+              {`${composer.tokenUsagePercent}%`}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={composer.onSend}
+            disabled={!composer.canSend || composer.isRunning}
+            size="icon"
+            className="shrink-0 bg-white rounded-full"
+          >
+            <SendHorizontal className="w-4 h-4" />
+          </Button>
+        </div>
+      </div>
+
+    </div>
+     <div className="flex items-center gap-2">
+
           <div className="relative w-[176px]">
             <select
               value={
@@ -132,45 +176,7 @@ export function ComposerPanel() {
             onUpdateToolToggles={composer.onUpdateToolToggles}
             onUpdateExtensionToolToggles={composer.onUpdateExtensionToolToggles}
           />
-          <div className="relative w-[116px]">
-            <select
-              value={composer.selectedAgent}
-              onChange={(event) =>
-                composer.onSelectedAgentChange(event.target.value as typeof composer.selectedAgent)
-              }
-              className="h-10 w-full appearance-none rounded-[16px] bg-transparent px-4 pr-10 text-base text-foreground outline-none transition-colors hover:bg-[rgba(255,255,255,0.15)] focus:bg-[rgba(255,255,255,0.12)]"
-            >
-              {composer.agents.map((agent) => (
-                <option key={agent} value={agent}>
-                  {agent}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="absolute w-4 h-4 -translate-y-1/2 pointer-events-none right-3 top-1/2 text-muted-foreground" />
-          </div>
-          <div
-            className="relative flex items-center justify-center w-10 h-10 rounded-full shrink-0"
-            style={{
-              background: `conic-gradient(rgb(56 189 248) ${composer.tokenUsageDegrees}deg, rgba(255,255,255,0.1) ${composer.tokenUsageDegrees}deg 360deg)`,
-            }}
-            title={`${composer.promptTokens} / ${composer.maxContextTokens} tokens`}
-          >
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#1e293b] text-[10px] font-semibold text-foreground">
-              {`${composer.tokenUsagePercent}%`}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={composer.onSend}
-            disabled={!composer.canSend || composer.isRunning}
-            size="icon"
-            className="shrink-0"
-          >
-            <SendHorizontal className="w-4 h-4" />
-          </Button>
-        </div>
       </div>
-    </div>
+    </>
   );
 }

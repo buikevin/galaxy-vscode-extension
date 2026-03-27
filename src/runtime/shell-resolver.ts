@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
+import * as vscode from 'vscode';
 
 export type ShellKind = 'posix' | 'powershell' | 'cmd';
 
@@ -10,6 +11,12 @@ export type ShellProfile = Readonly<{
   kind: ShellKind;
   commandArgs(commandText: string): readonly string[];
   availabilityArgs(binary: string): readonly string[];
+}>;
+
+type TerminalProfileConfig = Readonly<{
+  path?: string | readonly string[];
+  source?: string;
+  args?: readonly string[];
 }>;
 
 function normalizePathEntries(rawPath: string | undefined): string[] {
@@ -29,14 +36,57 @@ function normalizePathEntries(rawPath: string | undefined): string[] {
   });
 }
 
+function getWindowsPreferredEntries(baseEnv: NodeJS.ProcessEnv): string[] {
+  if (process.platform !== 'win32') {
+    return [];
+  }
+
+  const homeDir = baseEnv.USERPROFILE?.trim() || os.homedir();
+  const localAppData = baseEnv.LOCALAPPDATA?.trim() || path.join(homeDir, 'AppData', 'Local');
+  const programFiles = baseEnv.ProgramFiles?.trim() || 'C:\\Program Files';
+  const programFilesX86 = baseEnv['ProgramFiles(x86)']?.trim() || 'C:\\Program Files (x86)';
+
+  return [
+    path.join(programFiles, 'Git', 'cmd'),
+    path.join(programFiles, 'Git', 'bin'),
+    path.join(programFilesX86, 'Git', 'cmd'),
+    path.join(programFilesX86, 'Git', 'bin'),
+    path.join(localAppData, 'Programs', 'Git', 'cmd'),
+    path.join(localAppData, 'Programs', 'Git', 'bin'),
+    path.join(homeDir, 'scoop', 'shims'),
+  ];
+}
+
+function getVsCodeTerminalEnvOverrides(): NodeJS.ProcessEnv {
+  try {
+    const terminalConfig = vscode.workspace.getConfiguration('terminal.integrated');
+    const envSection =
+      process.platform === 'win32'
+        ? (terminalConfig.get<Record<string, string | null>>('env.windows') ?? {})
+        : process.platform === 'darwin'
+          ? (terminalConfig.get<Record<string, string | null>>('env.osx') ?? {})
+          : (terminalConfig.get<Record<string, string | null>>('env.linux') ?? {});
+    const next: NodeJS.ProcessEnv = {};
+    Object.entries(envSection).forEach(([key, value]) => {
+      if (typeof value === 'string') {
+        next[key] = value;
+      }
+    });
+    return next;
+  } catch {
+    return {};
+  }
+}
+
 export function buildShellEnvironment(overrides?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const baseEnv = { ...process.env, ...overrides };
+  const baseEnv = { ...process.env, ...getVsCodeTerminalEnvOverrides(), ...overrides };
   const homeDir = baseEnv.HOME?.trim() || os.homedir();
   const preferredEntries = [
     path.join(homeDir, '.bun', 'bin'),
     path.join(homeDir, '.cargo', 'bin'),
     '/opt/homebrew/bin',
     '/usr/local/bin',
+    ...getWindowsPreferredEntries(baseEnv),
   ];
   const existingEntries = normalizePathEntries(baseEnv.PATH);
   const mergedEntries = [...preferredEntries, ...existingEntries].filter(Boolean);
@@ -46,6 +96,26 @@ export function buildShellEnvironment(overrides?: NodeJS.ProcessEnv): NodeJS.Pro
     HOME: homeDir,
     PATH: dedupedEntries.join(path.delimiter),
   };
+}
+
+function isExecutableFile(targetPath: string): boolean {
+  try {
+    return fs.existsSync(targetPath) && fs.statSync(targetPath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function resolveBinaryFromEntries(binary: string, entries: readonly string[], extensions: readonly string[]): string | null {
+  for (const entry of entries) {
+    for (const extension of extensions) {
+      const candidate = path.join(entry, `${binary}${extension}`);
+      if (isExecutableFile(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
 }
 
 function commandExistsOnPath(binary: string): boolean {
@@ -69,13 +139,31 @@ function createPosixShell(executable: string): ShellProfile {
   });
 }
 
+function createPosixShellWithArgs(executable: string, baseArgs: readonly string[]): ShellProfile {
+  return Object.freeze({
+    executable,
+    kind: 'posix',
+    commandArgs: (commandText: string) => Object.freeze([...baseArgs, '-lc', commandText]),
+    availabilityArgs: (binary: string) => Object.freeze([...baseArgs, '-lc', `command -v ${binary}`]),
+  });
+}
+
 function createPowerShell(executable: string): ShellProfile {
   return Object.freeze({
     executable,
     kind: 'powershell',
-    commandArgs: (commandText: string) => Object.freeze(['-NoLogo', '-NonInteractive', '-Command', commandText]),
+    commandArgs: (commandText: string) => Object.freeze(['-NoLogo', '-Command', commandText]),
     availabilityArgs: (binary: string) =>
-      Object.freeze(['-NoLogo', '-NonInteractive', '-Command', `Get-Command ${binary} | Out-Null`]),
+      Object.freeze(['-NoLogo', '-Command', `Get-Command ${binary} | Out-Null`]),
+  });
+}
+
+function createPowerShellWithArgs(executable: string, baseArgs: readonly string[]): ShellProfile {
+  return Object.freeze({
+    executable,
+    kind: 'powershell',
+    commandArgs: (commandText: string) => Object.freeze([...baseArgs, '-Command', commandText]),
+    availabilityArgs: (binary: string) => Object.freeze([...baseArgs, '-Command', `Get-Command ${binary} | Out-Null`]),
   });
 }
 
@@ -88,8 +176,103 @@ function createCmdShell(): ShellProfile {
   });
 }
 
+function createCmdShellWithArgs(executable: string, baseArgs: readonly string[]): ShellProfile {
+  return Object.freeze({
+    executable,
+    kind: 'cmd',
+    commandArgs: (commandText: string) => Object.freeze([...baseArgs, '/d', '/s', '/c', commandText]),
+    availabilityArgs: (binary: string) => Object.freeze([...baseArgs, '/d', '/s', '/c', `where ${binary}`]),
+  });
+}
+
+function resolveConfiguredExecutable(executable: string | readonly string[] | undefined): string | null {
+  if (!executable) {
+    return null;
+  }
+  const candidates = Array.isArray(executable) ? executable : [executable];
+  for (const candidate of candidates) {
+    const trimmed = candidate.trim();
+    if (!trimmed) {
+      continue;
+    }
+    if (path.isAbsolute(trimmed) && fs.existsSync(trimmed)) {
+      return trimmed;
+    }
+    const resolved = resolveCommandBinary(trimmed, process.cwd());
+    if (resolved) {
+      return resolved;
+    }
+  }
+  return null;
+}
+
+function resolveVsCodeWindowsTerminalProfile(): ShellProfile | null {
+  try {
+    const terminalConfig = vscode.workspace.getConfiguration('terminal.integrated');
+    const automationProfile = terminalConfig.get<TerminalProfileConfig>('automationProfile.windows');
+    const defaultProfileName = terminalConfig.get<string>('defaultProfile.windows');
+    const profiles = terminalConfig.get<Record<string, TerminalProfileConfig>>('profiles.windows') ?? {};
+    const deprecatedShell = terminalConfig.get<string>('shell.windows');
+    const deprecatedArgs = terminalConfig.get<string[]>('shellArgs.windows') ?? [];
+    const selected = automationProfile ?? (defaultProfileName ? profiles[defaultProfileName] : undefined);
+    const configuredExecutable =
+      resolveConfiguredExecutable(selected?.path) ??
+      resolveConfiguredExecutable(deprecatedShell);
+    const baseArgs = Object.freeze([...(selected?.args ?? deprecatedArgs)]);
+
+    const configuredSource = selected?.source?.toLowerCase() ?? '';
+    const executableName = (configuredExecutable ?? '').toLowerCase();
+    if (configuredExecutable) {
+      if (
+        configuredSource.includes('powershell') ||
+        executableName.endsWith('pwsh.exe') ||
+        executableName.endsWith('powershell.exe') ||
+        executableName === 'pwsh' ||
+        executableName === 'powershell'
+      ) {
+        return createPowerShellWithArgs(configuredExecutable, baseArgs);
+      }
+      if (
+        configuredSource.includes('command prompt') ||
+        executableName.endsWith('cmd.exe') ||
+        executableName === 'cmd'
+      ) {
+        return createCmdShellWithArgs(configuredExecutable, baseArgs);
+      }
+      if (
+        configuredSource.includes('git bash') ||
+        executableName.endsWith('bash.exe') ||
+        executableName.endsWith('zsh.exe') ||
+        executableName.endsWith('sh.exe')
+      ) {
+        return createPosixShellWithArgs(configuredExecutable, baseArgs);
+      }
+    }
+
+    if (configuredSource.includes('powershell')) {
+      if (commandExistsOnPath('pwsh')) {
+        return createPowerShellWithArgs('pwsh', baseArgs);
+      }
+      if (commandExistsOnPath('powershell')) {
+        return createPowerShellWithArgs('powershell', baseArgs);
+      }
+    }
+    if (configuredSource.includes('command prompt')) {
+      return createCmdShellWithArgs('cmd.exe', baseArgs);
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 export function resolveShellProfile(): ShellProfile {
   if (process.platform === 'win32') {
+    const configuredProfile = resolveVsCodeWindowsTerminalProfile();
+    if (configuredProfile) {
+      return configuredProfile;
+    }
     if (commandExistsOnPath('pwsh')) {
       return createPowerShell('pwsh');
     }
@@ -112,6 +295,55 @@ export function resolveShellProfile(): ShellProfile {
 }
 
 export function checkCommandAvailability(binary: string, cwd: string): boolean {
+  return resolveCommandBinary(binary, cwd) !== null;
+}
+
+export function resolveCommandBinary(binary: string, cwd: string): string | null {
+  const trimmed = binary.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.startsWith('./') || trimmed.startsWith('../') || trimmed.includes('/') || trimmed.includes('\\')) {
+    const resolved = path.isAbsolute(trimmed) ? trimmed : path.resolve(cwd, trimmed);
+    return isExecutableFile(resolved) ? resolved : null;
+  }
+
+  if (process.platform === 'win32') {
+    const env = buildShellEnvironment();
+    const pathEntries = normalizePathEntries(env.PATH);
+    const pathExts = (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
+      .split(';')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean);
+    const candidateExts = trimmed.includes('.')
+      ? ['']
+      : ['', ...pathExts];
+
+    const preferred = resolveBinaryFromEntries(trimmed, pathEntries, candidateExts);
+    if (preferred) {
+      return preferred;
+    }
+
+    const whereResult = spawnSync('where.exe', [trimmed], {
+      cwd,
+      stdio: 'pipe',
+      timeout: 5_000,
+      env,
+    });
+    if (!whereResult.error && whereResult.status === 0) {
+      const output = String(whereResult.stdout ?? '')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+      const firstExisting = output.find((candidate) => isExecutableFile(candidate));
+      if (firstExisting) {
+        return firstExisting;
+      }
+    }
+    return null;
+  }
+
   const shell = resolveShellProfile();
   const result = spawnSync(shell.executable, [...shell.availabilityArgs(binary)], {
     cwd,
@@ -119,5 +351,5 @@ export function checkCommandAvailability(binary: string, cwd: string): boolean {
     timeout: 5_000,
     env: buildShellEnvironment(),
   });
-  return !result.error && result.status === 0;
+  return !result.error && result.status === 0 ? trimmed : null;
 }

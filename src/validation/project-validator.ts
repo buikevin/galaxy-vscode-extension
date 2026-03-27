@@ -43,6 +43,31 @@ function parsePackageScripts(workspacePath: string): Record<string, string> {
   }
 }
 
+function parsePackageDependencyNames(workspacePath: string): ReadonlySet<string> {
+  const packagePath = path.join(workspacePath, 'package.json');
+  if (!fs.existsSync(packagePath)) {
+    return new Set<string>();
+  }
+
+  try {
+    const raw = fs.readFileSync(packagePath, 'utf-8');
+    const parsed = JSON.parse(raw) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+    };
+    return new Set<string>([
+      ...Object.keys(parsed.dependencies ?? {}),
+      ...Object.keys(parsed.devDependencies ?? {}),
+      ...Object.keys(parsed.peerDependencies ?? {}),
+      ...Object.keys(parsed.optionalDependencies ?? {}),
+    ]);
+  } catch {
+    return new Set<string>();
+  }
+}
+
 type NodePackageManager = 'bun' | 'pnpm' | 'yarn' | 'npm';
 
 function parsePackageManagerField(workspacePath: string): NodePackageManager | undefined {
@@ -209,6 +234,7 @@ function detectProjectCommands(
   const commands: ValidationCommand[] = [];
   const seenCommands = new Set<string>();
   const packageScripts = parsePackageScripts(workspacePath);
+  const packageDependencyNames = parsePackageDependencyNames(workspacePath);
   const pyprojectText = hasFile(workspacePath, 'pyproject.toml')
     ? readTextFile(path.join(workspacePath, 'pyproject.toml'))
     : '';
@@ -237,7 +263,7 @@ function detectProjectCommands(
     });
   }
 
-  for (const scriptName of ['typecheck', 'check']) {
+  for (const scriptName of ['check-types', 'typecheck', 'check']) {
     if (!packageScripts[scriptName]) {
       continue;
     }
@@ -249,18 +275,6 @@ function detectProjectCommands(
       kind: 'project',
       profile: scriptName === 'typecheck' ? 'typescript' : profiles.has('typescript') ? 'typescript' : 'javascript',
       category: 'static-check',
-    });
-  }
-
-  if ((profiles.has('javascript') || profiles.has('typescript')) && packageScripts.test) {
-    addProjectCommand(commands, seenCommands, {
-      id: `${nodePackageManager}-test`,
-      label: buildNodeScriptCommand(nodePackageManager, 'test'),
-      command: buildNodeScriptCommand(nodePackageManager, 'test'),
-      cwd: workspacePath,
-      kind: 'project',
-      profile: profiles.has('typescript') ? 'typescript' : 'javascript',
-      category: 'test',
     });
   }
 
@@ -276,7 +290,37 @@ function detectProjectCommands(
     });
   }
 
-  if (profiles.has('typescript') && hasFile(workspacePath, 'tsconfig.json')) {
+  if ((profiles.has('javascript') || profiles.has('typescript')) && packageScripts.test) {
+    addProjectCommand(commands, seenCommands, {
+      id: `${nodePackageManager}-test`,
+      label: buildNodeScriptCommand(nodePackageManager, 'test'),
+      command: buildNodeScriptCommand(nodePackageManager, 'test'),
+      cwd: workspacePath,
+      kind: 'project',
+      profile: profiles.has('typescript') ? 'typescript' : 'javascript',
+      category: 'test',
+    });
+  }
+
+  if ((profiles.has('javascript') || profiles.has('typescript')) && !packageScripts.lint && packageDependencyNames.has('eslint')) {
+    addProjectCommand(commands, seenCommands, {
+      id: `${nodePackageManager}-eslint-fallback`,
+      label: buildNodeExecCommand(nodePackageManager, 'eslint', ['.']),
+      command: buildNodeExecCommand(nodePackageManager, 'eslint', ['.']),
+      cwd: workspacePath,
+      kind: 'project',
+      profile: profiles.has('typescript') ? 'typescript' : 'javascript',
+      category: 'lint',
+    });
+  }
+
+  if (
+    profiles.has('typescript') &&
+    hasFile(workspacePath, 'tsconfig.json') &&
+    !packageScripts['check-types'] &&
+    !packageScripts.typecheck &&
+    !packageScripts.check
+  ) {
     addProjectCommand(commands, seenCommands, {
       id: `${nodePackageManager}-tsc-noemit`,
       label: buildNodeExecCommand(nodePackageManager, 'tsc', ['--noEmit']),

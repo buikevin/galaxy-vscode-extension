@@ -34,10 +34,11 @@ body,
 #app {
   min-height: 100%;
   margin: 0;
+
 }
 
 body {
-  background: hsl(var(--background));
+  /* background: hsl(var(--background)); */
   color: hsl(var(--foreground));
   font-family:
     ui-sans-serif,
@@ -45,6 +46,7 @@ body {
     BlinkMacSystemFont,
     'Segoe UI',
     sans-serif;
+      padding: 0 5px;
 }
 
 button,

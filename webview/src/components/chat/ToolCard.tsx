@@ -86,11 +86,11 @@ export function ToolCard(props: ToolCardProps) {
 
   return (
     <div className="max-w-full min-w-0 space-y-2 overflow-x-hidden">
-      <button
+      {/* <button
         type="button"
         className="flex items-center justify-between w-full min-w-0 px-3 py-2 text-left border rounded-lg border-border/60 bg-background/50"
         onClick={props.onToggle}
-      >
+      > */}
         <div className="flex items-center gap-2 text-sm font-medium text-foreground">
           {props.isListDirMessage ? (
             <>
@@ -108,13 +108,13 @@ export function ToolCard(props: ToolCardProps) {
             </>
           )}
         </div>
-        <ChevronDown
+        {/* <ChevronDown
           className={`h-4 w-4 text-muted-foreground transition-transform ${
             props.expanded ? "rotate-180" : ""
           }`}
-        />
-      </button>
-      {props.expanded ? (
+        /> */}
+      {/* </button> */}
+      {/* {props.expanded ? (
         <div className="max-w-full p-3 overflow-auto border rounded-lg max-h-44 border-border/60 bg-background/60">
           {props.isListDirMessage ? (
             <div className="space-y-2">
@@ -155,7 +155,7 @@ export function ToolCard(props: ToolCardProps) {
             </div>
           )}
         </div>
-      ) : null}
+      ) : null} */}
     </div>
   );
 }

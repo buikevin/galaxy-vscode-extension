@@ -43,9 +43,9 @@ export function Transcript() {
   return (
     <ScrollArea
       ref={transcript.scrollAreaRef as RefObject<HTMLDivElement>}
-      className="flex-1 min-h-0 overflow-x-hidden border rounded-xl border-border/60 bg-background/70"
+      className="flex-1 min-h-0 overflow-x-hidden"
     >
-      <div className="max-w-full min-w-0 p-3 space-y-3 overflow-x-hidden">
+      <div className="max-w-full min-w-0 space-y-3 overflow-x-hidden">
         {transcript.renderItems.map((item) => {
           if (item.type === "live-shell") {
             return (

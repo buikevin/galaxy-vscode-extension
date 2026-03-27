@@ -2,7 +2,7 @@
   "name": "galaxy-code-vscode",
   "displayName": "Galaxy Code",
   "description": "AI-powered coding assistant with a Galaxy chat experience for VS Code.",
-  "version": "0.1.40",
+  "version": "0.1.48",
   "publisher": "kevinbui",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -25,7 +25,7 @@
   "keywords": [
     "ai",
     "assistant",
-    "chat",
+  "chat",
     "coding",
     "productivity"
   ],

@@ -85,6 +85,7 @@ export type ReadPlanProgressItem = Readonly<{
 export type PromptBuildResult = Readonly<{
   messages: readonly ChatMessage[];
   notesTokens: number;
+  taskMemoryTokens: number;
   activeTaskMemoryTokens: number;
   projectMemoryTokens: number;
   sessionMemoryTokens: number;

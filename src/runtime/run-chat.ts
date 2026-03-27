@@ -78,7 +78,14 @@ function getBlockedCapability(toolName: string): string {
     toolName === 'run_terminal_command' ||
     toolName === 'await_terminal_command' ||
     toolName === 'get_terminal_output' ||
-    toolName === 'kill_terminal_command'
+    toolName === 'kill_terminal_command' ||
+    toolName === 'git_status' ||
+    toolName === 'git_diff' ||
+    toolName === 'git_add' ||
+    toolName === 'git_commit' ||
+    toolName === 'git_push' ||
+    toolName === 'git_pull' ||
+    toolName === 'git_checkout'
   ) {
     return 'runCommands';
   }
@@ -111,6 +118,45 @@ function buildApprovalRequest(opts: {
         ]),
       });
     }
+  }
+
+  if (toolName === 'git_pull' && opts.config.toolSafety.requireApprovalForGitPull) {
+    return Object.freeze({
+      approvalKey: `git_pull:${String(opts.params.remote ?? '').trim()}:${String(opts.params.branch ?? '').trim()}`,
+      toolName,
+      title: 'Cấp quyền git pull',
+      message: 'AI Agent muốn kéo thay đổi mới từ remote Git.',
+      details: Object.freeze([
+        `remote: ${String(opts.params.remote ?? '(default)')}`,
+        `branch: ${String(opts.params.branch ?? '(tracking branch)')}`,
+      ]),
+    });
+  }
+
+  if (toolName === 'git_push' && opts.config.toolSafety.requireApprovalForGitPush) {
+    return Object.freeze({
+      approvalKey: `git_push:${String(opts.params.remote ?? '').trim()}:${String(opts.params.branch ?? '').trim()}`,
+      toolName,
+      title: 'Cấp quyền git push',
+      message: 'AI Agent muốn đẩy commit lên remote Git.',
+      details: Object.freeze([
+        `remote: ${String(opts.params.remote ?? '(default)')}`,
+        `branch: ${String(opts.params.branch ?? '(current branch)')}`,
+      ]),
+    });
+  }
+
+  if (toolName === 'git_checkout' && opts.config.toolSafety.requireApprovalForGitCheckout) {
+    return Object.freeze({
+      approvalKey: `git_checkout:${String(opts.params.ref ?? '').trim()}`,
+      toolName,
+      title: 'Cấp quyền git checkout',
+      message: 'AI Agent muốn checkout hoặc tạo branch Git.',
+      details: Object.freeze([
+        `ref: ${String(opts.params.ref ?? '')}`,
+        `createBranch: ${String(Boolean(opts.params.createBranch ?? false))}`,
+      ]),
+    });
   }
 
   return null;

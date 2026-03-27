@@ -2,11 +2,12 @@ import type { AgentType, ChatMessage } from '../shared/protocol';
 import { countContextTokens, estimateTokens } from './compaction';
 import type { PromptBuildResult, ReadPlanProgressItem, SessionMemory, WorkingTurn } from './history-types';
 import { buildActiveTaskMemoryContent, buildProjectMemoryContent } from './memory-format';
-import { queryRagHintPaths } from './rag-metadata-store';
+import { queryRagHintPaths, queryRelevantTaskMemory } from './rag-metadata-store';
 import { buildSemanticRetrievalContext } from './semantic-index';
 import { buildSyntaxIndexContext, type ManualReadPlanStep, type SyntaxContextRecordSummary } from './syntax-index';
 import { appendTelemetryEvent } from './telemetry';
 import { buildRelevantToolEvidenceBlock } from './tool-evidence-selector';
+import { resolveShellProfile } from '../runtime/shell-resolver';
 
 const MAX_HYBRID_FILES = 4;
 const MAX_SKELETON_SYMBOLS = 3;
@@ -23,6 +24,72 @@ function buildContextMessage(content: string, id: string): ChatMessage | null {
     content: trimmed,
     timestamp: Date.now(),
   });
+}
+
+function buildTaskMemoryContent(opts: {
+  entries: readonly Readonly<{
+    turnKind: string;
+    userIntent: string;
+    assistantConclusion: string;
+    files: readonly string[];
+  }>[];
+  findings: readonly Readonly<{
+    kind: string;
+    summary: string;
+    filePath?: string;
+    line?: number;
+    status: string;
+  }>[];
+}): string {
+  if (opts.entries.length === 0 && opts.findings.length === 0) {
+    return '';
+  }
+
+  const lines: string[] = ['[RELEVANT PRIOR TASK MEMORY]'];
+  opts.entries.slice(0, 3).forEach((entry, index) => {
+    lines.push(`${index + 1}. [${entry.turnKind}] User intent: ${entry.userIntent}`);
+    lines.push(`   Conclusion: ${entry.assistantConclusion}`);
+    if (entry.files.length > 0) {
+      lines.push(`   Files: ${entry.files.join(', ')}`);
+    }
+  });
+
+  const openFindings = opts.findings.filter((finding) => finding.status !== 'dismissed').slice(0, 8);
+  if (openFindings.length > 0) {
+    lines.push('');
+    lines.push('[OPEN FINDINGS TO CONTINUE]');
+    openFindings.forEach((finding) => {
+      const location = finding.filePath
+        ? `${finding.filePath}${typeof finding.line === 'number' ? `:${finding.line}` : ''}`
+        : '';
+      lines.push(`- [${finding.kind}] ${location ? `${location} - ` : ''}${finding.summary}`);
+    });
+  }
+
+  lines.push('');
+  lines.push('Use this memory as high-priority continuity context.');
+  lines.push('Do not ask the user to restate or re-derive these points unless the current workspace state, new attachments, review findings, or validation output contradict them.');
+  lines.push('If you reopen the analysis, explain briefly what changed or what evidence is now missing.');
+  return lines.join('\n').trim();
+}
+
+function buildSystemPlatformContent(): string {
+  const platformLabel =
+    process.platform === 'win32'
+      ? 'Windows'
+      : process.platform === 'darwin'
+        ? 'macOS'
+        : process.platform === 'linux'
+          ? 'Linux'
+          : process.platform;
+  const shell = resolveShellProfile();
+  return [
+    '[SYSTEM PLATFORM CONTEXT]',
+    `Operating system: ${platformLabel} (${process.platform})`,
+    `Preferred shell for tool execution: ${shell.kind} via ${shell.executable}`,
+    'Choose commands, quoting, path separators, and shell syntax that match this platform.',
+    'Do not default to bash/zsh syntax on Windows unless the shell context explicitly supports it.',
+  ].join('\n');
 }
 
 function extractMentionedPaths(text: string): readonly string[] {
@@ -576,12 +643,19 @@ export async function buildPromptContext(opts: {
   ]);
 
   const notesContent = opts.notes.trim() ? `[NOTES]\n${opts.notes.trim()}` : '';
+  const systemPlatformContent = buildSystemPlatformContent();
+  const taskMemory = queryRelevantTaskMemory(
+    opts.sessionMemory.workspacePath,
+    queryText,
+    3,
+  );
+  const taskMemoryContent = buildTaskMemoryContent(taskMemory);
   const projectMemoryContent = buildProjectMemoryContent(opts.sessionMemory.projectMemory);
   const activeTaskMemoryContent = buildActiveTaskMemoryContent(opts.sessionMemory.activeTaskMemory);
   const previousFinalConclusionContent = opts.sessionMemory.lastFinalAssistantConclusion.trim()
     ? `[PREVIOUS FINAL ASSISTANT CONCLUSION]\n` +
       `${opts.sessionMemory.lastFinalAssistantConclusion.trim()}\n\n` +
-      'Treat this as the most recent authoritative conclusion from the previous completed turn. Continue from it instead of restarting the analysis from scratch when the user asks to proceed.'
+      'Treat this as the most recent authoritative conclusion from the previous completed turn. Prefer continuing from it instead of restarting the analysis from scratch. If you need to reopen the analysis, explain what current evidence contradicts it or what new information is missing.'
     : '';
   const syntaxIndexBlock = buildSyntaxIndexContext({
     workspacePath: opts.sessionMemory.workspacePath,
@@ -695,6 +769,16 @@ export async function buildPromptContext(opts: {
     messages.push(notesMessage);
   }
 
+  const systemPlatformMessage = buildContextMessage(systemPlatformContent, `ctx-platform-${Date.now()}`);
+  if (systemPlatformMessage) {
+    messages.push(systemPlatformMessage);
+  }
+
+  const taskMemoryMessage = buildContextMessage(taskMemoryContent, `ctx-task-memory-${Date.now()}`);
+  if (taskMemoryMessage) {
+    messages.push(taskMemoryMessage);
+  }
+
   const projectMemoryMessage = buildContextMessage(projectMemoryContent, `ctx-project-memory-${Date.now()}`);
   if (projectMemoryMessage) {
     messages.push(projectMemoryMessage);
@@ -801,7 +885,8 @@ export async function buildPromptContext(opts: {
 
   const result = Object.freeze({
     messages: Object.freeze(messages),
-    notesTokens: estimateTokens(notesContent),
+    notesTokens: estimateTokens(notesContent) + estimateTokens(systemPlatformContent),
+    taskMemoryTokens: estimateTokens(taskMemoryContent),
     activeTaskMemoryTokens: estimateTokens(activeTaskMemoryContent),
     projectMemoryTokens: estimateTokens(projectMemoryContent),
     sessionMemoryTokens: estimateTokens(activeTaskMemoryContent) + estimateTokens(projectMemoryContent),

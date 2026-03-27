@@ -16,6 +16,13 @@ import {
 } from './galaxy-design-tools';
 import {
   awaitManagedProjectCommandTool,
+  gitAddTool,
+  gitCheckoutTool,
+  gitCommitTool,
+  gitDiffTool,
+  gitPullTool,
+  gitPushTool,
+  gitStatusTool,
   getManagedProjectCommandOutputTool,
   killManagedProjectCommandTool,
   runProjectCommandTool,
@@ -72,6 +79,12 @@ export type FileToolContext = Readonly<{
     commandId: string,
     title: string,
     extensionId: string,
+  ) => Promise<ToolResult>;
+  invokeLanguageModelTool?: (
+    toolName: string,
+    title: string,
+    extensionId: string,
+    input: Readonly<Record<string, unknown>>,
   ) => Promise<ToolResult>;
   searchExtensionTools?: (
     query: string,
@@ -1102,6 +1115,56 @@ function editFileTool(
   }
 }
 
+function getLineAt(lines: readonly string[], lineNumber: number): string | null {
+  if (!Number.isFinite(lineNumber) || lineNumber < 1 || lineNumber > lines.length) {
+    return null;
+  }
+  return lines[lineNumber - 1] ?? null;
+}
+
+function getRangeContent(lines: readonly string[], startLine: number, endLine: number): string {
+  if (startLine > endLine) {
+    return '';
+  }
+  return lines.slice(startLine - 1, endLine).join('\n');
+}
+
+function validateAnchoredRangeEdit(
+  rawPath: string,
+  originalLines: readonly string[],
+  startLine: number,
+  endLine: number,
+  options?: Readonly<{
+    expectedRangeContent?: string;
+    anchorBefore?: string;
+    anchorAfter?: string;
+  }>,
+): string | null {
+  const expectedRangeContent = typeof options?.expectedRangeContent === 'string' ? options.expectedRangeContent : '';
+  if (expectedRangeContent.length > 0) {
+    const currentRangeContent = getRangeContent(originalLines, startLine, endLine);
+    if (currentRangeContent !== expectedRangeContent) {
+      return `Target range in ${rawPath} no longer matches the last read snapshot. Read the file again before editing.`;
+    }
+  }
+
+  if (typeof options?.anchorBefore === 'string' && options.anchorBefore.length > 0) {
+    const currentBefore = getLineAt(originalLines, startLine - 1);
+    if (currentBefore !== options.anchorBefore) {
+      return `anchor_before no longer matches ${rawPath} near line ${startLine}. Read the file again before editing.`;
+    }
+  }
+
+  if (typeof options?.anchorAfter === 'string' && options.anchorAfter.length > 0) {
+    const currentAfter = getLineAt(originalLines, endLine + 1);
+    if (currentAfter !== options.anchorAfter) {
+      return `anchor_after no longer matches ${rawPath} near line ${endLine}. Read the file again before editing.`;
+    }
+  }
+
+  return null;
+}
+
 function editFileRangeTool(
   workspaceRoot: string,
   rawPath: string,
@@ -1109,6 +1172,9 @@ function editFileRangeTool(
   endLine: number,
   newContent: string,
   expectedTotalLines?: number,
+  expectedRangeContent?: string,
+  anchorBefore?: string,
+  anchorAfter?: string,
 ): ToolResult {
   try {
     const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
@@ -1147,6 +1213,19 @@ function editFileRangeTool(
       });
     }
 
+    const anchorError = validateAnchoredRangeEdit(rawPath, originalLines, startLine, endLine, {
+      expectedRangeContent,
+      anchorBefore,
+      anchorAfter,
+    });
+    if (anchorError) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: anchorError,
+      });
+    }
+
     const replacementLines = newContent.split('\n');
     const updatedLines = [
       ...originalLines.slice(0, startLine - 1),
@@ -1177,6 +1256,15 @@ function editFileRangeTool(
         ...(Number.isFinite(expectedTotalLines) && expectedTotalLines! > 0
           ? { expectedTotalLines }
           : {}),
+        ...(typeof expectedRangeContent === 'string' && expectedRangeContent.length > 0
+          ? { expectedRangeContent }
+          : {}),
+        ...(typeof anchorBefore === 'string' && anchorBefore.length > 0
+          ? { anchorBefore }
+          : {}),
+        ...(typeof anchorAfter === 'string' && anchorAfter.length > 0
+          ? { anchorAfter }
+          : {}),
       }),
     });
   } catch (error) {
@@ -1194,6 +1282,8 @@ function insertFileAtLineTool(
   line: number,
   contentToInsert: string,
   expectedTotalLines?: number,
+  anchorBefore?: string,
+  anchorAfter?: string,
 ): ToolResult {
   try {
     const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
@@ -1235,6 +1325,28 @@ function insertFileAtLineTool(
       });
     }
 
+    if (typeof anchorBefore === 'string' && anchorBefore.length > 0) {
+      const currentBefore = getLineAt(originalLines, line - 1);
+      if (currentBefore !== anchorBefore) {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: `anchor_before no longer matches ${rawPath} near line ${line}. Read the file again before inserting.`,
+        });
+      }
+    }
+
+    if (typeof anchorAfter === 'string' && anchorAfter.length > 0) {
+      const currentAfter = getLineAt(originalLines, line);
+      if (currentAfter !== anchorAfter) {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: `anchor_after no longer matches ${rawPath} near line ${line}. Read the file again before inserting.`,
+        });
+      }
+    }
+
     const insertedLines = contentToInsert.split('\n');
     const updatedLines = [...originalLines];
     updatedLines.splice(line - 1, 0, ...insertedLines);
@@ -1256,6 +1368,12 @@ function insertFileAtLineTool(
         ]),
         insertEdit: true,
         startLine: line,
+        ...(typeof anchorBefore === 'string' && anchorBefore.length > 0
+          ? { anchorBefore }
+          : {}),
+        ...(typeof anchorAfter === 'string' && anchorAfter.length > 0
+          ? { anchorAfter }
+          : {}),
       }),
     });
   } catch (error) {
@@ -1274,6 +1392,9 @@ function multiEditFileRangesTool(
     start_line: number;
     end_line: number;
     new_content: string;
+    expected_range_content?: string;
+    anchor_before?: string;
+    anchor_after?: string;
   }>[],
   expectedTotalLines?: number,
 ): ToolResult {
@@ -1318,6 +1439,9 @@ function multiEditFileRangesTool(
         startLine,
         endLine,
         newContent: String(edit.new_content ?? ''),
+        expectedRangeContent: typeof edit.expected_range_content === 'string' ? edit.expected_range_content : '',
+        anchorBefore: typeof edit.anchor_before === 'string' ? edit.anchor_before : '',
+        anchorAfter: typeof edit.anchor_after === 'string' ? edit.anchor_after : '',
       });
     });
 
@@ -1336,6 +1460,18 @@ function multiEditFileRangesTool(
 
     let updatedLines = [...originalLines];
     for (const edit of sorted) {
+      const anchorError = validateAnchoredRangeEdit(rawPath, updatedLines, edit.startLine, edit.endLine, {
+        expectedRangeContent: edit.expectedRangeContent,
+        anchorBefore: edit.anchorBefore,
+        anchorAfter: edit.anchorAfter,
+      });
+      if (anchorError) {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: anchorError,
+        });
+      }
       updatedLines = [
         ...updatedLines.slice(0, edit.startLine - 1),
         ...edit.newContent.split('\n'),
@@ -1620,6 +1756,15 @@ export function validateCodeTool(filePath: string): ToolResult {
     return findTsConfig(parent);
   }
 
+  function shouldUseProjectReferences(tsconfigPath: string): boolean {
+    try {
+      const tsconfigText = fs.readFileSync(tsconfigPath, 'utf-8');
+      return /"references"\s*:/.test(tsconfigText);
+    } catch {
+      return false;
+    }
+  }
+
   try {
     if (ext === '.ts' || ext === '.tsx') {
       const projectDir = findTsConfig(path.dirname(resolved));
@@ -1637,14 +1782,18 @@ export function validateCodeTool(filePath: string): ToolResult {
       }
 
       try {
-        execSync('npx tsc --noEmit 2>&1', {
+        const tsconfigPath = path.join(projectDir, 'tsconfig.json');
+        const command = shouldUseProjectReferences(tsconfigPath)
+          ? 'npx tsc -b --pretty false 2>&1'
+          : 'npx tsc --noEmit --pretty false 2>&1';
+        execSync(command, {
           cwd: projectDir,
           encoding: 'utf-8',
           timeout: 30_000,
         });
         return Object.freeze({
           success: true,
-          content: `No TypeScript errors in ${filePath}`,
+          content: `No TypeScript compiler errors detected for ${filePath}`,
           meta: Object.freeze({
             filePath: resolved,
             reportKind: 'validation',
@@ -1843,8 +1992,8 @@ function findDiscoveredExtensionTool(
   return (
     getAvailableExtensionTools(config).find(
       ({ tool }) =>
-        tool.qualifiedName.trim().toLowerCase() === normalizedRaw ||
-        tool.command.trim().toLowerCase() === normalizedRaw ||
+        tool.runtimeName.trim().toLowerCase() === normalizedRaw ||
+        (tool.commandId?.trim().toLowerCase() ?? '') === normalizedRaw ||
         tool.key.trim().toLowerCase() === normalizedRaw,
     ) ?? null
   );
@@ -1882,6 +2031,20 @@ export function normalizeToolName(raw: string): string {
       return 'get_terminal_output';
     case 'killterminalcommand':
       return 'kill_terminal_command';
+    case 'gitstatus':
+      return 'git_status';
+    case 'gitdiff':
+      return 'git_diff';
+    case 'gitadd':
+      return 'git_add';
+    case 'gitcommit':
+      return 'git_commit';
+    case 'gitpush':
+      return 'git_push';
+    case 'gitpull':
+      return 'git_pull';
+    case 'gitcheckout':
+      return 'git_checkout';
     case 'vscodeopendiff':
       return 'vscode_open_diff';
     case 'vscodeshowproblems':
@@ -1924,18 +2087,33 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
       return Object.freeze({
         success: false,
         content: '',
-        error: `Extension tool is disabled: ${extensionTool.tool.qualifiedName}`,
+        error: `Extension tool is disabled: ${extensionTool.tool.runtimeName}`,
       });
     }
-    if (!toolContext.executeExtensionCommand) {
+    if (extensionTool.tool.invocation === 'lm_tool') {
+      if (!toolContext.invokeLanguageModelTool) {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: `Language model tool invocation is not available for ${extensionTool.tool.runtimeName}.`,
+        });
+      }
+      return toolContext.invokeLanguageModelTool(
+        extensionTool.tool.runtimeName,
+        extensionTool.tool.title,
+        extensionTool.group.extensionId,
+        call.params,
+      );
+    }
+    if (!toolContext.executeExtensionCommand || !extensionTool.tool.commandId) {
       return Object.freeze({
         success: false,
         content: '',
-        error: `Extension command execution is not available for ${extensionTool.tool.qualifiedName}.`,
+        error: `Extension command execution is not available for ${extensionTool.tool.runtimeName}.`,
       });
     }
     return toolContext.executeExtensionCommand(
-      extensionTool.tool.command,
+      extensionTool.tool.commandId,
       extensionTool.tool.title,
       extensionTool.group.extensionId,
     );
@@ -1985,6 +2163,8 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
         Number(call.params.line ?? 0),
         String(call.params.content ?? ''),
         Number(call.params.expected_total_lines ?? 0),
+        typeof call.params.anchor_before === 'string' ? String(call.params.anchor_before) : undefined,
+        typeof call.params.anchor_after === 'string' ? String(call.params.anchor_after) : undefined,
       );
       if (result.success && typeof result.meta?.filePath === 'string') {
         await toolContext.refreshWorkspaceFiles();
@@ -2012,6 +2192,9 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
         Number(call.params.end_line ?? 0),
         String(call.params.new_content ?? ''),
         Number(call.params.expected_total_lines ?? 0),
+        typeof call.params.expected_range_content === 'string' ? String(call.params.expected_range_content) : undefined,
+        typeof call.params.anchor_before === 'string' ? String(call.params.anchor_before) : undefined,
+        typeof call.params.anchor_after === 'string' ? String(call.params.anchor_after) : undefined,
       );
       if (result.success && typeof result.meta?.filePath === 'string') {
         await toolContext.refreshWorkspaceFiles();
@@ -2027,6 +2210,9 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
               start_line: number;
               end_line: number;
               new_content: string;
+              expected_range_content?: string;
+              anchor_before?: string;
+              anchor_after?: string;
             }>)
           : [],
         Number(call.params.expected_total_lines ?? 0),
@@ -2177,6 +2363,51 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
       });
     case 'kill_terminal_command':
       return killManagedProjectCommandTool(p(call, 'commandId'));
+    case 'git_status':
+      return gitStatusTool(toolContext.workspaceRoot, {
+        cwd: p(call, 'cwd'),
+        short: Boolean(call.params.short ?? false),
+        pathspec: p(call, 'pathspec'),
+      });
+    case 'git_diff':
+      return gitDiffTool(toolContext.workspaceRoot, {
+        cwd: p(call, 'cwd'),
+        pathspec: p(call, 'pathspec'),
+        staged: Boolean(call.params.staged ?? false),
+        maxChars: Number(call.params.maxChars ?? 8_000),
+      });
+    case 'git_add':
+      return gitAddTool(
+        toolContext.workspaceRoot,
+        Array.isArray(call.params.paths)
+          ? (call.params.paths as unknown[]).map((item) => String(item ?? '').trim()).filter(Boolean)
+          : [],
+        {
+          cwd: p(call, 'cwd'),
+        },
+      );
+    case 'git_commit':
+      return gitCommitTool(toolContext.workspaceRoot, p(call, 'message'), {
+        cwd: p(call, 'cwd'),
+        all: Boolean(call.params.all ?? false),
+      });
+    case 'git_push':
+      return gitPushTool(toolContext.workspaceRoot, {
+        cwd: p(call, 'cwd'),
+        remote: p(call, 'remote'),
+        branch: p(call, 'branch'),
+      });
+    case 'git_pull':
+      return gitPullTool(toolContext.workspaceRoot, {
+        cwd: p(call, 'cwd'),
+        remote: p(call, 'remote'),
+        branch: p(call, 'branch'),
+      });
+    case 'git_checkout':
+      return gitCheckoutTool(toolContext.workspaceRoot, p(call, 'ref'), {
+        cwd: p(call, 'cwd'),
+        createBranch: Boolean(call.params.createBranch ?? false),
+      });
     case 'vscode_open_diff':
       if (!toolContext.openTrackedDiff) {
         return Object.freeze({ success: false, content: '', error: 'VS Code native diff is not available in this context.' });
@@ -2294,6 +2525,13 @@ function getToolCapability(toolName: string): keyof ToolCapabilityConfig | null 
     case 'await_terminal_command':
     case 'get_terminal_output':
     case 'kill_terminal_command':
+    case 'git_status':
+    case 'git_diff':
+    case 'git_add':
+    case 'git_commit':
+    case 'git_push':
+    case 'git_pull':
+    case 'git_checkout':
       return 'runCommands';
     case 'search_web':
     case 'extract_web':
@@ -2398,7 +2636,7 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
   }),
   Object.freeze({
     name: 'insert_file_at_line',
-    description: 'Insert content before a specific line in an existing file. Prefer this for adding imports, props, or small blocks without rewriting a whole range.',
+    description: 'Insert content before a specific line in an existing file. Prefer this for adding imports, props, or small blocks without rewriting a whole range. Pass anchor_before and/or anchor_after from a recent read_file result whenever possible.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
@@ -2406,13 +2644,15 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
         line: Object.freeze({ type: 'number', description: '1-based line number before which the new content will be inserted' }),
         content: Object.freeze({ type: 'string', description: 'Content to insert' }),
         expected_total_lines: Object.freeze({ type: 'number', description: 'Total line count from the most recent read_file result for this file. Use it to avoid inserting into a stale snapshot.' }),
+        anchor_before: Object.freeze({ type: 'string', description: 'Exact content of the line immediately before the insertion point from a recent read_file result.' }),
+        anchor_after: Object.freeze({ type: 'string', description: 'Exact content of the line currently at the insertion point from a recent read_file result.' }),
       }),
       required: Object.freeze(['path', 'line', 'content']),
     }),
   }),
   Object.freeze({
     name: 'edit_file_range',
-    description: 'Edit a specific line range in a file by replacing lines start_line through end_line with new_content. Prefer this when you know the target line range from a recent read_file result.',
+    description: 'Edit a specific line range in a file by replacing lines start_line through end_line with new_content. Pass expected_range_content from a recent read_file result whenever possible, plus nearby anchors if helpful.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
@@ -2421,13 +2661,16 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
         end_line: Object.freeze({ type: 'number', description: '1-based end line, inclusive' }),
         new_content: Object.freeze({ type: 'string', description: 'Replacement content for the target line range' }),
         expected_total_lines: Object.freeze({ type: 'number', description: 'Total line count from the most recent read_file result for this file. Use it to avoid editing stale line ranges.' }),
+        expected_range_content: Object.freeze({ type: 'string', description: 'Exact existing content currently in lines start_line through end_line from a recent read_file result.' }),
+        anchor_before: Object.freeze({ type: 'string', description: 'Exact content of the line immediately before start_line from a recent read_file result.' }),
+        anchor_after: Object.freeze({ type: 'string', description: 'Exact content of the line immediately after end_line from a recent read_file result.' }),
       }),
       required: Object.freeze(['path', 'start_line', 'end_line', 'new_content']),
     }),
   }),
   Object.freeze({
     name: 'multi_edit_file_ranges',
-    description: 'Apply multiple targeted line-range edits to one existing file in a single call. Prefer this when you need to change several places in the same file after a recent read_file result.',
+    description: 'Apply multiple targeted line-range edits to one existing file in a single call. Each edit should include exact expected content or anchors from a recent read_file result whenever possible.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
@@ -2442,6 +2685,9 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
               start_line: Object.freeze({ type: 'number', description: '1-based start line, inclusive' }),
               end_line: Object.freeze({ type: 'number', description: '1-based end line, inclusive' }),
               new_content: Object.freeze({ type: 'string', description: 'Replacement content for that range' }),
+              expected_range_content: Object.freeze({ type: 'string', description: 'Exact existing content in that range from a recent read_file result.' }),
+              anchor_before: Object.freeze({ type: 'string', description: 'Exact content of the line immediately before this range from a recent read_file result.' }),
+              anchor_after: Object.freeze({ type: 'string', description: 'Exact content of the line immediately after this range from a recent read_file result.' }),
             }),
             required: Object.freeze(['start_line', 'end_line', 'new_content']),
           }),
@@ -2643,6 +2889,101 @@ const ACTION_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
     }),
   }),
   Object.freeze({
+    name: 'git_status',
+    description: 'Get the current git working tree status for the workspace, an optional subdirectory, or one specific path.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        cwd: Object.freeze({ type: 'string', description: 'Optional working directory inside the workspace' }),
+        short: Object.freeze({ type: 'boolean', description: 'Use git status --short for compact output' }),
+        pathspec: Object.freeze({ type: 'string', description: 'Optional file or path to scope git status to one target' }),
+      }),
+      required: Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
+    name: 'git_diff',
+    description: 'Read git diff output, optionally staged or scoped to one path.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        cwd: Object.freeze({ type: 'string', description: 'Optional working directory inside the workspace' }),
+        pathspec: Object.freeze({ type: 'string', description: 'Optional file or path to diff' }),
+        staged: Object.freeze({ type: 'boolean', description: 'Show staged diff instead of unstaged diff' }),
+        maxChars: Object.freeze({ type: 'number', description: 'Maximum output characters to include (default 8000)' }),
+      }),
+      required: Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
+    name: 'git_add',
+    description: 'Stage one or more paths with git add. Uses "." when no explicit paths are provided.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        cwd: Object.freeze({ type: 'string', description: 'Optional working directory inside the workspace' }),
+        paths: Object.freeze({
+          type: 'array',
+          items: Object.freeze({ type: 'string' }),
+          description: 'Workspace-relative file or directory paths to stage',
+        }),
+      }),
+      required: Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
+    name: 'git_commit',
+    description: 'Create a git commit with a required commit message.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        cwd: Object.freeze({ type: 'string', description: 'Optional working directory inside the workspace' }),
+        message: Object.freeze({ type: 'string', description: 'Commit message' }),
+        all: Object.freeze({ type: 'boolean', description: 'Use git commit -a to include tracked modified files' }),
+      }),
+      required: Object.freeze(['message']),
+    }),
+  }),
+  Object.freeze({
+    name: 'git_push',
+    description: 'Push the current branch or a specified ref to a remote.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        cwd: Object.freeze({ type: 'string', description: 'Optional working directory inside the workspace' }),
+        remote: Object.freeze({ type: 'string', description: 'Optional remote name, for example origin' }),
+        branch: Object.freeze({ type: 'string', description: 'Optional branch or ref to push' }),
+      }),
+      required: Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
+    name: 'git_pull',
+    description: 'Pull from the current remote tracking branch or a specified remote/branch.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        cwd: Object.freeze({ type: 'string', description: 'Optional working directory inside the workspace' }),
+        remote: Object.freeze({ type: 'string', description: 'Optional remote name, for example origin' }),
+        branch: Object.freeze({ type: 'string', description: 'Optional branch or ref to pull' }),
+      }),
+      required: Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
+    name: 'git_checkout',
+    description: 'Checkout an existing branch/ref, or create a new branch when createBranch is true.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        cwd: Object.freeze({ type: 'string', description: 'Optional working directory inside the workspace' }),
+        ref: Object.freeze({ type: 'string', description: 'Branch, tag, or commit-ish to checkout' }),
+        createBranch: Object.freeze({ type: 'boolean', description: 'Use git checkout -b <ref>' }),
+      }),
+      required: Object.freeze(['ref']),
+    }),
+  }),
+  Object.freeze({
     name: 'run_project_command',
     description: 'Legacy compatibility shim for running a workspace command directly. Prefer run_terminal_command plus await/get/kill terminal tools for new flows.',
     parameters: Object.freeze({
@@ -2831,6 +3172,16 @@ export function isToolEnabled(toolName: string, config: GalaxyConfig): boolean {
   const toolEnabled = normalized in config.toolToggles
     ? config.toolToggles[normalized as keyof GalaxyConfig['toolToggles']]
     : true;
+  if (
+    !config.toolSafety.enableGitWriteTools &&
+    (normalized === 'git_add' ||
+      normalized === 'git_commit' ||
+      normalized === 'git_push' ||
+      normalized === 'git_pull' ||
+      normalized === 'git_checkout')
+  ) {
+    return false;
+  }
   return capabilityEnabled && toolEnabled;
 }
 
@@ -2844,13 +3195,18 @@ export function getEnabledToolDefinitions(config: GalaxyConfig): readonly ToolDe
     .filter(({ tool }) => config.extensionToolToggles[tool.key] === true)
     .map(({ group, tool }) =>
       Object.freeze({
-        name: tool.qualifiedName,
-        description: `Run the public VS Code extension command "${tool.command}" from ${group.label}. ${tool.description}`,
-        parameters: Object.freeze({
-          type: 'object',
-          properties: Object.freeze({}),
-          required: Object.freeze([]),
-        }),
+        name: tool.runtimeName,
+        description:
+          tool.invocation === 'lm_tool'
+            ? `Run the public VS Code language model tool "${tool.runtimeName}" from ${group.label}. ${tool.description}`
+            : `Run the curated public VS Code extension command "${tool.commandId ?? tool.runtimeName}" from ${group.label}. ${tool.description}`,
+        parameters:
+          (tool.inputSchema as Readonly<Record<string, unknown>> | undefined) ??
+          Object.freeze({
+            type: 'object',
+            properties: Object.freeze({}),
+            required: Object.freeze([]),
+          }),
       } satisfies ToolDefinition),
     );
   return Object.freeze([

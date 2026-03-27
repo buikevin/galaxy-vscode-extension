@@ -27,7 +27,7 @@ export function ActionIcon(props: ActionIconProps) {
 
   if (props.item.kind === "thinking") {
     return (
-      <span className="inline-flex items-center justify-center w-8 h-8 border rounded-xl border-white/10 bg-white/5">
+      <span className="inline-flex items-center justify-center w-8 h-8 ">
         <Brain className={iconClass} />
       </span>
     );
@@ -35,7 +35,7 @@ export function ActionIcon(props: ActionIconProps) {
 
   if (props.item.message.toolName === "list_dir") {
     return (
-      <span className="inline-flex items-center justify-center w-8 h-8 border rounded-xl border-white/10 bg-white/5">
+      <span className="inline-flex items-center justify-center w-6 h-6 ">
         <FolderTree className={iconClass} />
       </span>
     );
@@ -43,14 +43,14 @@ export function ActionIcon(props: ActionIconProps) {
 
   if (props.item.message.toolName === "read_file") {
     return (
-      <span className="inline-flex items-center justify-center w-8 h-8 border rounded-xl border-white/10 bg-white/5">
+      <span className="inline-flex items-center justify-center w-6 h-6 ">
         <FileInput className={iconClass} />
       </span>
     );
   }
 
   return (
-    <span className="inline-flex items-center justify-center w-8 h-8 border rounded-xl border-white/10 bg-white/5">
+    <span className="inline-flex items-center justify-center w-6 h-6 ">
       <Wrench className={iconClass} />
     </span>
   );
