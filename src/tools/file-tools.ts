@@ -1136,12 +1136,14 @@ function validateAnchoredRangeEdit(
   endLine: number,
   options?: Readonly<{
     expectedRangeContent?: string;
+    expectedRangeContentProvided?: boolean;
     anchorBefore?: string;
     anchorAfter?: string;
   }>,
 ): string | null {
-  const expectedRangeContent = typeof options?.expectedRangeContent === 'string' ? options.expectedRangeContent : '';
-  if (expectedRangeContent.length > 0) {
+  const expectedRangeContentProvided = Boolean(options?.expectedRangeContentProvided);
+  if (expectedRangeContentProvided) {
+    const expectedRangeContent = String(options?.expectedRangeContent ?? '');
     const currentRangeContent = getRangeContent(originalLines, startLine, endLine);
     if (currentRangeContent !== expectedRangeContent) {
       return `Target range in ${rawPath} no longer matches the last read snapshot. Read the file again before editing.`;
@@ -1160,6 +1162,41 @@ function validateAnchoredRangeEdit(
     if (currentAfter !== options.anchorAfter) {
       return `anchor_after no longer matches ${rawPath} near line ${endLine}. Read the file again before editing.`;
     }
+  }
+
+  return null;
+}
+
+function hasLineEditSnapshot(opts?: Readonly<{
+  expectedRangeContent?: string;
+  expectedRangeContentProvided?: boolean;
+  anchorBefore?: string;
+  anchorAfter?: string;
+}>): boolean {
+  return (
+    Boolean(opts?.expectedRangeContentProvided) ||
+    (typeof opts?.anchorBefore === 'string' && opts.anchorBefore.length > 0) ||
+    (typeof opts?.anchorAfter === 'string' && opts.anchorAfter.length > 0)
+  );
+}
+
+function validateTargetedEditPreconditions(
+  rawPath: string,
+  operation: 'insert' | 'range-edit' | 'multi-range-edit',
+  expectedTotalLines?: number,
+  snapshot?: Readonly<{
+    expectedRangeContent?: string;
+    expectedRangeContentProvided?: boolean;
+    anchorBefore?: string;
+    anchorAfter?: string;
+  }>,
+): string | null {
+  if (!Number.isFinite(expectedTotalLines) || Number(expectedTotalLines) <= 0) {
+    return `${operation} on ${rawPath} requires expected_total_lines from a fresh read_file result. Read the file again before editing.`;
+  }
+
+  if (!hasLineEditSnapshot(snapshot)) {
+    return `${operation} on ${rawPath} requires exact snapshot evidence. Provide expected_range_content or nearby anchors from a fresh read_file result before editing.`;
   }
 
   return null;
@@ -1194,6 +1231,25 @@ function editFileRangeTool(
       });
     }
 
+    const preconditionError = validateTargetedEditPreconditions(
+      rawPath,
+      'range-edit',
+      expectedTotalLines,
+      {
+        expectedRangeContent,
+        expectedRangeContentProvided: typeof expectedRangeContent === 'string',
+        anchorBefore,
+        anchorAfter,
+      },
+    );
+    if (preconditionError) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: preconditionError,
+      });
+    }
+
     captureOriginal(resolved);
     const original = fs.readFileSync(resolved, 'utf-8');
     const originalLines = original.split('\n');
@@ -1205,16 +1261,25 @@ function editFileRangeTool(
       });
     }
 
-    if (startLine > originalLines.length + 1) {
+    if (startLine > originalLines.length) {
       return Object.freeze({
         success: false,
         content: '',
-        error: `start_line ${startLine} is outside ${rawPath} (${originalLines.length} lines).`,
+        error: `start_line ${startLine} is outside ${rawPath} (${originalLines.length} lines). Use insert_file_at_line for insertions.`,
+      });
+    }
+
+    if (endLine > originalLines.length) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: `end_line ${endLine} is outside ${rawPath} (${originalLines.length} lines). Read the file again before editing.`,
       });
     }
 
     const anchorError = validateAnchoredRangeEdit(rawPath, originalLines, startLine, endLine, {
       expectedRangeContent,
+      expectedRangeContentProvided: typeof expectedRangeContent === 'string',
       anchorBefore,
       anchorAfter,
     });
@@ -1299,6 +1364,23 @@ function insertFileAtLineTool(
         success: false,
         content: '',
         error: `Invalid line for ${rawPath}. line must be 1-based and >= 1.`,
+      });
+    }
+
+    const preconditionError = validateTargetedEditPreconditions(
+      rawPath,
+      'insert',
+      expectedTotalLines,
+      {
+        anchorBefore,
+        anchorAfter,
+      },
+    );
+    if (preconditionError) {
+      return Object.freeze({
+        success: false,
+        content: '',
+        error: preconditionError,
       });
     }
 
@@ -1440,6 +1522,7 @@ function multiEditFileRangesTool(
         endLine,
         newContent: String(edit.new_content ?? ''),
         expectedRangeContent: typeof edit.expected_range_content === 'string' ? edit.expected_range_content : '',
+        expectedRangeContentProvided: Object.prototype.hasOwnProperty.call(edit, 'expected_range_content'),
         anchorBefore: typeof edit.anchor_before === 'string' ? edit.anchor_before : '',
         anchorAfter: typeof edit.anchor_after === 'string' ? edit.anchor_after : '',
       });
@@ -1460,8 +1543,36 @@ function multiEditFileRangesTool(
 
     let updatedLines = [...originalLines];
     for (const edit of sorted) {
+      const preconditionError = validateTargetedEditPreconditions(
+        rawPath,
+        'multi-range-edit',
+        expectedTotalLines,
+        {
+          expectedRangeContent: edit.expectedRangeContent,
+          expectedRangeContentProvided: edit.expectedRangeContentProvided,
+          anchorBefore: edit.anchorBefore,
+          anchorAfter: edit.anchorAfter,
+        },
+      );
+      if (preconditionError) {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: preconditionError,
+        });
+      }
+
+      if (edit.startLine > originalLines.length || edit.endLine > originalLines.length) {
+        return Object.freeze({
+          success: false,
+          content: '',
+          error: `Edit range ${edit.startLine}-${edit.endLine} is outside ${rawPath} (${originalLines.length} lines). Use insert_file_at_line for insertions.`,
+        });
+      }
+
       const anchorError = validateAnchoredRangeEdit(rawPath, updatedLines, edit.startLine, edit.endLine, {
         expectedRangeContent: edit.expectedRangeContent,
+        expectedRangeContentProvided: edit.expectedRangeContentProvided,
         anchorBefore: edit.anchorBefore,
         anchorAfter: edit.anchorAfter,
       });
@@ -2636,7 +2747,7 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
   }),
   Object.freeze({
     name: 'insert_file_at_line',
-    description: 'Insert content before a specific line in an existing file. Prefer this for adding imports, props, or small blocks without rewriting a whole range. Pass anchor_before and/or anchor_after from a recent read_file result whenever possible.',
+    description: 'Insert content before a specific line in an existing file. Prefer this for adding imports, props, or small blocks without rewriting a whole range. This now requires expected_total_lines plus anchor_before and/or anchor_after from a recent read_file result.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
@@ -2647,12 +2758,12 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
         anchor_before: Object.freeze({ type: 'string', description: 'Exact content of the line immediately before the insertion point from a recent read_file result.' }),
         anchor_after: Object.freeze({ type: 'string', description: 'Exact content of the line currently at the insertion point from a recent read_file result.' }),
       }),
-      required: Object.freeze(['path', 'line', 'content']),
+      required: Object.freeze(['path', 'line', 'content', 'expected_total_lines']),
     }),
   }),
   Object.freeze({
     name: 'edit_file_range',
-    description: 'Edit a specific line range in a file by replacing lines start_line through end_line with new_content. Pass expected_range_content from a recent read_file result whenever possible, plus nearby anchors if helpful.',
+    description: 'Edit a specific line range in a file by replacing lines start_line through end_line with new_content. This now requires expected_total_lines plus exact expected_range_content or nearby anchors from a recent read_file result.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
@@ -2665,12 +2776,12 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
         anchor_before: Object.freeze({ type: 'string', description: 'Exact content of the line immediately before start_line from a recent read_file result.' }),
         anchor_after: Object.freeze({ type: 'string', description: 'Exact content of the line immediately after end_line from a recent read_file result.' }),
       }),
-      required: Object.freeze(['path', 'start_line', 'end_line', 'new_content']),
+      required: Object.freeze(['path', 'start_line', 'end_line', 'new_content', 'expected_total_lines']),
     }),
   }),
   Object.freeze({
     name: 'multi_edit_file_ranges',
-    description: 'Apply multiple targeted line-range edits to one existing file in a single call. Each edit should include exact expected content or anchors from a recent read_file result whenever possible.',
+    description: 'Apply multiple targeted line-range edits to one existing file in a single call. This now requires expected_total_lines, and each edit should include exact expected content or anchors from a recent read_file result.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
@@ -2693,7 +2804,7 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
           }),
         }),
       }),
-      required: Object.freeze(['path', 'edits']),
+      required: Object.freeze(['path', 'edits', 'expected_total_lines']),
     }),
   }),
   Object.freeze({

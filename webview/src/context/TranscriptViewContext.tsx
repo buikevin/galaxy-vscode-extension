@@ -53,6 +53,8 @@ export type TranscriptContextValue = Readonly<{
   renderShellSession: (session: ActiveShellSession) => ReactNode;
   /** Render one grouped action body. */
   renderActionBody: (item: ActionItem) => ReactNode;
+  /** Render one compact grouped action summary row. */
+  renderActionSummary: (item: ActionItem) => ReactNode;
   /** Render one action icon preview. */
   renderActionIcon: (item: ActionItem, key: string) => ReactNode;
   /** Open preview for one message attachment. */

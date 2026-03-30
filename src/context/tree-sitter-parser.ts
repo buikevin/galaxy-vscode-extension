@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import Parser from 'web-tree-sitter';
 import type {
   SyntaxFileRecord,
@@ -33,12 +35,21 @@ type ParsedSyntaxData = Readonly<{
   symbols: readonly SyntaxSymbolRecord[];
 }>;
 
-const TREE_SITTER_INIT_WASM_PATH = require.resolve('web-tree-sitter/tree-sitter.wasm');
+function resolveWasmAssetPath(fileName: string): string {
+  const candidates = [
+    path.join(__dirname, 'wasm', fileName),
+    path.join(__dirname, '..', 'wasm', fileName),
+    path.join(__dirname, '..', '..', 'dist', 'wasm', fileName),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]!;
+}
+
+const TREE_SITTER_INIT_WASM_PATH = resolveWasmAssetPath('tree-sitter.wasm');
 const LANGUAGE_WASM_PATHS: Readonly<Record<TreeSitterLanguageId, string>> = Object.freeze({
-  python: require.resolve('tree-sitter-wasms/out/tree-sitter-python.wasm'),
-  go: require.resolve('tree-sitter-wasms/out/tree-sitter-go.wasm'),
-  rust: require.resolve('tree-sitter-wasms/out/tree-sitter-rust.wasm'),
-  java: require.resolve('tree-sitter-wasms/out/tree-sitter-java.wasm'),
+  python: resolveWasmAssetPath('tree-sitter-python.wasm'),
+  go: resolveWasmAssetPath('tree-sitter-go.wasm'),
+  rust: resolveWasmAssetPath('tree-sitter-rust.wasm'),
+  java: resolveWasmAssetPath('tree-sitter-java.wasm'),
 });
 
 let parserInitPromise: Promise<void> | null = null;

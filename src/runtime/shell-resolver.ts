@@ -152,9 +152,10 @@ function createPowerShell(executable: string): ShellProfile {
   return Object.freeze({
     executable,
     kind: 'powershell',
-    commandArgs: (commandText: string) => Object.freeze(['-NoLogo', '-Command', commandText]),
+    commandArgs: (commandText: string) =>
+      Object.freeze(['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', commandText]),
     availabilityArgs: (binary: string) =>
-      Object.freeze(['-NoLogo', '-Command', `Get-Command ${binary} | Out-Null`]),
+      Object.freeze(['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `Get-Command ${binary} | Out-Null`]),
   });
 }
 
@@ -162,8 +163,10 @@ function createPowerShellWithArgs(executable: string, baseArgs: readonly string[
   return Object.freeze({
     executable,
     kind: 'powershell',
-    commandArgs: (commandText: string) => Object.freeze([...baseArgs, '-Command', commandText]),
-    availabilityArgs: (binary: string) => Object.freeze([...baseArgs, '-Command', `Get-Command ${binary} | Out-Null`]),
+    commandArgs: (commandText: string) =>
+      Object.freeze([...baseArgs, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', commandText]),
+    availabilityArgs: (binary: string) =>
+      Object.freeze([...baseArgs, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `Get-Command ${binary} | Out-Null`]),
   });
 }
 

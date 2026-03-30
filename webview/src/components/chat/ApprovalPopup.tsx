@@ -9,7 +9,6 @@
 import type { ApprovalRequestPayload } from "@shared/protocol";
 import { Badge } from "@webview/components/ui/badge";
 import { Button } from "@webview/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@webview/components/ui/card";
 
 /**
  * Props required to render the approval popup.
@@ -35,37 +34,63 @@ export function ApprovalPopup(props: ApprovalPopupProps) {
   const request = props.approvalRequest;
 
   return (
-    <div className="absolute z-50 flex justify-start pointer-events-none bottom-32 left-3 right-3">
-      <Card className="w-full max-w-md shadow-2xl pointer-events-auto border-border/80 bg-card/95 backdrop-blur-xl">
-        <CardHeader className="pb-2 space-y-2">
-          <div className="flex items-center justify-between gap-3">
-            <CardTitle className="text-base">{request.title}</CardTitle>
-            <Badge variant="secondary">{request.toolName}</Badge>
-          </div>
-          <p className="text-sm leading-6 text-muted-foreground">
-            {request.message}
-          </p>
-        </CardHeader>
-        <CardContent className="p-3 pt-0 space-y-3">
-          {request.details.map((detail, index) => (
-            <div
-              key={`${request.requestId}-${index}`}
-              className="px-3 py-2 text-sm leading-6 border rounded-xl border-border/60 bg-background/70"
-            >
-              {detail}
+    <div className="pointer-events-none absolute bottom-32 left-3 right-3 z-50 flex justify-start">
+      <div className="pointer-events-auto w-full max-w-xl rounded-2xl bg-[color:color-mix(in_srgb,var(--gc-surface-elevated)_94%,transparent)] shadow-[0_20px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
+        <div className="space-y-3 px-4 pb-4 pt-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 space-y-1">
+              <div className="text-sm font-semibold text-[color:var(--gc-foreground)]">
+                {request.title}
+              </div>
+              <p className="text-sm leading-6 text-[color:var(--gc-muted)]">
+                {request.message}
+              </p>
             </div>
-          ))}
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button variant="destructive" onClick={props.onDeny}>
+            <Badge
+              variant="secondary"
+              className="shrink-0 border-0 bg-[color:color-mix(in_srgb,var(--gc-accent)_14%,transparent)] text-[color:var(--gc-accent)]"
+            >
+              {request.toolName}
+            </Badge>
+          </div>
+
+          {request.details.length > 0 ? (
+            <div className="space-y-2">
+              {request.details.map((detail, index) => (
+                <div
+                  key={`${request.requestId}-${index}`}
+                  className="rounded-xl bg-[color:color-mix(in_srgb,var(--gc-surface)_90%,transparent)] px-3 py-2 text-sm leading-6 text-[color:var(--gc-foreground)]"
+                >
+                  {detail}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap justify-end gap-2 pt-1">
+            <Button
+              variant="ghost"
+              className="rounded-full text-[color:var(--gc-muted)] hover:bg-[var(--gc-surface)] hover:text-[color:var(--gc-foreground)]"
+              onClick={props.onDeny}
+            >
               Từ chối
             </Button>
-            <Button variant="outline" onClick={props.onAsk}>
+            <Button
+              variant="outline"
+              className="rounded-full border-[color:var(--gc-border)] bg-transparent"
+              onClick={props.onAsk}
+            >
               Hỏi lại
             </Button>
-            <Button onClick={props.onAllow}>Cho phép luôn</Button>
+            <Button
+              className="rounded-full border border-[color:var(--gc-accent)]/20 bg-[var(--gc-accent-soft)] text-[color:var(--gc-accent)] hover:opacity-90"
+              onClick={props.onAllow}
+            >
+              Cho phép luôn
+            </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }

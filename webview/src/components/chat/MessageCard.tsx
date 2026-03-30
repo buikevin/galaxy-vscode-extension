@@ -36,44 +36,60 @@ type MessageCardProps = Readonly<{
  * Render one chat transcript card with shared layout and controls.
  */
 export function MessageCard(props: MessageCardProps) {
-  const className =
-    props.message.role === "user"
-      ? `ml-auto max-w-[92%] rounded-xl border border-primary/30 bg-primary/10 px-3 py-3 ${
-          props.pending ? "opacity-50" : ""
-        }`
-      : props.message.role === "tool"
-        ? "mr-auto max-w-[96%]"
-        : "mr-auto max-w-[96%] rounded-xl border border-border/60 bg-background/80 px-3 py-3";
+  const isUser = props.message.role === "user";
+  const isTool = props.message.role === "tool";
+  const wrapperClassName = isTool
+    ? "mr-auto max-w-[90%] max-[620px]:max-w-full"
+    : isUser
+      ? `ml-auto max-w-[82%] max-[620px]:max-w-[96%] ${props.pending ? "opacity-70" : ""}`
+      : "mr-auto max-w-[90%] max-[620px]:max-w-full";
+  const cardClassName = isUser
+    ? "rounded-2xl border border-[color:var(--gc-accent)]/18 bg-[var(--gc-accent-soft)] px-4 py-3 text-[color:var(--gc-foreground)] shadow-[0_8px_22px_rgba(0,0,0,0.12)] max-[620px]:rounded-xl max-[620px]:px-3 max-[620px]:py-2.5"
+    : "rounded-2xl bg-[var(--gc-surface-elevated)] px-4 py-3 text-[color:var(--gc-foreground)] shadow-[0_6px_18px_rgba(0,0,0,0.10)] max-[620px]:rounded-xl max-[620px]:px-3 max-[620px]:py-2.5";
+  const metaClassName = isUser
+    ? "text-[color:color-mix(in_srgb,var(--gc-foreground)_72%,transparent)]"
+    : "text-[color:var(--gc-muted)]";
 
   return (
-    <div className={`w-full min-w-0 max-w-full overflow-x-hidden ${className}`}>
+    <div className={`w-full min-w-0 max-w-full overflow-x-hidden ${wrapperClassName}`}>
       {props.message.role !== "tool" ? (
-        <div className="mb-2 flex items-center justify-between gap-2 text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-          <span>{props.titleLabel}</span>
-          <div className="flex items-center gap-2">
-            {props.pending ? (
-              <span className="normal-case tracking-normal text-[12px] text-sky-300">
-                Đang gửi...
+        <div className={cardClassName}>
+          <div className={`mb-2 flex items-center justify-between gap-3 text-[11px] max-[520px]:items-start max-[520px]:gap-2 ${metaClassName}`}>
+            <div className="flex min-w-0 items-center gap-2 max-[520px]:flex-wrap">
+              <span className="truncate text-[11px] font-semibold uppercase tracking-[0.08em]">
+                {props.titleLabel}
               </span>
-            ) : null}
-            <span>{props.timestampLabel}</span>
-            <button
-              type="button"
-              className="inline-flex items-center justify-center w-4 h-4 transition-colors text-muted-foreground hover:text-foreground"
-              onClick={props.onToggleExpand}
-              title={props.expanded ? "Thu gọn" : "Phóng to"}
-            >
-              {props.expanded ? (
-                <Minimize2 className="h-3.5 w-3.5" />
-              ) : (
-                <Maximize2 className="h-3.5 w-3.5" />
-              )}
-            </button>
+              {props.pending ? (
+                <span className="rounded-full bg-[color:color-mix(in_srgb,var(--gc-surface)_92%,transparent)] px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal">
+                  Đang gửi
+                </span>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-2 max-[520px]:shrink-0">
+              <span className="whitespace-nowrap text-[10px]">{props.timestampLabel}</span>
+              <button
+                type="button"
+                className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[color:var(--gc-muted)] transition-colors hover:bg-[var(--gc-surface)] hover:text-[color:var(--gc-foreground)]"
+                onClick={props.onToggleExpand}
+                title={props.expanded ? "Thu gọn" : "Phóng to"}
+              >
+                {props.expanded ? (
+                  <Minimize2 className="h-3.5 w-3.5" />
+                ) : (
+                  <Maximize2 className="h-3.5 w-3.5" />
+                )}
+              </button>
+            </div>
           </div>
+          {props.attachmentsContent}
+          {props.body}
         </div>
-      ) : null}
-      {props.attachmentsContent}
-      {props.body}
+      ) : (
+        <>
+          {props.attachmentsContent}
+          {props.body}
+        </>
+      )}
     </div>
   );
 }

@@ -1,8 +1,26 @@
 import * as assert from 'assert';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { DEFAULT_CONFIG } from '../config/types';
 import { extractCodeChunkUnits } from '../context/code-chunk-extractor';
+import { createHistoryManager } from '../context/history-manager';
+import { getProjectStorageInfo } from '../context/project-store';
+import { tryResolveDirectCommand } from '../runtime/direct-command';
+import { executeToolAsync } from '../tools/file-tools';
 import { selectNodeValidationScripts } from '../validation/project-validator';
 
 suite('Retrieval And Validation', () => {
+  function createTempWorkspace(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'galaxy-vscode-test-'));
+  }
+
+  function cleanupTempWorkspace(workspacePath: string): void {
+    const storage = getProjectStorageInfo(workspacePath);
+    fs.rmSync(workspacePath, { recursive: true, force: true });
+    fs.rmSync(storage.projectDirPath, { recursive: true, force: true });
+  }
+
   test('extractCodeChunkUnits returns precise TypeScript symbol ranges', async () => {
     const content = [
       'export class Runner {',
@@ -97,5 +115,96 @@ suite('Retrieval And Validation', () => {
         { category: 'build', scriptName: 'build:check' },
       ],
     );
+  });
+
+  test('tryResolveDirectCommand keeps quoted args and normalizes git file checkout', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src', 'pages', 'contract'), { recursive: true });
+      fs.writeFileSync(path.join(workspacePath, 'src', 'pages', 'contract', 'ContractPage.tsx'), 'export {};', 'utf-8');
+
+      const stashCommand = tryResolveDirectCommand(
+        'git stash push -m "wip-before-fix" src/pages/contract/ContractPage.tsx',
+        workspacePath,
+      );
+      assert.ok(stashCommand);
+      assert.deepStrictEqual(stashCommand!.args, [
+        'stash',
+        'push',
+        '-m',
+        'wip-before-fix',
+        'src/pages/contract/ContractPage.tsx',
+      ]);
+
+      const checkoutCommand = tryResolveDirectCommand(
+        'git checkout src/pages/contract/ContractPage.tsx',
+        workspacePath,
+      );
+      assert.ok(checkoutCommand);
+      assert.deepStrictEqual(checkoutCommand!.args, [
+        'checkout',
+        '--',
+        'src/pages/contract/ContractPage.tsx',
+      ]);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('edit_file_range rejects stale line edits without snapshot evidence', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'sample.ts'),
+        ['const value = 1;', 'console.log(value);', ''].join('\n'),
+        'utf-8',
+      );
+
+      const result = await executeToolAsync(
+        {
+          name: 'edit_file_range',
+          params: {
+            path: 'src/sample.ts',
+            start_line: 1,
+            end_line: 1,
+            new_content: 'const value = 2;',
+          },
+        },
+        {
+          workspaceRoot: workspacePath,
+          config: DEFAULT_CONFIG,
+          revealFile: async () => undefined,
+          refreshWorkspaceFiles: async () => undefined,
+        },
+      );
+
+      assert.strictEqual(result.success, false);
+      assert.match(result.error ?? '', /requires expected_total_lines|requires exact snapshot evidence/i);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('history manager does not commit final conclusion before quality gate passes', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const historyManager = createHistoryManager({ workspacePath });
+      historyManager.startTurn({
+        id: 'user-1',
+        role: 'user',
+        content: 'Fix the bug.',
+        timestamp: Date.now(),
+      });
+
+      historyManager.finalizeTurn({
+        assistantText: 'Done. I fixed the bug.',
+        commitConclusion: false,
+      });
+
+      assert.strictEqual(historyManager.getSessionMemory().lastFinalAssistantConclusion, '');
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
   });
 });

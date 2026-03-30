@@ -6,8 +6,6 @@
  * @desc Compact animated activity banner shown above the composer while the agent, reviewer, or validator is still working.
  */
 
-import { Spinner } from "@webview/components/ui/spinner";
-
 /**
  * Props used to render the composer activity banner.
  */
@@ -23,13 +21,15 @@ export function ComposerActivityBanner(
   props: ComposerActivityBannerProps
 ) {
   return (
-    <div className="flex items-center gap-2 rounded-2xl border border-sky-400/20 bg-sky-500/10 px-3 py-2 text-sm text-sky-100">
-      <Spinner
-        size="sm"
-        label={props.label}
-        className="text-sky-300"
-      />
-      <span className="font-medium tracking-[0.01em]">{props.label}</span>
+    <div className="px-1 py-1 text-xs tracking-[0.02em] text-[color:var(--gc-muted)]">
+      <span className="inline-flex items-center gap-1">
+        <span>{props.label}</span>
+        <span className="inline-flex">
+          <span className="animate-pulse [animation-delay:0ms]">.</span>
+          <span className="animate-pulse [animation-delay:150ms]">.</span>
+          <span className="animate-pulse [animation-delay:300ms]">.</span>
+        </span>
+      </span>
     </div>
   );
 }

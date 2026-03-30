@@ -96,8 +96,6 @@ type UseHostMessagesOptions = Readonly<{
   >;
   /** Update kept change-summary fingerprint. */
   setKeptChangeSummaryKey: Dispatch<SetStateAction<string>>;
-  /** Update prompt token usage. */
-  setPromptTokens: Dispatch<SetStateAction<number>>;
   /** Track preview import id waiting on host resolution. */
   setPendingPreviewImportId: Dispatch<SetStateAction<string | null>>;
 }>;
@@ -224,15 +222,6 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
           options.setStreamingAssistant("");
           options.setStreamingThinking("");
         }
-        if (message.payload.role === "tool" && message.payload.toolCallId) {
-          options.setActiveShellSessions((current) =>
-            current.filter(
-              (session) =>
-                session.toolCallId !== message.payload.toolCallId ||
-                message.payload.toolMeta?.background === true
-            )
-          );
-        }
         options.setMessages((current) => [...current, message.payload]);
         return;
       case "selection-updated":
@@ -258,9 +247,6 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         handleCommandStreamEnd(message.payload);
         return;
       case "evidence-context":
-        options.setPromptTokens(
-          message.payload.finalPromptTokens ?? message.payload.tokens
-        );
         options.setManualPromptPlan(() => {
           const focusSymbols = message.payload.focusSymbols ?? [];
           const batchItems = message.payload.manualReadBatchItems ?? [];

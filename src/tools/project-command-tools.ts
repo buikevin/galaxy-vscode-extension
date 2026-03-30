@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { findProjectCommand, getOrCreateProjectCommandProfile } from '../context/project-command-store';
+import { tryResolveDirectCommand, type DirectCommand } from '../runtime/direct-command';
 import { buildShellEnvironment, checkCommandAvailability, resolveCommandBinary, resolveShellProfile } from '../runtime/shell-resolver';
 import type { ProjectCommandDefinition } from '../context/project-command-detector';
 import type { ToolResult } from './file-tools';
@@ -428,6 +429,7 @@ type ResolvedProjectCommand = Readonly<{
   commandLabel: string;
   commandCategory: string;
   commandCwd: string;
+  directCommand?: DirectCommand;
 }>;
 
 function resolveProjectCommandExecution(
@@ -443,6 +445,8 @@ function resolveProjectCommandExecution(
   const commandLabel = command?.label ?? commandText;
   const commandCategory = command?.category ?? 'custom';
   const commandCwd = command?.cwd ?? resolvedCwd;
+  const directCommand = tryResolveDirectCommand(commandText, commandCwd);
+  const effectiveCommandText = directCommand?.displayCommandText ?? commandText;
 
   if (!commandText) {
     return Object.freeze({
@@ -452,7 +456,7 @@ function resolveProjectCommandExecution(
     });
   }
 
-  const binary = getCommandBinary(commandText);
+  const binary = directCommand?.binary ?? getCommandBinary(commandText);
   if (!binary || !commandExists(binary, commandCwd)) {
     return Object.freeze({
       success: false,
@@ -461,7 +465,7 @@ function resolveProjectCommandExecution(
       meta: Object.freeze({
         commandId: command?.id ?? commandText,
         commandLabel,
-        commandText,
+        commandText: effectiveCommandText,
         category: commandCategory,
         cwd: commandCwd,
         exitCode: 127,
@@ -473,10 +477,11 @@ function resolveProjectCommandExecution(
 
   return Object.freeze({
     commandId: command?.id ?? commandText,
-    commandText,
+    commandText: effectiveCommandText,
     commandLabel,
     commandCategory,
     commandCwd,
+    ...(directCommand ? { directCommand } : {}),
   });
 }
 
@@ -493,13 +498,23 @@ function startManagedCommand(
 
   const commandId = createCommandId();
   const maxChars = Math.max(options?.maxChars ?? 8_000, 500);
-  const shell = resolveShellProfile();
-  const child = spawn(shell.executable, [...shell.commandArgs(resolved.commandText)], {
-    cwd: resolved.commandCwd,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: buildShellEnvironment(),
-    detached: true,
-  });
+  const child = resolved.directCommand
+    ? spawn(resolved.directCommand.resolvedBinary, [...resolved.directCommand.args], {
+        cwd: resolved.commandCwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: buildShellEnvironment(),
+        detached: true,
+        shell: false,
+      })
+    : (() => {
+        const shell = resolveShellProfile();
+        return spawn(shell.executable, [...shell.commandArgs(resolved.commandText)], {
+          cwd: resolved.commandCwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: buildShellEnvironment(),
+          detached: true,
+        });
+      })();
 
   let resolveCompletion!: (value: ProjectCommandMeta) => void;
   const completionPromise = new Promise<ProjectCommandMeta>((resolve) => {
@@ -782,6 +797,8 @@ export async function runProjectCommandTool(
   const commandCwd = command?.cwd ?? resolvedCwd;
   const backgroundMode = isBackgroundCommand(commandText);
   const asyncFiniteMode = isAsyncFiniteCommand(commandText);
+  const directCommand = tryResolveDirectCommand(commandText, commandCwd);
+  const effectiveCommandText = directCommand?.displayCommandText ?? commandText;
 
   if (!commandText) {
     return Object.freeze({
@@ -791,7 +808,7 @@ export async function runProjectCommandTool(
     });
   }
 
-  const binary = getCommandBinary(commandText);
+  const binary = directCommand?.binary ?? getCommandBinary(commandText);
   if (!binary || !commandExists(binary, commandCwd)) {
     return Object.freeze({
       success: false,
@@ -800,7 +817,7 @@ export async function runProjectCommandTool(
       meta: Object.freeze({
         commandId: command?.id ?? commandText,
         commandLabel,
-        commandText,
+        commandText: effectiveCommandText,
         category: commandCategory,
         cwd: commandCwd,
         exitCode: 127,
@@ -811,21 +828,31 @@ export async function runProjectCommandTool(
   }
 
   await options?.stream?.onStart?.({
-    commandText,
+    commandText: effectiveCommandText,
     cwd: commandCwd,
     startedAt,
   });
 
   const maxChars = Math.max(options?.maxChars ?? 8_000, 500);
-  const shell = resolveShellProfile();
 
   return await new Promise<ToolResult>((resolve) => {
-    const child = spawn(shell.executable, [...shell.commandArgs(commandText)], {
-      cwd: commandCwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: buildShellEnvironment(),
-      ...(backgroundMode ? { detached: true } : {}),
-    });
+    const child = directCommand
+      ? spawn(directCommand.resolvedBinary, [...directCommand.args], {
+          cwd: commandCwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: buildShellEnvironment(),
+          shell: false,
+          ...(backgroundMode ? { detached: true } : {}),
+        })
+      : (() => {
+          const shell = resolveShellProfile();
+          return spawn(shell.executable, [...shell.commandArgs(commandText)], {
+            cwd: commandCwd,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: buildShellEnvironment(),
+            ...(backgroundMode ? { detached: true } : {}),
+          });
+        })();
 
     let totalChars = 0;
     let timedOut = false;
@@ -886,9 +913,9 @@ export async function runProjectCommandTool(
           `[background] Command handed off to a VS Code terminal.\n` +
           `Use View terminal to inspect live output while Galaxy continues working.`,
         meta: Object.freeze({
-          commandId: command?.id ?? commandText,
+          commandId: command?.id ?? effectiveCommandText,
           commandLabel,
-          commandText,
+          commandText: effectiveCommandText,
           category: commandCategory,
           cwd: commandCwd,
           exitCode: 0,
@@ -925,9 +952,9 @@ export async function runProjectCommandTool(
         content: String(error),
         error: `Project command failed: ${commandLabel}`,
         meta: Object.freeze({
-          commandId: command?.id ?? commandText,
+          commandId: command?.id ?? effectiveCommandText,
           commandLabel,
-          commandText,
+          commandText: effectiveCommandText,
           category: commandCategory,
           cwd: commandCwd,
           exitCode: 1,
@@ -944,7 +971,7 @@ export async function runProjectCommandTool(
           background: true,
         });
         await options?.stream?.onComplete?.({
-          commandText,
+          commandText: effectiveCommandText,
           cwd: commandCwd,
           exitCode: 1,
           success: false,
@@ -979,9 +1006,9 @@ export async function runProjectCommandTool(
         content,
         ...(success ? {} : { error: timedOut ? `Project command timed out: ${commandLabel}` : `Project command failed: ${commandLabel}` }),
         meta: Object.freeze({
-          commandId: command?.id ?? commandText,
+          commandId: command?.id ?? effectiveCommandText,
           commandLabel,
-          commandText,
+          commandText: effectiveCommandText,
           category: commandCategory,
           cwd: commandCwd,
           exitCode,
@@ -1001,7 +1028,7 @@ export async function runProjectCommandTool(
           background: true,
         });
         await options?.stream?.onComplete?.({
-          commandText,
+          commandText: effectiveCommandText,
           cwd: commandCwd,
           exitCode,
           success,

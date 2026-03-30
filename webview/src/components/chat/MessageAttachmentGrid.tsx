@@ -24,15 +24,15 @@ type MessageAttachmentGridProps = Readonly<{
  */
 export function MessageAttachmentGrid(props: MessageAttachmentGridProps) {
   return (
-    <div className="grid grid-cols-1 gap-2 p-2 mb-2 border rounded-xl border-sky-400/20 bg-sky-500/5">
+    <div className="mb-2 flex flex-wrap gap-2">
       {props.attachments.map((attachment) => (
         <div
           key={`${attachment.attachmentId}-${attachment.label}`}
-          className="grid grid-cols-[40px_minmax(0,1fr)] items-center gap-3 rounded-2xl border border-white/10 bg-background/70 px-3 py-2 text-xs text-foreground"
+          className="grid min-w-0 max-w-full grid-cols-[36px_minmax(0,1fr)] items-center gap-2 rounded-xl bg-[color:color-mix(in_srgb,var(--gc-surface)_88%,transparent)] px-2.5 py-2 text-xs text-foreground"
         >
           <button
             type="button"
-            className="flex items-center justify-center w-10 h-10 overflow-hidden rounded-xl bg-white/5"
+            className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-lg bg-[var(--gc-surface-elevated)] transition-colors hover:bg-[color:color-mix(in_srgb,var(--gc-surface-elevated)_92%,white_4%)]"
             disabled={!attachment.previewDataUrl}
             onClick={() => props.onOpenPreview(attachment)}
             title={attachment.previewDataUrl ? "Xem preview" : attachment.label}
@@ -49,8 +49,16 @@ export function MessageAttachmentGrid(props: MessageAttachmentGridProps) {
               <FileText className="w-4 h-4 text-muted-foreground" />
             )}
           </button>
-          <div className="text-sm truncate" title={attachment.label}>
-            {attachment.label}
+          <div className="min-w-0">
+            <div
+              className="truncate text-[12px] font-medium text-[color:var(--gc-foreground)]"
+              title={attachment.label}
+            >
+              {attachment.label}
+            </div>
+            <div className="text-[10px] uppercase tracking-[0.08em] text-[color:var(--gc-muted)]">
+              {attachment.kind}
+            </div>
           </div>
         </div>
       ))}

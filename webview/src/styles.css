@@ -23,6 +23,15 @@
   --input: 216 34% 18%;
   --ring: 198 88% 60%;
   --radius: 1rem;
+  --gc-bg: var(--vscode-editor-background, #111827);
+  --gc-surface: var(--vscode-sideBar-background, rgba(255, 255, 255, 0.03));
+  --gc-surface-elevated: var(--vscode-editorWidget-background, rgba(255, 255, 255, 0.05));
+  --gc-border: var(--vscode-panel-border, rgba(255, 255, 255, 0.1));
+  --gc-foreground: var(--vscode-editor-foreground, #f3f4f6);
+  --gc-muted: var(--vscode-descriptionForeground, rgba(255, 255, 255, 0.62));
+  --gc-accent: var(--vscode-textLink-foreground, #4fc3f7);
+  --gc-accent-soft: color-mix(in srgb, var(--gc-accent) 12%, transparent);
+  --gc-selection: var(--vscode-list-activeSelectionBackground, rgba(79, 195, 247, 0.22));
 }
 
 * {
@@ -38,15 +47,15 @@ body,
 }
 
 body {
-  /* background: hsl(var(--background)); */
-  color: hsl(var(--foreground));
+  background: radial-gradient(circle at top, color-mix(in srgb, var(--gc-accent) 7%, transparent), transparent 28%), var(--gc-bg);
+  color: var(--gc-foreground);
   font-family:
     ui-sans-serif,
     -apple-system,
     BlinkMacSystemFont,
     'Segoe UI',
     sans-serif;
-      padding: 0 5px;
+  padding: 0;
 }
 
 button,
@@ -56,7 +65,7 @@ textarea {
 }
 
 ::selection {
-  background: rgba(56, 189, 248, 0.25);
+  background: var(--gc-selection);
 }
 
 pre {
@@ -67,4 +76,8 @@ pre {
     'Fira Code',
     ui-monospace,
     monospace;
+}
+
+#app {
+  background: transparent;
 }

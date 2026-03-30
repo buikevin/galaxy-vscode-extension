@@ -60,8 +60,8 @@ export function buildSystemPrompt(agentType: AgentType, config: GalaxyConfig): s
 
   if (capabilities.editFiles) {
     sections.push(`### Writing & Editing
-- edit_file_range(path, start_line, end_line, new_content, expected_total_lines?, expected_range_content?, anchor_before?, anchor_after?) — Preferred targeted edit tool for existing files when you know the exact line range from a recent read_file result.
-- multi_edit_file_ranges(path, edits, expected_total_lines?) — Preferred tool when you need several targeted edits in the same existing file after a recent read_file result. Include expected_range_content or anchors per edit when possible.
+- edit_file_range(path, start_line, end_line, new_content, expected_total_lines, expected_range_content?, anchor_before?, anchor_after?) — Preferred targeted edit tool for existing files when you know the exact line range from a recent read_file result. expected_total_lines is required, and you must also pass exact expected_range_content or nearby anchors from that same read.
+- multi_edit_file_ranges(path, edits, expected_total_lines) — Preferred tool when you need several targeted edits in the same existing file after a recent read_file result. expected_total_lines is required, and each edit must include expected_range_content or nearby anchors from that same read.
 - write_file(path, content) — Create a new file only. It refuses to overwrite an existing file.
 `);
   }
@@ -159,6 +159,7 @@ ${workflowLines.join('\n')}
 - Prefer run_terminal_command plus await/get/kill terminal tools for long-running command workflows. Use run_project_command as a legacy compatibility shim when needed.
 - Prefer git_status/git_diff/git_add/git_commit/git_push/git_pull/git_checkout for git workflows instead of shelling out through run_terminal_command.
 - For file-specific git inspection, prefer git_status(pathspec=...) or git_diff(pathspec=...) instead of raw shell git commands.
+- Never use \`git checkout <file>\` to restore a file path. If you truly need git-based restore syntax, include \`--\` before file paths.
 - When review is enabled, prefer request_code_review() before running end-phase tests.
 - When validation capability is enabled, prefer lint/static checks before tests, and treat validate_code(path) as a final per-file safety net instead of a mandatory always-run step.
 - If a test run failed earlier in this workspace, prefer get_latest_test_failure() and find_test_files(path) before guessing where to edit.
@@ -167,8 +168,9 @@ ${workflowLines.join('\n')}
 - If the turn context includes [RELEVANT PRIOR TASK MEMORY], [OPEN FINDINGS TO CONTINUE], or [PREVIOUS FINAL ASSISTANT CONCLUSION], treat them as high-priority continuity context.
 - Do not ask the user to restate conclusions or findings that already appear in those continuity blocks unless the current workspace state, new attachments, review results, or validation output contradict them.
 - If you reopen the analysis instead of continuing from prior task memory, explain briefly what changed or what evidence is now missing.
-- For existing files, avoid full rewrites. Prefer one or more targeted range edits based on a recent read_file result, and pass expected_total_lines plus exact expected_range_content or nearby anchors when available to avoid stale or shifted line edits.
+- For existing files, avoid full rewrites. Prefer one or more targeted range edits based on a recent read_file result, and always pass expected_total_lines plus exact expected_range_content or nearby anchors so stale line edits fail instead of corrupting code.
 - On Windows, prefer Windows-safe command forms and quoting. Do not assume bash-specific syntax unless the active shell context explicitly supports it.
+- On Windows, prefer simple direct commands without shell operators when possible so the host can execute binaries directly instead of relying on shell parsing.
 - If the turn context includes a base component profile, follow that component system and reuse the project's existing base components instead of inventing a new UI layer.
 - Use Galaxy Design tools when the user asks about Galaxy Design, initializing it, or adding Galaxy Design components and that capability is enabled.
 - Use VS Code native tools when vscodeNative is enabled and you need the editor's native diff, Problems, workspace search, or references provider instead of recreating those flows manually.

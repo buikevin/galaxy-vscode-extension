@@ -44,7 +44,7 @@ export interface HistoryManager {
     workingTurnBudget?: number;
     promptTokensEstimate?: number;
   }): boolean;
-  finalizeTurn(opts: { assistantText: string }): TurnDigest | null;
+  finalizeTurn(opts: { assistantText: string; commitConclusion?: boolean }): TurnDigest | null;
   recordExternalEvent(summary: string, filesTouched?: readonly string[]): void;
   clearCurrentTurn(): void;
   clearAll(): void;
@@ -347,14 +347,19 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
     });
   }
 
-  function mergeWorkingSessionIntoMemory(turn: WorkingTurn, assistantText: string): void {
-    const now = Date.now();
-    const filesTouched = collectFilesTouched(turn.toolDigests);
-    const completedSteps = turn.toolDigests.filter((digest) => digest.success).map((digest) => digest.summary);
-    const blockers = turn.toolDigests.filter((digest) => !digest.success).map((digest) => digest.summary);
-    const handoffSummary = buildWorkingSessionHandoff(turn, assistantText);
-    const taskMemory = sessionMemory.activeTaskMemory;
-    const projectMemory = sessionMemory.projectMemory;
+function mergeWorkingSessionIntoMemory(
+  turn: WorkingTurn,
+  assistantText: string,
+  opts?: Readonly<{ commitConclusion?: boolean }>,
+): void {
+  const now = Date.now();
+  const filesTouched = collectFilesTouched(turn.toolDigests);
+  const completedSteps = turn.toolDigests.filter((digest) => digest.success).map((digest) => digest.summary);
+  const blockers = turn.toolDigests.filter((digest) => !digest.success).map((digest) => digest.summary);
+  const handoffSummary = buildWorkingSessionHandoff(turn, assistantText);
+  const commitConclusion = opts?.commitConclusion ?? true;
+  const taskMemory = sessionMemory.activeTaskMemory;
+  const projectMemory = sessionMemory.projectMemory;
 
     const nextActiveTask = normalizeActiveTaskMemory(
       Object.freeze({
@@ -393,7 +398,7 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
         summary: mergeProjectSummary(projectMemory.summary, handoffSummary),
         recentDecisions: mergeUniqueItems(
           projectMemory.recentDecisions,
-          assistantText.trim() ? [summarizeText(assistantText, 220)] : [],
+          commitConclusion && assistantText.trim() ? [summarizeText(assistantText, 220)] : [],
           12,
         ),
         keyFiles: mergeUniqueItems(projectMemory.keyFiles, filesTouched, 16),
@@ -405,7 +410,7 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
       ...sessionMemory,
       activeTaskMemory: nextActiveTask,
       projectMemory: nextProjectMemory,
-      lastFinalAssistantConclusion: assistantText.trim()
+      lastFinalAssistantConclusion: commitConclusion && assistantText.trim()
         ? summarizeText(assistantText, 2_400)
         : sessionMemory.lastFinalAssistantConclusion,
       lastUpdatedAt: now,
@@ -550,12 +555,13 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
       return true;
     },
 
-    finalizeTurn(opts: { assistantText: string }): TurnDigest | null {
+    finalizeTurn(opts: { assistantText: string; commitConclusion?: boolean }): TurnDigest | null {
       if (!workingTurn) {
         return null;
       }
 
       const finalAssistantText = opts.assistantText || workingTurn.assistantDraft || workingTurn.compactSummary || '';
+      const commitConclusion = opts.commitConclusion ?? true;
       const filesTouched = collectFilesTouched(workingTurn.toolDigests);
       const assistantSummary = summarizeText(
         finalAssistantText || 'No final assistant response.',
@@ -573,8 +579,8 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
         createdAt: Date.now(),
       });
 
-      mergeWorkingSessionIntoMemory(workingTurn, finalAssistantText);
-      if (finalAssistantText.trim()) {
+      mergeWorkingSessionIntoMemory(workingTurn, finalAssistantText, { commitConclusion });
+      if (commitConclusion && finalAssistantText.trim()) {
         appendTaskMemoryEntry(sessionMemory.workspacePath, {
           workspaceId: sessionMemory.workspaceId,
           turnId: workingTurn.turnId,

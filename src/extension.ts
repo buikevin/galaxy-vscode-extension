@@ -970,6 +970,19 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       case 'file-diff':
         await this.openTrackedDiff(message.payload.filePath);
         return;
+      case 'link-open':
+        await vscode.env.openExternal(vscode.Uri.parse(message.payload.href));
+        return;
+      case 'terminal-snippet-run': {
+        const terminal = vscode.window.createTerminal({
+          name: `Galaxy Snippet${message.payload.language ? ` (${message.payload.language})` : ''}`,
+          cwd: this.workspacePath,
+          isTransient: true,
+        });
+        terminal.show(true);
+        terminal.sendText(message.payload.code, true);
+        return;
+      }
       case 'shell-open-terminal':
         await this.revealShellTerminal(message.payload.toolCallId);
         return;
@@ -1319,9 +1332,17 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
                 if (!result.assistantThinking.trim()) {
                   this.appendLog('status', `No thinking stream was returned by ${this.selectedAgent} for this turn.`);
                 }
-                this.historyManager.finalizeTurn({ assistantText: result.assistantText });
+                const gateFinalConclusion = this.shouldGateAssistantFinalMessage(result.filesWritten);
+                this.historyManager.finalizeTurn({
+                  assistantText: result.assistantText,
+                  commitConclusion: !gateFinalConclusion,
+                });
                 let publishAssistantMessage = true;
-                if (this.shouldGateAssistantFinalMessage(result.filesWritten)) {
+                if (gateFinalConclusion) {
+                  if (this.streamingAssistant || this.streamingThinking) {
+                    this.clearStreamingBuffers();
+                    await this.postInit();
+                  }
                   const qualityOutcome = await this.runValidationAndReviewFlow(this.selectedAgent);
                   publishAssistantMessage = qualityOutcome.passed && !qualityOutcome.repaired;
                 } else if (result.filesWritten.length > 0) {
@@ -1747,7 +1768,10 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       if (!result.assistantThinking.trim()) {
         this.appendLog('status', `No thinking stream was returned by ${opts.agentType} for this turn.`);
       }
-      this.historyManager.finalizeTurn({ assistantText: result.assistantText });
+      this.historyManager.finalizeTurn({
+        assistantText: result.assistantText,
+        commitConclusion: !this.shouldGateAssistantFinalMessage(result.filesWritten),
+      });
       if (!this.shouldGateAssistantFinalMessage(result.filesWritten)) {
         const assistantMessage: ChatMessage = {
           id: createMessageId(),
@@ -1758,6 +1782,9 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
           timestamp: Date.now(),
         };
         await this.addMessage(assistantMessage);
+      } else if (this.streamingAssistant || this.streamingThinking) {
+        this.clearStreamingBuffers();
+        await this.postInit();
       }
     } else if (!hadError) {
       this.writeDebug(
@@ -2563,6 +2590,9 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   async openRuntimeLogs(): Promise<void> {
+    this.chrome.outputChannel.appendLine('');
+    this.chrome.outputChannel.appendLine(`[Galaxy Code] Runtime logs for ${this.getWorkspaceName()}`);
+    this.chrome.outputChannel.appendLine('[Galaxy Code] Use the VS Code Terminal for live command output.');
     this.chrome.outputChannel.show(true);
   }
 
@@ -3308,6 +3338,9 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         wasNew: file.wasNew,
         addedLines: file.addedLines,
         deletedLines: file.deletedLines,
+        originalContent: file.originalContent,
+        currentContent: file.currentContent,
+        diffText: file.diffText,
       }))),
     });
   }
@@ -3505,6 +3538,10 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       cwd: payload.cwd,
       running: true,
     });
+    this.appendLog(
+      'status',
+      `Terminal command started: ${payload.commandText} (cwd: ${payload.cwd}). Open the VS Code terminal to follow live output.`,
+    );
     await this.postMessage({
       type: 'command-stream-start',
       payload: {
@@ -3529,6 +3566,11 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         ...(payload.background ? { background: true } : {}),
       });
       this.activeShellSessions.set(payload.toolCallId, next);
+      this.appendLog(
+        payload.success ? 'status' : 'error',
+        `Terminal command ${payload.success ? 'completed' : 'failed'}: ${current.commandText} ` +
+        `(exit ${payload.exitCode}, ${Math.max(0, Math.round(payload.durationMs / 1000))}s).`,
+      );
     }
     this.commandTerminalRegistry.complete(payload.toolCallId, payload);
     await this.postMessage({
@@ -4250,6 +4292,7 @@ function createAssistantMessage(content: string): ChatMessage {
 
 export function activate(context: vscode.ExtensionContext): void {
   const outputChannel = vscode.window.createOutputChannel('Galaxy Code');
+  outputChannel.appendLine(`[${new Date().toTimeString().slice(0, 8)}] [info] Galaxy Code logs initialized.`);
   const runStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 103);
   runStatusItem.name = 'Galaxy Code Run Status';
   runStatusItem.command = 'galaxy-code.openLogs';

@@ -1,4 +1,6 @@
 const esbuild = require("esbuild");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -23,6 +25,25 @@ const esbuildProblemMatcherPlugin = {
 	},
 };
 
+const treeSitterAssets = [
+	['web-tree-sitter/tree-sitter.wasm', 'tree-sitter.wasm'],
+	['tree-sitter-wasms/out/tree-sitter-python.wasm', 'tree-sitter-python.wasm'],
+	['tree-sitter-wasms/out/tree-sitter-go.wasm', 'tree-sitter-go.wasm'],
+	['tree-sitter-wasms/out/tree-sitter-rust.wasm', 'tree-sitter-rust.wasm'],
+	['tree-sitter-wasms/out/tree-sitter-java.wasm', 'tree-sitter-java.wasm'],
+];
+
+function copyRuntimeAssets() {
+	const outDir = path.join(__dirname, 'dist', 'wasm');
+	fs.mkdirSync(outDir, { recursive: true });
+
+	for (const [sourceModulePath, targetFileName] of treeSitterAssets) {
+		const sourcePath = require.resolve(sourceModulePath);
+		const targetPath = path.join(outDir, targetFileName);
+		fs.copyFileSync(sourcePath, targetPath);
+	}
+}
+
 async function main() {
 	const ctx = await esbuild.context({
 		entryPoints: ['src/extension.ts'],
@@ -45,6 +66,7 @@ async function main() {
 
 	await ctx.rebuild();
 	await ctx.dispose();
+	copyRuntimeAssets();
 }
 
 main().catch(e => {

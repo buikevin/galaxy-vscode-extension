@@ -23,7 +23,7 @@ export function ComposerPanel() {
 
   return (
     <>
-    <div className="sticky bottom-0  space-y-2 rounded-[10px] border border-white/10 bg-white/5 p-2 shadow-[0_16px_40px_rgba(0,0,0,0.28)] backdrop-blur-xl mt-2">
+    <div className="sticky bottom-0 mt-2 space-y-3 border-t border-[color:var(--gc-border)] bg-[linear-gradient(to_top,color-mix(in_srgb,var(--gc-bg)_96%,transparent),color-mix(in_srgb,var(--gc-bg)_82%,transparent))] px-3 pb-3 pt-3 backdrop-blur-xl max-[620px]:px-2 max-[620px]:pb-2 max-[620px]:pt-2">
       {composer.showChangeSummaryBox ? (
         <ChangeSummaryCard
           summary={composer.changeSummary}
@@ -49,32 +49,33 @@ export function ComposerPanel() {
         <ComposerActivityBanner label={composer.activityLabel} />
       ) : null}
 
-      <Textarea
-        ref={composer.textareaRef}
-        placeholder="Ask Galaxy Code..."
-        value={composer.input}
-        onChange={composer.onInputChange}
-        onPaste={composer.onPaste}
-        onKeyDown={composer.onKeyDown}
-        rows={1}
-        className="h-10 min-h-[40px] overflow-hidden resize-none border-0 bg-transparent px-0 py-2 text-sm leading-6 shadow-none outline-none ring-0 focus-visible:ring-0"
-      />
+      <div className="rounded-2xl border border-[color:var(--gc-border)] bg-[var(--gc-surface-elevated)] p-3 shadow-[0_16px_40px_rgba(0,0,0,0.22)] max-[620px]:rounded-xl max-[620px]:p-2.5">
+        <Textarea
+          ref={composer.textareaRef}
+          placeholder="Hỏi Galaxy Code..."
+          value={composer.input}
+          onChange={composer.onInputChange}
+          onPaste={composer.onPaste}
+          onKeyDown={composer.onKeyDown}
+          rows={1}
+          className="h-10 min-h-[40px] overflow-hidden resize-none border-0 bg-transparent px-0 py-1 text-[13px] leading-7 text-[color:var(--gc-foreground)] shadow-none outline-none ring-0 placeholder:text-[color:var(--gc-muted)] focus-visible:ring-0"
+        />
 
       {composer.slashCommands.length > 0 ? (
-        <div className="rounded-2xl border border-white/10 bg-[#111a2c]/95 p-2 shadow-2xl backdrop-blur-xl">
+        <div className="mt-2 rounded-xl border border-[color:var(--gc-border)] bg-[var(--gc-surface)] p-2">
           <div className="space-y-1">
             {composer.slashCommands.map((command) => (
               <button
                 key={command.id}
                 type="button"
-                className="flex items-start justify-between w-full px-3 py-2 text-left transition-colors rounded-xl hover:bg-white/5"
+                className="flex w-full items-start justify-between rounded-xl px-3 py-2 text-left transition-colors hover:bg-[var(--gc-surface-elevated)]"
                 onClick={() => composer.onExecuteSlashCommand(command.id)}
               >
                 <div>
-                  <div className="text-sm font-medium text-foreground">
+                  <div className="text-sm font-medium text-[color:var(--gc-foreground)]">
                     {command.label}
                   </div>
-                  <div className="text-xs text-muted-foreground">
+                  <div className="text-xs text-[color:var(--gc-muted)]">
                     {command.description}
                   </div>
                 </div>
@@ -84,11 +85,11 @@ export function ComposerPanel() {
         </div>
       ) : null}
 
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center">
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-[color:var(--gc-border)] pt-3 max-[520px]:flex-wrap max-[520px]:items-start">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <button
             type="button"
-            className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-transparent text-foreground transition-colors hover:bg-[rgba(255,255,255,0.15)]"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-transparent text-[color:var(--gc-foreground)] transition-colors hover:bg-[var(--gc-surface)]"
             title="Thêm ảnh và file"
             onClick={composer.onOpenFilePicker}
           >
@@ -101,13 +102,13 @@ export function ComposerPanel() {
             className="hidden"
             onChange={composer.onFileSelection}
           />
-          <div className="relative w-[116px]">
+          <div className="relative w-[clamp(92px,30vw,116px)] min-w-[92px]">
             <select
               value={composer.selectedAgent}
               onChange={(event) =>
                 composer.onSelectedAgentChange(event.target.value as typeof composer.selectedAgent)
               }
-              className="h-10 w-full appearance-none rounded-[16px] bg-transparent px-4 pr-10 text-base text-foreground outline-none transition-colors hover:bg-[rgba(255,255,255,0.15)] focus:bg-[rgba(255,255,255,0.12)]"
+              className="h-10 w-full appearance-none rounded-2xl border border-[color:var(--gc-border)] bg-[var(--gc-surface)] px-4 pr-10 text-sm text-[color:var(--gc-foreground)] outline-none transition-colors hover:bg-[var(--gc-surface-elevated)] focus:bg-[var(--gc-surface-elevated)]"
             >
               {composer.agents.map((agent:string) => (
                 <option key={agent} value={agent}>
@@ -115,36 +116,27 @@ export function ComposerPanel() {
                 </option>
               ))}
             </select>
-            <ChevronDown className="absolute w-4 h-4 -translate-y-1/2 pointer-events-none right-3 top-1/2 text-muted-foreground" />
-          </div>
-          <div
-            className="relative flex items-center justify-center w-10 h-10 rounded-full shrink-0"
-            style={{
-              background: `conic-gradient(rgb(56 189 248) ${composer.tokenUsageDegrees}deg, rgba(255,255,255,0.1) ${composer.tokenUsageDegrees}deg 360deg)`,
-            }}
-            title={`${composer.promptTokens} / ${composer.maxContextTokens} tokens`}
-          >
-            <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#1e293b] text-[10px] font-semibold text-foreground">
-              {`${composer.tokenUsagePercent}%`}
-            </div>
+            <ChevronDown className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 pointer-events-none text-[color:var(--gc-muted)]" />
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 max-[520px]:ml-auto">
           <Button
             onClick={composer.onSend}
             disabled={!composer.canSend || composer.isRunning}
             size="icon"
-            className="shrink-0 bg-white rounded-full"
+            className="shrink-0 rounded-full border border-[color:var(--gc-accent)]/30 bg-[var(--gc-accent-soft)] text-[color:var(--gc-accent)] hover:opacity-90"
           >
             <SendHorizontal className="w-4 h-4" />
           </Button>
         </div>
       </div>
+      </div>
 
     </div>
-     <div className="flex items-center gap-2">
+     <div className="px-3 pb-3 max-[620px]:px-2 max-[620px]:pb-2">
+       <div className="flex items-center gap-2 max-[520px]:flex-wrap">
 
-          <div className="relative w-[176px]">
+          <div className="relative w-[clamp(140px,46vw,176px)] min-w-[140px]">
             <select
               value={
                 composer.qualityPreferences.fullAccessEnabled
@@ -157,12 +149,12 @@ export function ComposerPanel() {
                   fullAccessEnabled: event.target.value === "full",
                 })
               }
-              className="h-10 w-full appearance-none rounded-[16px] bg-transparent px-4 pr-10 text-sm text-foreground outline-none transition-colors hover:bg-[rgba(255,255,255,0.15)] focus:bg-[rgba(255,255,255,0.12)]"
+              className="h-10 w-full appearance-none rounded-2xl border border-[color:var(--gc-border)] bg-[var(--gc-surface)] px-4 pr-10 text-sm text-[color:var(--gc-foreground)] outline-none transition-colors hover:bg-[var(--gc-surface-elevated)] focus:bg-[var(--gc-surface-elevated)]"
             >
-              <option value="default">Default permission</option>
-              <option value="full">Full access</option>
+              <option value="default">Quyền mặc định</option>
+              <option value="full">Toàn quyền</option>
             </select>
-            <ChevronDown className="absolute w-4 h-4 -translate-y-1/2 pointer-events-none right-3 top-1/2 text-muted-foreground" />
+            <ChevronDown className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 pointer-events-none text-[color:var(--gc-muted)]" />
           </div>
           <PlusMenu
             anchorRef={composer.plusMenuAnchorRef}
@@ -177,6 +169,7 @@ export function ComposerPanel() {
             onUpdateExtensionToolToggles={composer.onUpdateExtensionToolToggles}
           />
       </div>
+     </div>
     </>
   );
 }

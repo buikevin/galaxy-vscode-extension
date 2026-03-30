@@ -17,10 +17,12 @@ type ActionGroupCardProps = Readonly<{
   expanded: boolean;
   /** Number of action items inside the group. */
   actionCount: number;
-  /** Preview icons rendered in the collapsed header. */
-  previewIcons: readonly ReactNode[];
+  /** Short summary shown in the activity header. */
+  summaryLabel: string;
   /** Action bodies rendered when the group is expanded. */
   children: ReactNode;
+  /** Short textual summaries rendered inside the expanded activity log. */
+  summaryRows: readonly ReactNode[];
   /** Toggle collapse/expand state. */
   onToggle: () => void;
 }>;
@@ -33,22 +35,32 @@ export function ActionGroupCard(props: ActionGroupCardProps) {
     <div className="space-y-2">
       <button
         type="button"
-        className="flex w-full min-w-0 items-center justify-between rounded-[5px] border border-white/10 bg-white/5 px-3 py-1 text-left"
+        className="flex w-full min-w-0 items-center justify-between rounded-xl bg-[color:color-mix(in_srgb,var(--gc-surface)_82%,transparent)] px-3 py-2 text-left transition-colors hover:bg-[var(--gc-surface)]"
         onClick={props.onToggle}
       >
-        <div className="flex items-center min-w-0 gap-2">
-          <div className="flex items-center">{props.previewIcons}</div>
-          <span className="min-w-0 max-w-full break-all text-sm font-medium text-foreground [overflow-wrap:anywhere]">
-            {props.expanded ? "Thu gọn" : `${props.actionCount} actions`}
+        <div className="min-w-0 flex-1 overflow-hidden pr-3">
+          <span className="block min-w-0 truncate text-sm font-medium text-[color:var(--gc-foreground)]">
+            {props.summaryLabel}
           </span>
         </div>
         <ChevronDown
-          className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
+          className={`h-4 w-4 shrink-0 text-[color:var(--gc-muted)] transition-transform ${
             props.expanded ? "rotate-180" : ""
           }`}
         />
       </button>
-      {props.expanded ? <div className="space-y-2">{props.children}</div> : null}
+      {props.expanded ? (
+        <div className="space-y-1 pl-1">
+          {props.summaryRows.map((row, index) => (
+            <div
+              key={`summary-${index}`}
+              className="rounded-lg px-2 py-1.5 text-left"
+            >
+              {row}
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

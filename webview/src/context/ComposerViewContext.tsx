@@ -73,14 +73,6 @@ export type ComposerContextValue = Readonly<{
   extensionToolToggles: Readonly<Record<string, boolean>>;
   /** Whether the plus-menu popup is currently visible. */
   isPlusMenuOpen: boolean;
-  /** Current prompt token count. */
-  promptTokens: number;
-  /** Token usage percentage displayed inside the circular badge. */
-  tokenUsagePercent: number;
-  /** Degrees used to draw the token usage conic gradient. */
-  tokenUsageDegrees: number;
-  /** Max context token budget. */
-  maxContextTokens: number;
   /** Whether a request is currently running. */
   isRunning: boolean;
   /** Human-readable activity label shown while the agent is still busy. */

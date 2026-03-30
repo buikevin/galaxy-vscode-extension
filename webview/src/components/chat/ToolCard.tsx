@@ -9,6 +9,7 @@
 import type { MouseEvent, ReactNode } from "react";
 import { ChevronDown, Eye, FileInput, FolderTree, Wrench } from "lucide-react";
 import type { ChatMessage } from "@shared/protocol";
+import { RichMessageBody } from "@webview/components/chat/RichMessageBody";
 import type { ListDirEntry } from "@webview/entities/chat";
 
 /**
@@ -60,9 +61,11 @@ export function ToolCard(props: ToolCardProps) {
     const readLabel =
       props.message.toolName === "read_document" ? "Đọc tài liệu" : "Đọc file";
     return (
-      <div className="grid w-full min-w-0 max-w-full grid-cols-[auto,minmax(0,1fr),auto] items-center gap-2 overflow-hidden rounded-[22px] border border-border/60 bg-background/50 px-4 py-3 text-left">
-        <div className="flex items-center min-w-0 col-span-2 gap-2 overflow-hidden text-sm font-medium text-foreground">
-          <FileInput className="w-4 h-4 shrink-0 text-sky-300" />
+      <div className="grid w-full min-w-0 max-w-full grid-cols-[auto,minmax(0,1fr),auto] items-center gap-2 overflow-hidden rounded-xl bg-[color:color-mix(in_srgb,var(--gc-surface)_82%,transparent)] px-3 py-2.5 text-left">
+        <div className="col-span-2 flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium text-[color:var(--gc-foreground)]">
+          <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--gc-accent)_14%,transparent)] text-[color:var(--gc-accent)]">
+            <FileInput className="h-3.5 w-3.5 shrink-0" />
+          </span>
           <div className="flex-1 min-w-0 overflow-hidden">
             <span
               className="block max-w-full min-w-0 overflow-hidden text-ellipsis whitespace-nowrap"
@@ -74,7 +77,7 @@ export function ToolCard(props: ToolCardProps) {
         </div>
         <button
           type="button"
-          className="inline-flex items-center justify-center w-4 h-4 transition-colors shrink-0 text-muted-foreground hover:text-sky-200"
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[color:var(--gc-muted)] transition-colors hover:bg-[var(--gc-surface-elevated)] hover:text-[color:var(--gc-accent)]"
           onClick={() => props.onOpenFile(props.toolPath)}
           title="Mở hoặc chuyển tới tab file này"
         >
@@ -85,51 +88,55 @@ export function ToolCard(props: ToolCardProps) {
   }
 
   return (
-    <div className="max-w-full min-w-0 space-y-2 overflow-x-hidden">
-      {/* <button
+    <div className="max-w-full min-w-0 overflow-x-hidden rounded-xl bg-[color:color-mix(in_srgb,var(--gc-surface)_82%,transparent)] px-3 py-2.5">
+      <button
         type="button"
-        className="flex items-center justify-between w-full min-w-0 px-3 py-2 text-left border rounded-lg border-border/60 bg-background/50"
+        className="flex w-full items-center justify-between gap-3 text-left"
         onClick={props.onToggle}
-      > */}
-        <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+      >
+        <div className="flex min-w-0 items-center gap-2 text-sm font-medium text-[color:var(--gc-foreground)]">
           {props.isListDirMessage ? (
             <>
-              <FolderTree className="w-4 h-4 text-sky-300" />
+              <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--gc-accent)_14%,transparent)] text-[color:var(--gc-accent)]">
+                <FolderTree className="h-3.5 w-3.5" />
+              </span>
               <span className="min-w-0 max-w-full break-all [overflow-wrap:anywhere]">
                 Quét thư mục ({props.listDirLabel})
               </span>
             </>
           ) : (
             <>
-              <Wrench className="w-4 h-4 text-sky-300" />
+              <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--gc-accent)_14%,transparent)] text-[color:var(--gc-accent)]">
+                <Wrench className="h-3.5 w-3.5" />
+              </span>
               <span className="min-w-0 max-w-full break-all [overflow-wrap:anywhere]">
                 {props.toolLabel}
               </span>
             </>
           )}
         </div>
-        {/* <ChevronDown
-          className={`h-4 w-4 text-muted-foreground transition-transform ${
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 text-[color:var(--gc-muted)] transition-transform ${
             props.expanded ? "rotate-180" : ""
           }`}
-        /> */}
-      {/* </button> */}
-      {/* {props.expanded ? (
-        <div className="max-w-full p-3 overflow-auto border rounded-lg max-h-44 border-border/60 bg-background/60">
+        />
+      </button>
+      {props.expanded ? (
+        <div className="mt-2 pt-2">
           {props.isListDirMessage ? (
             <div className="space-y-2">
-              <div className="text-xs text-muted-foreground">
-                Giữ Shift rồi rê chuột vào tên file để mở bằng tab mới.
+              <div className="text-xs text-[color:var(--gc-muted)]">
+                Giữ `Shift` rồi rê chuột vào file để mở nhanh trong editor.
               </div>
               <div className="space-y-1">
                 {props.listDirEntries.map((entry) => (
                   <button
                     key={entry.key}
                     type="button"
-                    className={`flex w-full items-center rounded-md px-2 py-1 text-left text-sm leading-6 transition-colors ${
+                    className={`flex w-full items-center rounded-lg px-2 py-1.5 text-left text-sm leading-6 transition-colors ${
                       entry.isDir
-                        ? "cursor-default text-sky-100 hover:bg-transparent"
-                        : "text-foreground hover:bg-sky-500/10"
+                        ? "cursor-default text-[color:var(--gc-muted)] hover:bg-transparent"
+                        : "text-[color:var(--gc-foreground)] hover:bg-[color:color-mix(in_srgb,var(--gc-surface-elevated)_92%,transparent)]"
                     }`}
                     style={{
                       paddingLeft: `${entry.depth * 14 + 8}px`,
@@ -150,12 +157,10 @@ export function ToolCard(props: ToolCardProps) {
               </div>
             </div>
           ) : (
-            <div className="min-w-0 max-w-full overflow-x-hidden whitespace-pre-wrap break-all text-sm leading-6 text-foreground [overflow-wrap:anywhere]">
-              {props.message.content}
-            </div>
+            <RichMessageBody content={props.message.content} tone="muted" compact />
           )}
         </div>
-      ) : null} */}
+      ) : null}
     </div>
   );
 }

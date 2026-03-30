@@ -58,8 +58,6 @@ type UseChatViewModelOptions = Readonly<{
   streamingAssistant: string;
   /** Streaming thinking content. */
   streamingThinking: string;
-  /** Prompt token count for the current turn. */
-  promptTokens: number;
   /** Attached Figma design references. */
   figmaAttachments: readonly FigmaAttachment[];
   /** Attached local files/images. */
@@ -152,8 +150,6 @@ type UseChatViewModelOptions = Readonly<{
   slashCommandSource: readonly SlashCommandItem[];
   /** Available agent options. */
   agents: readonly AgentType[];
-  /** Max supported context token budget. */
-  maxContextTokens: number;
 }>;
 
 /**
@@ -164,10 +160,6 @@ type ChatViewModel = Readonly<{
   errorTitle: string;
   /** Whether the change summary card should be shown. */
   showChangeSummaryBox: boolean;
-  /** Circular token usage percentage. */
-  tokenUsagePercent: number;
-  /** Circular token usage degrees. */
-  tokenUsageDegrees: number;
   /** Filtered slash command suggestions. */
   slashCommands: readonly SlashCommandItem[];
   /** Flattened render items consumed by the transcript. */
@@ -222,6 +214,15 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
   }
 
   function toggleExpanded(key: string): void {
+    if (key.startsWith("thinking:")) {
+      options.setExpandedItems((current) =>
+        current.includes(key)
+          ? current.filter((item) => item !== key)
+          : [...current, key]
+      );
+      return;
+    }
+
     options.setExpandedItems((current) =>
       current.includes(key)
         ? current.filter((item) => item !== key)
@@ -230,6 +231,10 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
   }
 
   function isExpanded(key: string): boolean {
+    if (key.startsWith("thinking:")) {
+      return !options.expandedItems.includes(key);
+    }
+
     return options.expandedItems.includes(key);
   }
 
@@ -316,21 +321,6 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
       )
     : [];
 
-  const tokenUsagePercent = Math.max(
-    0,
-    Math.min(
-      100,
-      Math.round((options.promptTokens / options.maxContextTokens) * 100)
-    )
-  );
-  const tokenUsageDegrees = Math.max(
-    0,
-    Math.min(
-      360,
-      Math.round((options.promptTokens / options.maxContextTokens) * 360)
-    )
-  );
-
   function buildActivityLabel(statusText: string, isRunning: boolean): string {
     if (!isRunning) {
       return "";
@@ -343,7 +333,7 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
     if (normalized.includes("validation quality gate") || normalized.includes("running final validation")) {
       return "Đang validate code";
     }
-    return "Thinking";
+    return "thinking";
   }
 
   const activityLabel = buildActivityLabel(
@@ -367,10 +357,6 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
     extensionToolGroups: options.extensionToolGroups,
     extensionToolToggles: options.extensionToolToggles,
     isPlusMenuOpen: options.isPlusMenuOpen,
-    promptTokens: options.promptTokens,
-    tokenUsagePercent,
-    tokenUsageDegrees,
-    maxContextTokens: options.maxContextTokens,
     isRunning: options.isRunning,
     activityLabel,
     canSend,
@@ -459,6 +445,7 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
     toggleMessageExpanded,
     renderShellSession: toolRenderers.renderShellSession,
     renderActionBody,
+    renderActionSummary: toolRenderers.renderActionSummary,
     renderActionIcon,
     onOpenMessageAttachmentPreview: (attachment) => {
       if (!attachment.previewDataUrl) {
@@ -475,8 +462,6 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
   return {
     errorTitle: classifyErrorTitle(options.errorText),
     showChangeSummaryBox,
-    tokenUsagePercent,
-    tokenUsageDegrees,
     slashCommands,
     renderItems,
     retryLastRequest: options.retryLastRequest,

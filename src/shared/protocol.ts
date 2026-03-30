@@ -171,6 +171,9 @@ export type ChangedFileSummary = Readonly<{
   wasNew: boolean;
   addedLines: number;
   deletedLines: number;
+  originalContent?: string | null;
+  currentContent?: string | null;
+  diffText?: string;
 }>;
 
 export type ChangeSummary = Readonly<{
@@ -320,6 +323,8 @@ export type WebviewMessage =
   | Readonly<{ type: 'file-toggle'; payload: { filePath: string; selected: boolean } }>
   | Readonly<{ type: 'file-open'; payload: { filePath: string } }>
   | Readonly<{ type: 'file-diff'; payload: { filePath: string } }>
+  | Readonly<{ type: 'link-open'; payload: { href: string } }>
+  | Readonly<{ type: 'terminal-snippet-run'; payload: { code: string; language?: string } }>
   | Readonly<{ type: 'approval-response'; payload: { requestId: string; decision: ToolApprovalDecision } }>
   | Readonly<{ type: 'resolve-figma-attachment'; payload: { importId: string; purpose: 'attach' | 'preview' } }>
   | Readonly<{ type: 'shell-open-terminal'; payload: { toolCallId: string } }>;

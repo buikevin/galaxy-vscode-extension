@@ -6,8 +6,7 @@
  * @desc Reusable transcript card for assistant thinking blocks, including streamed thinking state.
  */
 
-import { Brain, ChevronDown } from "lucide-react";
-import { Spinner } from "@webview/components/ui/spinner";
+import { ChevronDown } from "lucide-react";
 
 /**
  * Props required to render a thinking card.
@@ -33,27 +32,23 @@ export function ThinkingCard(props: ThinkingCardProps) {
     <div className="max-w-full min-w-0 overflow-x-hidden">
       <button
         type="button"
-        className={`flex items-center justify-between w-full min-w-0 px-3 py-2 text-left border  border-border/60 bg-background/50${props.expanded ? " rounded-t-[8px]" : " rounded-[8px]"}`}
+        className="flex w-full min-w-0 items-center justify-between px-0.5 py-0.5 text-left"
         onClick={props.onToggle}
       >
-        <div className="flex items-center min-w-0 gap-2 text-sm font-medium text-foreground">
-          <Brain className="w-4 h-4 text-violet-300" />
-          <span>Thinking</span>
+        <div className="min-w-0 text-[11px] tracking-[0.04em] text-[color:color-mix(in_srgb,var(--gc-muted)_88%,transparent)]">
+          {props.streaming ? "thinking..." : "Thinking"}
         </div>
-        <div className="flex items-center gap-2">
-          {props.streaming ? (
-            <Spinner size="sm" className="h-3.5 w-3.5 border-[1.5px]" />
-          ) : null}
+        <div className="flex items-center gap-1">
           <ChevronDown
-            className={`h-4 w-4 text-muted-foreground transition-transform ${
+            className={`h-3.5 w-3.5 text-[color:color-mix(in_srgb,var(--gc-muted)_88%,transparent)] transition-transform ${
               props.expanded ? "rotate-180" : ""
             }`}
           />
         </div>
       </button>
       {props.expanded ? (
-        <div className="max-w-full p-3 overflow-auto border rounded-b-[8x] max-h-36 border-border/60 bg-background/60">
-          <div className="min-w-0 max-w-full overflow-x-hidden whitespace-pre-wrap break-all text-xs leading-6 text-muted-foreground [overflow-wrap:anywhere]">
+        <div className="max-h-36 max-w-full overflow-auto px-0.5 pb-1 pt-0.5">
+          <div className="min-w-0 max-w-full overflow-x-hidden whitespace-pre-wrap break-words text-[11px] leading-5 text-[color:var(--gc-muted)] [overflow-wrap:anywhere]">
             {props.content}
           </div>
         </div>

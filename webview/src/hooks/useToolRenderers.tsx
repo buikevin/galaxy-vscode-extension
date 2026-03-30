@@ -128,9 +128,8 @@ export function useToolRenderers(options: UseToolRenderersOptions) {
         exitCode={opts.exitCode}
         durationLabel={opts.durationLabel}
         running={opts.running}
-        expanded={isExpanded(expandedKey)}
+        defaultExpanded={isExpanded(expandedKey)}
         copied={isCopied}
-        onToggle={() => options.toggleExpanded(expandedKey)}
         onCopy={() => copyCommand(opts.panelId, opts.commandText)}
         onViewTerminal={() => options.openShellTerminal(opts.toolCallId)}
         onOutputNode={(node) => {
@@ -237,6 +236,23 @@ export function useToolRenderers(options: UseToolRenderersOptions) {
     return renderToolBody(item.message);
   }
 
+  function renderActionSummary(item: ActionItem): ReactNode {
+    if (item.kind === "thinking") {
+      return (
+        <div className="text-sm text-[color:var(--gc-muted)]">
+          Đang phân tích
+        </div>
+      );
+    }
+
+    const toolPath = getToolPath(item.message);
+    return (
+      <div className="text-sm text-[color:var(--gc-muted)]">
+        {getToolLabel(item.message, toolPath)}
+      </div>
+    );
+  }
+
   /**
    * Render one live shell session that is still streaming in the transcript.
    *
@@ -260,6 +276,7 @@ export function useToolRenderers(options: UseToolRenderersOptions) {
 
   return {
     renderActionBody,
+    renderActionSummary,
     renderShellPanel,
     renderShellSession,
     renderThinkingBody,

@@ -34,27 +34,27 @@ export function AttachmentList(props: AttachmentListProps) {
   }
 
   return (
-    <div className="grid grid-cols-1 gap-2 rounded-xl border border-sky-400/20 bg-sky-500/5 p-2">
+    <div className="grid grid-cols-1 gap-2 rounded-xl border border-[color:var(--gc-border)] bg-[var(--gc-surface)] p-2">
       {props.figmaAttachments.map((attachment) => (
         <div
           key={attachment.importId}
-          className="flex items-center justify-between gap-3 rounded-2xl border border-sky-400/30 bg-background/70 px-3 py-2 text-xs text-foreground"
+          className="flex items-center justify-between gap-3 rounded-xl border border-[color:var(--gc-border)] bg-[var(--gc-surface-elevated)] px-3 py-2 text-xs text-[color:var(--gc-foreground)]"
         >
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-sky-500/10 text-sky-300">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[var(--gc-accent-soft)] text-[color:var(--gc-accent)]">
               <ImageIcon className="h-4 w-4" />
             </div>
             <button
               type="button"
-              className="truncate text-left font-medium text-sky-300 hover:text-sky-200"
+              className="truncate text-left font-medium text-[color:var(--gc-accent)] hover:opacity-90"
               onClick={() => props.onOpenFigmaPreview(attachment)}
             >
-              Design By Figma
+              Thiết kế Figma
             </button>
           </div>
           <button
             type="button"
-            className="text-muted-foreground hover:text-foreground"
+            className="text-[color:var(--gc-muted)] hover:text-[color:var(--gc-foreground)]"
             onClick={() => props.onRemoveFigmaAttachment(attachment.importId)}
           >
             <X className="h-4 w-4" />
@@ -64,11 +64,11 @@ export function AttachmentList(props: AttachmentListProps) {
       {props.localAttachments.map((attachment) => (
         <div
           key={attachment.attachmentId}
-          className="grid grid-cols-[40px_minmax(0,1fr)_20px] items-center gap-3 rounded-2xl border border-white/10 bg-background/70 px-3 py-2 text-xs text-foreground"
+          className="grid grid-cols-[40px_minmax(0,1fr)_20px] items-center gap-3 rounded-xl border border-[color:var(--gc-border)] bg-[var(--gc-surface-elevated)] px-3 py-2 text-xs text-[color:var(--gc-foreground)]"
         >
           <button
             type="button"
-            className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-white/5"
+            className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-xl bg-[var(--gc-surface)]"
             onClick={() => props.onOpenLocalPreview(attachment)}
             disabled={!attachment.previewUrl}
             title={attachment.previewUrl ? "Xem preview" : attachment.name}
@@ -80,9 +80,9 @@ export function AttachmentList(props: AttachmentListProps) {
                 className="h-full w-full object-cover"
               />
             ) : attachment.isImage ? (
-              <ImageIcon className="h-4 w-4 text-muted-foreground" />
+              <ImageIcon className="h-4 w-4 text-[color:var(--gc-muted)]" />
             ) : (
-              <FileText className="h-4 w-4 text-muted-foreground" />
+              <FileText className="h-4 w-4 text-[color:var(--gc-muted)]" />
             )}
           </button>
           <div className="truncate text-sm" title={attachment.name}>
@@ -90,7 +90,7 @@ export function AttachmentList(props: AttachmentListProps) {
           </div>
           <button
             type="button"
-            className="text-muted-foreground hover:text-foreground"
+            className="text-[color:var(--gc-muted)] hover:text-[color:var(--gc-foreground)]"
             onClick={() => props.onRemoveLocalAttachment(attachment.attachmentId)}
           >
             <X className="h-4 w-4" />

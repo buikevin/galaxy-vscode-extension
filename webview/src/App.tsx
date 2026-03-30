@@ -46,11 +46,6 @@ import type {
 const AGENTS: readonly AgentType[] = ["manual", "ollama", "gemini", "claude", "codex"];
 
 /**
- * Hard limit used to visualize prompt token usage inside the composer ring.
- */
-const MAX_CONTEXT_TOKENS = 256_000;
-
-/**
  * Default individual tool-toggle state used before the host session-init arrives.
  */
 const DEFAULT_TOOL_TOGGLES: ToolToggles = {
@@ -139,7 +134,6 @@ export function App() {
   const [errorText, setErrorText] = useState("");
   const [streamingAssistant, setStreamingAssistant] = useState("");
   const [streamingThinking, setStreamingThinking] = useState("");
-  const [promptTokens, setPromptTokens] = useState(0);
   const [approvalRequest, setApprovalRequest] =
     useState<ApprovalRequestPayload | null>(null);
   const [figmaAttachments, setFigmaAttachments] = useState<FigmaAttachment[]>(
@@ -257,6 +251,32 @@ export function App() {
     textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [input]);
 
+  useEffect(() => {
+    const handleInsertComposerText = (event: Event) => {
+      const detail = (event as CustomEvent<{ text: string }>).detail;
+      const nextText = detail?.text?.trim();
+      if (!nextText) {
+        return;
+      }
+
+      setInput((current) => {
+        if (!current.trim()) {
+          return nextText;
+        }
+        return `${current.replace(/\s+$/, "")}\n${nextText}`;
+      });
+
+      window.requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+      });
+    };
+
+    window.addEventListener("galaxy:insert-composer-text", handleInsertComposerText as EventListener);
+    return () => {
+      window.removeEventListener("galaxy:insert-composer-text", handleInsertComposerText as EventListener);
+    };
+  }, []);
+
   /**
    * Keep the transcript scrolled to the latest visible content as messages and streams arrive.
    */
@@ -361,7 +381,6 @@ export function App() {
     setExtensionToolToggles,
     setChangeSummary,
     setKeptChangeSummaryKey,
-    setPromptTokens,
     setPendingPreviewImportId,
   });
 
@@ -437,7 +456,6 @@ export function App() {
     retryRequest,
     streamingAssistant,
     streamingThinking,
-    promptTokens,
     figmaAttachments,
     localAttachments,
     copiedCommandMessageId,
@@ -484,7 +502,6 @@ export function App() {
     executeSlashCommand,
     slashCommandSource: SLASH_COMMANDS,
     agents: AGENTS,
-    maxContextTokens: MAX_CONTEXT_TOKENS,
   });
 
   return (

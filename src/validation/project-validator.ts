@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { appendTelemetryEvent } from '../context/telemetry';
 import type { GalaxyConfig } from '../config/types';
 import type { TrackedFile } from '../runtime/session-tracker';
+import { tryResolveDirectCommand } from '../runtime/direct-command';
 import { buildShellEnvironment, checkCommandAvailability, resolveShellProfile } from '../runtime/shell-resolver';
 import { validateCodeTool } from '../tools/file-tools';
 import type {
@@ -963,15 +964,26 @@ async function runProjectCommand(
   callbacks?: ValidationCommandStreamCallbacks,
 ): Promise<ValidationRunResult> {
   const startedAt = Date.now();
-  const shell = resolveShellProfile();
+  const directCommand = tryResolveDirectCommand(command.command, command.cwd);
+  const effectiveCommandText = directCommand?.displayCommandText ?? command.command;
   const toolCallId = `validation:${command.id}:${startedAt}`;
 
   return new Promise((resolve) => {
-    const child = spawn(shell.executable, [...shell.commandArgs(command.command)], {
-      cwd: command.cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: buildShellEnvironment(),
-    });
+    const child = directCommand
+      ? spawn(directCommand.resolvedBinary, [...directCommand.args], {
+          cwd: command.cwd,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: buildShellEnvironment(),
+          shell: false,
+        })
+      : (() => {
+          const shell = resolveShellProfile();
+          return spawn(shell.executable, [...shell.commandArgs(command.command)], {
+            cwd: command.cwd,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            env: buildShellEnvironment(),
+          });
+        })();
 
     let stdout = '';
     let stderr = '';
@@ -982,7 +994,7 @@ async function runProjectCommand(
 
     void callbacks?.onStart?.({
       toolCallId,
-      commandText: command.command,
+      commandText: effectiveCommandText,
       cwd: command.cwd,
       startedAt,
     });

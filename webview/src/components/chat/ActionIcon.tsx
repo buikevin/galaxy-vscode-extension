@@ -23,11 +23,11 @@ type ActionIconProps = Readonly<{
  * Render one compact action icon badge.
  */
 export function ActionIcon(props: ActionIconProps) {
-  const iconClass = `${props.sizeClass ?? "h-4 w-4"} text-slate-200`;
+  const iconClass = `${props.sizeClass ?? "h-3.5 w-3.5"} text-[color:var(--gc-muted)]`;
 
   if (props.item.kind === "thinking") {
     return (
-      <span className="inline-flex items-center justify-center w-8 h-8 ">
+      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--gc-surface-elevated)_90%,transparent)]">
         <Brain className={iconClass} />
       </span>
     );
@@ -35,7 +35,7 @@ export function ActionIcon(props: ActionIconProps) {
 
   if (props.item.message.toolName === "list_dir") {
     return (
-      <span className="inline-flex items-center justify-center w-6 h-6 ">
+      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--gc-surface-elevated)_90%,transparent)]">
         <FolderTree className={iconClass} />
       </span>
     );
@@ -43,14 +43,14 @@ export function ActionIcon(props: ActionIconProps) {
 
   if (props.item.message.toolName === "read_file") {
     return (
-      <span className="inline-flex items-center justify-center w-6 h-6 ">
+      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--gc-surface-elevated)_90%,transparent)]">
         <FileInput className={iconClass} />
       </span>
     );
   }
 
   return (
-    <span className="inline-flex items-center justify-center w-6 h-6 ">
+    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-[color:color-mix(in_srgb,var(--gc-surface-elevated)_90%,transparent)]">
       <Wrench className={iconClass} />
     </span>
   );

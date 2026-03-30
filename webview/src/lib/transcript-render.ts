@@ -38,7 +38,9 @@ export function shouldHideToolMessage(message: ChatMessage): boolean {
   return (
     message.role === "tool" &&
     (message.toolName === "validate_code" ||
-      message.toolName === "request_code_review")
+      message.toolName === "request_code_review" ||
+      message.toolName === "run_project_command" ||
+      message.toolName === "run_terminal_command")
   );
 }
 
@@ -61,7 +63,7 @@ export function buildRenderItems(
   const shellSessionsByToolCallId = new Map(
     shellSessions.map((session) => [session.toolCallId, session] as const)
   );
-  const renderedShellSessionIds = new Set<string>();
+  const consumedShellSessionIds = new Set<string>();
 
   for (let index = 0; index < visibleSource.length; ) {
     const message = visibleSource[index]!;
@@ -102,15 +104,15 @@ export function buildRenderItems(
         });
       }
 
-      const liveSessions = (message.toolCalls ?? [])
-        .map((toolCall) => shellSessionsByToolCallId.get(toolCall.id))
-        .filter((session): session is ActiveShellSession => Boolean(session));
-
-      liveSessions.forEach((session) => {
-        renderedShellSessionIds.add(session.toolCallId);
+      (message.toolCalls ?? []).forEach((toolCall) => {
+        const session = shellSessionsByToolCallId.get(toolCall.id);
+        if (!session) {
+          return;
+        }
+        consumedShellSessionIds.add(session.toolCallId);
         items.push({
           type: "live-shell",
-          key: `live-shell:${message.id}:${session.toolCallId}`,
+          key: `live-shell:${session.toolCallId}`,
           session,
         });
       });
@@ -160,17 +162,15 @@ export function buildRenderItems(
   }
 
   shellSessions.forEach((session) => {
-    if (renderedShellSessionIds.has(session.toolCallId)) {
+    if (consumedShellSessionIds.has(session.toolCallId)) {
       return;
     }
-
     items.push({
       type: "live-shell",
-      key: `live-shell:orphan:${session.toolCallId}`,
+      key: `live-shell:${session.toolCallId}`,
       session,
     });
   });
-
   return items;
 }
 
@@ -194,6 +194,10 @@ export function getToolLabel(message: ChatMessage, toolPath: string): string {
       : "";
 
   switch (message.toolName) {
+    case "read_file":
+      return normalizedPath ? `Đọc file (${normalizedPath})` : "Đọc file";
+    case "list_dir":
+      return normalizedPath ? `Quét thư mục (${normalizedPath})` : "Quét thư mục";
     case "find_test_files":
       return `Tìm file test liên quan${normalizedPath ? ` (${normalizedPath})` : ""}`;
     case "get_latest_test_failure":
