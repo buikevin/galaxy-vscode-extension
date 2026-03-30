@@ -22,13 +22,8 @@ export function ComposerActivityBanner(
 ) {
   return (
     <div className="px-1 py-1 text-xs tracking-[0.02em] text-[color:var(--gc-muted)]">
-      <span className="inline-flex items-center gap-1">
-        <span>{props.label}</span>
-        <span className="inline-flex">
-          <span className="animate-pulse [animation-delay:0ms]">.</span>
-          <span className="animate-pulse [animation-delay:150ms]">.</span>
-          <span className="animate-pulse [animation-delay:300ms]">.</span>
-        </span>
+      <span className="gc-text-shimmer inline-flex items-center">
+        {props.label}
       </span>
     </div>
   );

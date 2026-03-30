@@ -41,7 +41,7 @@ export function buildSystemPrompt(agentType: AgentType, config: GalaxyConfig): s
 - get_latest_review_findings() — Read the latest persisted code review findings from this workspace.
 - get_next_review_finding() — Read the next open review finding from the latest persisted review results.
 - dismiss_review_finding(finding_id) — Mark one persisted review finding as dismissed after you handled it or decided it is not actionable.
-- read_document(path, maxChars?, offset?) — Extract text from PDF, DOCX/DOC, XLSX/XLS/XLSM/XLSB, CSV, MD, and TXT documents. For long documents, read in chunks with offset/maxChars instead of repeatedly rereading from the start.
+- read_document(path, maxChars?, offset?, query?) — Extract text from PDF, DOCX/DOC, XLSX/XLS/XLSM/XLSB, CSV, MD, and TXT documents. Use query when you need only the most relevant snippets for the current question; use offset/maxChars for exact sequential reading.
 - grep(pattern, path, contextLines?) — Search code and text files without loading full files.
 - list_dir(path, depth?) — List directory structure inside the workspace. By default this is shallow; increase depth only when needed.
 - head(path, lines?) — Read first N lines of a file.
@@ -148,7 +148,8 @@ ${workflowLines.join('\n')}
 
 ## Context Engineering Principles
 - Use only the enabled read/search tools to retrieve relevant context just in time.
-- For long documents, prefer chunked reads with read_document(path, maxChars, offset). If a document result indicates there is more content, continue from nextOffset instead of rereading the same file from the start.
+- For long documents, prefer read_document(path, query=...) when you only need specific requirements or evidence. Use chunked reads with offset/maxChars only when you need exact sequential wording, and continue from nextOffset instead of rereading from the start.
+- If you already analyzed a document and only need to verify one point, do not call read_document again with offset=0 unless the exact wording or previously returned evidence is insufficient.
 - Prefer workspace files, attached files, and local project context before using web tools.
 - Use search_web/extract_web/map_web/crawl_web only for programming-related unknowns: code, frameworks, libraries, APIs, SDKs, build tools, docs, standards, or debugging information.
 - Use search_web/extract_web/map_web/crawl_web only when local project context is insufficient and web research is enabled.

@@ -173,6 +173,7 @@ export function createToolEvidence(opts: {
         meta.readMode === 'partial' ||
         meta.readMode === 'head' ||
         meta.readMode === 'tail' ||
+        meta.readMode === 'document_semantic' ||
         meta.readMode === 'document'
           ? meta.readMode
           : toolName === 'read_document'

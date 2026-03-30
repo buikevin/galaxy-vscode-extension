@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_CONFIG } from '../config/types';
+import { createDraftLocalAttachment } from '../attachments/attachment-store';
 import { extractCodeChunkUnits } from '../context/code-chunk-extractor';
 import { createHistoryManager } from '../context/history-manager';
 import { getProjectStorageInfo } from '../context/project-store';
+import { getCachedReadResult } from '../context/rag-metadata-store';
 import { tryResolveDirectCommand } from '../runtime/direct-command';
 import { executeToolAsync } from '../tools/file-tools';
 import { selectNodeValidationScripts } from '../validation/project-validator';
@@ -203,6 +205,91 @@ suite('Retrieval And Validation', () => {
       });
 
       assert.strictEqual(historyManager.getSessionMemory().lastFinalAssistantConclusion, '');
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('read_document query returns semantic snippets and caches decoded source text', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'docs'), { recursive: true });
+      const documentPath = path.join(workspacePath, 'docs', 'requirements.md');
+      fs.writeFileSync(
+        documentPath,
+        [
+          '# Requirements',
+          '',
+          '## Authentication',
+          'The login screen must support password reset and MFA enrollment.',
+          '',
+          '## Transfers',
+          'The transfer limit validation must block amounts above the daily threshold and show an inline error.',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const result = await executeToolAsync(
+        {
+          name: 'read_document',
+          params: {
+            path: 'docs/requirements.md',
+            query: 'What is the transfer limit validation requirement?',
+          },
+        },
+        {
+          workspaceRoot: workspacePath,
+          config: DEFAULT_CONFIG,
+          revealFile: async () => undefined,
+          refreshWorkspaceFiles: async () => undefined,
+        },
+      );
+
+      assert.strictEqual(result.success, true);
+      assert.match(result.content, /\[DOCUMENT SEMANTIC SNIPPETS\]/);
+      assert.match(result.content, /transfer limit validation/i);
+      assert.strictEqual(result.meta?.readMode, 'document_semantic');
+
+      const stat = fs.statSync(documentPath);
+      const cachedSource = getCachedReadResult(workspacePath, {
+        filePath: path.resolve(documentPath),
+        mtimeMs: stat.mtimeMs,
+        sizeBytes: stat.size,
+        readMode: 'document_source',
+        offset: 0,
+        limit: 0,
+      });
+      assert.ok(cachedSource);
+      assert.match(cachedSource?.content ?? '', /daily threshold/i);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('createDraftLocalAttachment stores extracted text cache instead of cloning document binary', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const storage = getProjectStorageInfo(workspacePath);
+      const markdown = [
+        '# URD',
+        '',
+        'Transfer validation must reject values above the configured limit.',
+        '',
+      ].join('\n');
+      const attachment = await createDraftLocalAttachment({
+        workspacePath,
+        name: 'requirements.md',
+        mimeType: 'text/markdown',
+        dataUrl: `data:text/markdown;base64,${Buffer.from(markdown, 'utf-8').toString('base64')}`,
+      });
+
+      assert.ok(attachment.attachmentId);
+      assert.deepStrictEqual(fs.readdirSync(storage.attachmentsFilesDirPath), []);
+      const textEntries = fs.readdirSync(storage.attachmentsTextDirPath);
+      assert.strictEqual(textEntries.length, 1);
+      const cachedTextPath = path.join(storage.attachmentsTextDirPath, textEntries[0]!);
+      assert.match(fs.readFileSync(cachedTextPath, 'utf-8'), /configured limit/i);
     } finally {
       cleanupTempWorkspace(workspacePath);
     }

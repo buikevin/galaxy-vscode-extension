@@ -58,8 +58,7 @@ export function ToolCard(props: ToolCardProps) {
   }
 
   if (props.isReadFileMessage) {
-    const readLabel =
-      props.message.toolName === "read_document" ? "Đọc tài liệu" : "Đọc file";
+    const readLabel = "Đọc file";
     return (
       <div className="grid w-full min-w-0 max-w-full grid-cols-[auto,minmax(0,1fr),auto] items-center gap-2 overflow-hidden rounded-xl bg-[color:color-mix(in_srgb,var(--gc-surface)_82%,transparent)] px-3 py-2.5 text-left">
         <div className="col-span-2 flex min-w-0 items-center gap-2 overflow-hidden text-sm font-medium text-[color:var(--gc-foreground)]">

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -13,6 +14,7 @@ import { readDocumentFile } from '../tools/document-reader';
 
 type AttachmentKind = 'file' | 'figma';
 type AttachmentStatus = 'draft' | 'committed' | 'removed';
+type AttachmentStorageKind = 'binary' | 'text-cache';
 
 type AttachmentRecord = Readonly<{
   id: string;
@@ -21,6 +23,7 @@ type AttachmentRecord = Readonly<{
   status: AttachmentStatus;
   originalName: string;
   storedPath: string;
+  storageKind?: AttachmentStorageKind;
   mimeType: string;
   size: number;
   previewPath?: string;
@@ -95,6 +98,10 @@ function loadIndex(workspacePath: string): AttachmentRecord[] {
   } catch {
     return [];
   }
+}
+
+function getAttachmentStorageKind(record: AttachmentRecord): AttachmentStorageKind {
+  return record.storageKind === 'text-cache' ? 'text-cache' : 'binary';
 }
 
 function normalizeAttachmentLookup(value: string): string {
@@ -210,6 +217,7 @@ function buildAttachmentEmbeddingDocument(record: AttachmentRecord, chunkText: s
   return [
     `Attachment: ${record.originalName}`,
     `Stored path: ${record.storedPath}`,
+    getAttachmentStorageKind(record) === 'text-cache' ? 'Storage kind: text-cache' : 'Storage kind: binary',
     `MIME type: ${record.mimeType}`,
     `Chunk ${chunkIndex + 1} of ${chunkCount}`,
     chunkText,
@@ -270,6 +278,14 @@ function extractSpecialAttachmentText(record: AttachmentRecord): string | null {
 }
 
 async function extractAttachmentText(record: AttachmentRecord): Promise<string | null> {
+  if (getAttachmentStorageKind(record) === 'text-cache') {
+    try {
+      return fs.readFileSync(record.storedPath, 'utf-8');
+    } catch {
+      return null;
+    }
+  }
+
   if (isTextAttachment(record)) {
     try {
       return fs.readFileSync(record.storedPath, 'utf-8');
@@ -307,6 +323,46 @@ function isTextAttachment(record: AttachmentRecord): boolean {
 
   const ext = path.extname(record.originalName).toLowerCase();
   return TEXT_ATTACHMENT_EXTENSIONS.has(ext);
+}
+
+async function extractAttachmentTextFromBuffer(opts: {
+  name: string;
+  mimeType: string;
+  buffer: Buffer;
+}): Promise<string | null> {
+  const ext = path.extname(opts.name).toLowerCase();
+
+  if (
+    opts.mimeType.startsWith('text/') ||
+    opts.mimeType.includes('json') ||
+    opts.mimeType.includes('xml') ||
+    opts.mimeType.includes('yaml') ||
+    opts.mimeType.includes('javascript') ||
+    opts.mimeType.includes('typescript') ||
+    TEXT_ATTACHMENT_EXTENSIONS.has(ext)
+  ) {
+    try {
+      return opts.buffer.toString('utf-8');
+    } catch {
+      return null;
+    }
+  }
+
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'galaxy-attachment-'));
+  const tempPath = path.join(tempDir, `${sanitizeFileName(path.basename(opts.name, ext)) || 'attachment'}${ext}`);
+  try {
+    fs.writeFileSync(tempPath, opts.buffer);
+    const parsed = await readDocumentFile(tempPath, { maxChars: Number.MAX_SAFE_INTEGER, offset: 0 });
+    return parsed.success && parsed.content.trim() ? parsed.content : null;
+  } catch {
+    return null;
+  } finally {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // Ignore temp cleanup failures.
+    }
+  }
 }
 
 function saveIndex(workspacePath: string, records: readonly AttachmentRecord[]): void {
@@ -454,12 +510,12 @@ function writePreviewAsset(storageDir: string, baseName: string, figmaRecord: Fi
   return { previewPath, mimeType };
 }
 
-export function createDraftLocalAttachment(opts: {
+export async function createDraftLocalAttachment(opts: {
   workspacePath: string;
   name: string;
   mimeType: string;
   dataUrl: string;
-}): LocalAttachmentPayload {
+}): Promise<LocalAttachmentPayload> {
   const storage = getProjectStorageInfo(opts.workspacePath);
   ensureProjectStorage(storage);
 
@@ -467,9 +523,27 @@ export function createDraftLocalAttachment(opts: {
   const buffer = Buffer.from(base64, 'base64');
   const ext = path.extname(opts.name) || '';
   const baseName = `${sanitizeFileName(path.basename(opts.name, ext))}_${randomUUID().slice(0, 8)}`;
-  const targetDir = opts.mimeType.startsWith('image/') ? storage.attachmentsImagesDirPath : storage.attachmentsFilesDirPath;
-  const storedPath = path.join(targetDir, `${baseName}${ext}`);
-  fs.writeFileSync(storedPath, buffer);
+  const isImage = opts.mimeType.startsWith('image/');
+  let storedPath: string;
+  let storageKind: AttachmentStorageKind = 'binary';
+  if (isImage) {
+    storedPath = path.join(storage.attachmentsImagesDirPath, `${baseName}${ext}`);
+    fs.writeFileSync(storedPath, buffer);
+  } else {
+    const extractedText = await extractAttachmentTextFromBuffer({
+      name: opts.name,
+      mimeType: opts.mimeType,
+      buffer,
+    });
+    if (extractedText?.trim()) {
+      storedPath = path.join(storage.attachmentsTextDirPath, `${baseName}.txt`);
+      fs.writeFileSync(storedPath, extractedText, 'utf-8');
+      storageKind = 'text-cache';
+    } else {
+      storedPath = path.join(storage.attachmentsFilesDirPath, `${baseName}${ext}`);
+      fs.writeFileSync(storedPath, buffer);
+    }
+  }
 
   const record: AttachmentRecord = Object.freeze({
     id: `attachment-${Date.now()}-${randomUUID().slice(0, 8)}`,
@@ -478,6 +552,7 @@ export function createDraftLocalAttachment(opts: {
     status: 'draft',
     originalName: opts.name,
     storedPath,
+    storageKind,
     mimeType: opts.mimeType || 'application/octet-stream',
     size: buffer.byteLength,
     createdAt: Date.now(),
@@ -710,6 +785,14 @@ export async function buildAttachmentContextNote(
 
     const extractedText = await extractAttachmentText(record);
     if (extractedText?.trim()) {
+      if (getAttachmentStorageKind(record) === 'text-cache') {
+        return [
+          `### ATTACHMENT: ${record.originalName}`,
+          `Cached text path: ${record.storedPath}`,
+          `Read file with path "${record.storedPath}".`,
+          truncateContent(extractedText),
+        ].join('\n');
+      }
       if (!isTextAttachment(record)) {
         return [
           `### ATTACHMENT: ${record.originalName}`,

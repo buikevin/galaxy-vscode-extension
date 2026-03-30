@@ -5,6 +5,7 @@ import { tavily } from '@tavily/core';
 import type { GalaxyConfig, ToolCapabilityConfig } from '../config/types';
 import type { ExtensionToolGroup, ExtensionToolItem } from '../shared/protocol';
 import { resolveAttachmentStoredPath } from '../attachments/attachment-store';
+import { queryDocumentSemanticSnippets } from '../context/document-semantic-store';
 import { getProjectStorageInfo } from '../context/project-store';
 import { getCachedReadResult, storeReadCache } from '../context/rag-metadata-store';
 import { captureOriginal, trackFileWrite } from '../runtime/session-tracker';
@@ -1779,13 +1780,47 @@ function tailTool(workspaceRoot: string, rawPath: string, lines = 50): ToolResul
 async function readDocumentTool(
   workspaceRoot: string,
   rawPath: string,
-  options?: Readonly<{ maxChars?: number; offset?: number }>,
+  options?: Readonly<{ maxChars?: number; offset?: number; query?: string }>,
 ): Promise<ToolResult> {
   try {
     const resolved = resolveReadablePath(workspaceRoot, rawPath);
     const stat = fs.statSync(resolved);
     const maxChars = Math.max(1, Number(options?.maxChars ?? 20_000));
     const offset = Math.max(0, Number(options?.offset ?? 0));
+    const query = String(options?.query ?? '').trim();
+    const semanticMode = query.length > 0 && offset <= 0;
+    if (semanticMode) {
+      const semantic = await queryDocumentSemanticSnippets({
+        workspacePath: workspaceRoot,
+        filePath: resolved,
+        queryText: query,
+        limit: 3,
+      });
+      if (semantic.snippets.length > 0) {
+        return Object.freeze({
+          success: true,
+          content: [
+            '[DOCUMENT SEMANTIC SNIPPETS]',
+            `Path: ${resolved}`,
+            semantic.format ? `Format: ${semantic.format}` : '',
+            typeof semantic.pageCount === 'number' ? `Page count: ${semantic.pageCount}` : '',
+            '',
+            ...semantic.snippets.map((snippet, index) => `[Snippet ${index + 1}] ${snippet}`),
+            '',
+            'If you need the exact full wording or sequential context, call read_document again with maxChars/offset and without query.',
+          ].filter(Boolean).join('\n'),
+          meta: Object.freeze({
+            filePath: resolved,
+            readMode: 'document_semantic',
+            query,
+            ...(semantic.format ? { format: semantic.format } : {}),
+            ...(typeof semantic.pageCount === 'number' ? { pageCount: semantic.pageCount } : {}),
+            cacheHit: false,
+          }),
+        });
+      }
+    }
+
     const cached = getCachedReadResult(workspaceRoot, {
       filePath: resolved,
       mtimeMs: stat.mtimeMs,
@@ -2349,6 +2384,7 @@ export async function executeToolAsync(call: ToolCall, toolContext: FileToolCont
       return readDocumentTool(toolContext.workspaceRoot, p(call, 'path'), {
         maxChars: Number(call.params.maxChars ?? 20_000),
         offset: Number(call.params.offset ?? 0),
+        query: String(call.params.query ?? ''),
       });
     case 'search_web':
       return searchWebTool(toolContext.config, p(call, 'query'), (() => {
@@ -2858,13 +2894,14 @@ const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
   }),
   Object.freeze({
     name: 'read_document',
-    description: 'Read and extract structured content from a document file. Supports PDF, DOCX/DOC, XLSX/XLS/XLSM/XLSB, CSV, MD, and TXT. Use offset/maxChars for long documents.',
+    description: 'Read and extract structured content from a document file. Supports PDF, DOCX/DOC, XLSX/XLS/XLSM/XLSB, CSV, MD, and TXT. Use offset/maxChars for sequential reading, or query for semantic snippets relevant to the current question.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
         path: Object.freeze({ type: 'string', description: 'Path to the document file inside the workspace or an attached copied file' }),
         maxChars: Object.freeze({ type: 'number', description: 'Maximum characters to return for this chunk (default 20000)' }),
         offset: Object.freeze({ type: 'number', description: 'Character offset for chunked document reading (default 0)' }),
+        query: Object.freeze({ type: 'string', description: 'Optional semantic retrieval query. When provided, the tool returns the most relevant snippets instead of the next sequential chunk.' }),
       }),
       required: Object.freeze(['path']),
     }),

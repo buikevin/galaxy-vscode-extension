@@ -80,6 +80,7 @@ export type ProjectStorageInfo = Readonly<{
   attachmentsDirPath: string;
   attachmentsIndexPath: string;
   attachmentsFilesDirPath: string;
+  attachmentsTextDirPath: string;
   attachmentsImagesDirPath: string;
   attachmentsFigmaDirPath: string;
 }>;
@@ -143,6 +144,7 @@ export function getProjectStorageInfo(workspacePath: string): ProjectStorageInfo
     attachmentsDirPath: path.join(localGalaxyDirPath, 'attachments'),
     attachmentsIndexPath: path.join(localGalaxyDirPath, 'attachments', 'index.json'),
     attachmentsFilesDirPath: path.join(localGalaxyDirPath, 'attachments', 'files'),
+    attachmentsTextDirPath: path.join(localGalaxyDirPath, 'attachments', 'text'),
     attachmentsImagesDirPath: path.join(localGalaxyDirPath, 'attachments', 'images'),
     attachmentsFigmaDirPath: path.join(localGalaxyDirPath, 'attachments', 'figma'),
   });
@@ -156,6 +158,7 @@ export function ensureProjectStorage(info: ProjectStorageInfo): void {
   ensureDir(info.figmaAssetsDirPath);
   ensureDir(info.attachmentsDirPath);
   ensureDir(info.attachmentsFilesDirPath);
+  ensureDir(info.attachmentsTextDirPath);
   ensureDir(info.attachmentsImagesDirPath);
   ensureDir(info.attachmentsFigmaDirPath);
   if (!fs.existsSync(info.uiTranscriptPath)) {

@@ -81,3 +81,28 @@ pre {
 #app {
   background: transparent;
 }
+
+@keyframes gc-text-shimmer {
+  0% {
+    background-position: 200% 50%;
+  }
+  100% {
+    background-position: -200% 50%;
+  }
+}
+
+.gc-text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--gc-muted) 82%, transparent) 0%,
+    color-mix(in srgb, var(--gc-foreground) 92%, transparent) 45%,
+    color-mix(in srgb, var(--gc-accent) 68%, transparent) 50%,
+    color-mix(in srgb, var(--gc-foreground) 92%, transparent) 55%,
+    color-mix(in srgb, var(--gc-muted) 82%, transparent) 100%
+  );
+  background-size: 220% 100%;
+  color: transparent;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: gc-text-shimmer 3.4s linear infinite;
+}

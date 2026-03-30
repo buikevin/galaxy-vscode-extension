@@ -37,7 +37,7 @@ export type GrepEvidence = ToolEvidenceBase & Readonly<{
 export type FileReadEvidence = ToolEvidenceBase & Readonly<{
   toolName: 'read_file' | 'head' | 'tail' | 'read_document';
   filePath: string;
-  readMode: 'full' | 'partial' | 'head' | 'tail' | 'document';
+  readMode: 'full' | 'partial' | 'head' | 'tail' | 'document' | 'document_semantic';
   startLine?: number;
   endLine?: number;
   requestedOffset?: number;

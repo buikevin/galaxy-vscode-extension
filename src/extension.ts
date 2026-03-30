@@ -1019,7 +1019,7 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         await this.handleComposerCommand(message.payload.id);
         return;
       case 'attachment-add-local': {
-        const attachment = createDraftLocalAttachment({
+        const attachment = await createDraftLocalAttachment({
           workspacePath: this.workspacePath,
           name: message.payload.name,
           mimeType: message.payload.mimeType,
