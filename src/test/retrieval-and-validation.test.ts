@@ -1,8 +1,10 @@
 import * as assert from 'assert';
+import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DEFAULT_CONFIG } from '../shared/constants';
+import type { GalaxyConfig } from '../shared/config';
 import { createDraftLocalAttachment } from '../attachments/attachment-store';
 import { extractCodeChunkUnits } from '../context/code-chunk-extractor';
 import { createHistoryManager } from '../context/history-manager';
@@ -28,8 +30,37 @@ import {
   queryWorkflowScreens,
 } from '../context/workflow/query/index';
 import { syncWorkflowGraphSnapshot } from '../context/workflow/sync';
-import { tryResolveDirectCommand } from '../runtime/direct-command';
+import { tokenizeDirectCommandText, tryResolveDirectCommand } from '../runtime/direct-command';
+import { buildShellEnvironment, resolveCommandBinary, resolveShellProfile } from '../runtime/shell-resolver';
+import {
+  editFileRangeTool,
+  editFileTool,
+  insertFileAtLineTool,
+  multiEditFileRangesTool,
+  writeFileTool,
+} from '../tools/file/edit';
+import { getEnabledToolDefinitions, findDiscoveredExtensionTool, isToolEnabled } from '../tools/file/definitions';
 import { executeToolAsync } from '../tools/file/dispatch';
+import { validateCodeTool } from '../tools/file/diff-validate';
+import { grepTool, headTool, listDirTool, readFileTool, tailTool } from '../tools/file/path-read';
+import { galaxyDesignProjectInfoTool } from '../tools/galaxy-design';
+import {
+  gitAddTool,
+  gitCheckoutTool,
+  gitCommitTool,
+  gitDiffTool,
+  gitPullTool,
+  gitPushTool,
+  gitStatusTool,
+} from '../tools/project-command/git';
+import {
+  awaitManagedProjectCommandTool,
+  getManagedProjectCommandOutputTool,
+  killManagedProjectCommandTool,
+  startManagedCommandTool,
+} from '../tools/project-command/managed';
+import { runProjectCommandTool } from '../tools/project-command/execute';
+import { managedCommands } from '../tools/project-command/state';
 import { selectNodeValidationScripts } from '../validation/node';
 
 suite('Retrieval And Validation', () => {
@@ -37,7 +68,7 @@ suite('Retrieval And Validation', () => {
     return fs.mkdtempSync(path.join(os.tmpdir(), 'galaxy-vscode-test-'));
   }
 
-  function cleanupTempWorkspace(workspacePath: string): void {
+function cleanupTempWorkspace(workspacePath: string): void {
     const storage = getProjectStorageInfo(workspacePath);
 
     const removeDir = (targetPath: string): void => {
@@ -55,6 +86,32 @@ suite('Retrieval And Validation', () => {
 
     removeDir(workspacePath);
     removeDir(storage.projectDirPath);
+  }
+
+  async function withMockedPlatform<T>(platform: NodeJS.Platform, run: () => Promise<T> | T): Promise<T> {
+    const originalDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', {
+      value: platform,
+    });
+    try {
+      return await run();
+    } finally {
+      if (originalDescriptor) {
+        Object.defineProperty(process, 'platform', originalDescriptor);
+      }
+    }
+  }
+
+  function createTempGitWorkspace(): string {
+    const workspacePath = createTempWorkspace();
+    execSync('git init', { cwd: workspacePath, stdio: 'ignore' });
+    execSync('git config user.name "Galaxy Test"', { cwd: workspacePath, stdio: 'ignore' });
+    execSync('git config user.email "galaxy-test@example.com"', { cwd: workspacePath, stdio: 'ignore' });
+    return workspacePath;
+  }
+
+  function getCurrentGitBranch(workspacePath: string): string {
+    return execSync('git branch --show-current', { cwd: workspacePath, encoding: 'utf-8' }).trim();
   }
 
   test('extractCodeChunkUnits returns precise TypeScript symbol ranges', async () => {
@@ -217,6 +274,809 @@ suite('Retrieval And Validation', () => {
 
       assert.strictEqual(result.success, false);
       assert.match(result.error ?? '', /requires expected_total_lines|requires exact snapshot evidence/i);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('editFileTool rejects ambiguous replacements and only replaces all when requested', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src'), { recursive: true });
+      const filePath = path.join(workspacePath, 'src', 'duplicate.ts');
+      fs.writeFileSync(
+        filePath,
+        ['const label = "draft";', 'console.log("draft");', ''].join('\n'),
+        'utf-8',
+      );
+
+      const ambiguous = editFileTool(
+        workspacePath,
+        'src/duplicate.ts',
+        '"draft"',
+        '"published"',
+      );
+      assert.strictEqual(ambiguous.success, false);
+      assert.match(ambiguous.error ?? '', /appears 2 times/i);
+
+      const replaced = editFileTool(
+        workspacePath,
+        'src/duplicate.ts',
+        '"draft"',
+        '"published"',
+        true,
+      );
+      assert.strictEqual(replaced.success, true);
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf-8'),
+        ['const label = "published";', 'console.log("published");', ''].join('\n'),
+      );
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('editFileRangeTool replaces the exact range without leaving duplicate old lines', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src'), { recursive: true });
+      const filePath = path.join(workspacePath, 'src', 'range.ts');
+      fs.writeFileSync(
+        filePath,
+        [
+          'const count = 1;',
+          'const status = "draft";',
+          'console.log(status);',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const result = editFileRangeTool(workspacePath, 'src/range.ts', {
+        startLine: 2,
+        endLine: 2,
+        newContent: 'const status = "published";',
+        expectedTotalLines: 4,
+        expectedRangeContent: 'const status = "draft";',
+      });
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf-8'),
+        [
+          'const count = 1;',
+          'const status = "published";',
+          'console.log(status);',
+          '',
+        ].join('\n'),
+      );
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf-8').includes('const status = "draft";'),
+        false,
+      );
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('insertFileAtLineTool inserts once at the anchored location and rejects stale anchors', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src'), { recursive: true });
+      const filePath = path.join(workspacePath, 'src', 'insert.ts');
+      fs.writeFileSync(
+        filePath,
+        ['const first = 1;', 'const third = 3;', ''].join('\n'),
+        'utf-8',
+      );
+
+      const stale = insertFileAtLineTool(workspacePath, 'src/insert.ts', {
+        line: 2,
+        contentToInsert: 'const second = 2;',
+        expectedTotalLines: 3,
+        anchorBefore: 'const wrong = 0;',
+        anchorAfter: 'const third = 3;',
+      });
+      assert.strictEqual(stale.success, false);
+      assert.match(stale.error ?? '', /anchor_before no longer matches/i);
+
+      const inserted = insertFileAtLineTool(workspacePath, 'src/insert.ts', {
+        line: 2,
+        contentToInsert: 'const second = 2;',
+        expectedTotalLines: 3,
+        anchorBefore: 'const first = 1;',
+        anchorAfter: 'const third = 3;',
+      });
+      assert.strictEqual(inserted.success, true);
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf-8'),
+        ['const first = 1;', 'const second = 2;', 'const third = 3;', ''].join('\n'),
+      );
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('multiEditFileRangesTool applies disjoint edits without overlap or duplicated remnants', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src'), { recursive: true });
+      const filePath = path.join(workspacePath, 'src', 'multi.ts');
+      fs.writeFileSync(
+        filePath,
+        [
+          'const first = "a";',
+          'const second = "b";',
+          'const third = "c";',
+          'console.log(first, second, third);',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const overlap = multiEditFileRangesTool(
+        workspacePath,
+        'src/multi.ts',
+        [
+          { start_line: 1, end_line: 2, new_content: 'const first = "x";', expected_range_content: ['const first = "a";', 'const second = "b";'].join('\n') },
+          { start_line: 2, end_line: 3, new_content: 'const second = "y";', expected_range_content: ['const second = "b";', 'const third = "c";'].join('\n') },
+        ],
+        5,
+      );
+      assert.strictEqual(overlap.success, false);
+      assert.match(overlap.error ?? '', /overlapping edit ranges/i);
+
+      const applied = multiEditFileRangesTool(
+        workspacePath,
+        'src/multi.ts',
+        [
+          {
+            start_line: 1,
+            end_line: 1,
+            new_content: 'const first = "x";',
+            expected_range_content: 'const first = "a";',
+          },
+          {
+            start_line: 3,
+            end_line: 3,
+            new_content: 'const third = "z";',
+            expected_range_content: 'const third = "c";',
+          },
+        ],
+        5,
+      );
+      assert.strictEqual(applied.success, true);
+      assert.strictEqual(
+        fs.readFileSync(filePath, 'utf-8'),
+        [
+          'const first = "x";',
+          'const second = "b";',
+          'const third = "z";',
+          'console.log(first, second, third);',
+          '',
+        ].join('\n'),
+      );
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('writeFileTool creates a new file and refuses to overwrite an existing file', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src'), { recursive: true });
+      const created = writeFileTool(workspacePath, 'src/new-file.ts', 'export const created = true;\n');
+      assert.strictEqual(created.success, true);
+      assert.match(created.content, /Written/i);
+
+      const duplicate = writeFileTool(workspacePath, 'src/new-file.ts', 'export const created = false;\n');
+      assert.strictEqual(duplicate.success, false);
+      assert.match(duplicate.error ?? '', /Refusing to overwrite existing file/i);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('readFileTool caches partial reads and head/tail return the expected slices', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src'), { recursive: true });
+      const filePath = path.join(workspacePath, 'src', 'sample.txt');
+      const content = [
+        'line-1',
+        'line-2',
+        'line-3',
+        'line-4',
+        'line-5',
+        'line-6',
+        '',
+      ].join('\n');
+      fs.writeFileSync(filePath, content, 'utf-8');
+
+      const firstRead = readFileTool(workspacePath, 'src/sample.txt', { maxLines: 2, offset: 1 });
+      assert.strictEqual(firstRead.success, true);
+      assert.strictEqual(firstRead.meta?.cacheHit, false);
+      assert.match(firstRead.content, /line-2/);
+      assert.match(firstRead.content, /\[\.\.\. 4 more lines\]/);
+
+      const secondRead = readFileTool(workspacePath, 'src/sample.txt', { maxLines: 2, offset: 1 });
+      assert.strictEqual(secondRead.success, true);
+      assert.strictEqual(secondRead.meta?.cacheHit, true);
+
+      const head = headTool(workspacePath, 'src/sample.txt', 2);
+      assert.strictEqual(head.content, ['line-1', 'line-2', '[... 5 more lines]'].join('\n'));
+
+      const tail = tailTool(workspacePath, 'src/sample.txt', 2);
+      assert.strictEqual(tail.content, ['line-6', ''].join('\n'));
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('grepTool and listDirTool return focused workspace results without hidden noise', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src', 'nested'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, '.hidden'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'alpha.ts'),
+        ['export const token = "alpha";', 'console.log(token);', ''].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'nested', 'beta.ts'),
+        ['export const token = "beta";', 'console.log(token);', ''].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(path.join(workspacePath, '.hidden', 'secret.ts'), 'export const token = "secret";\n', 'utf-8');
+
+      const grep = grepTool(workspacePath, 'token', 'src', { contextLines: 0 });
+      assert.strictEqual(grep.success, true);
+      assert.match(grep.content, /src\/alpha\.ts:1/);
+      assert.match(grep.content, /src\/nested\/beta\.ts:1/);
+      assert.strictEqual(grep.content.includes('.hidden'), false);
+
+      const listing = listDirTool(workspacePath, '.', { depth: 1 });
+      assert.strictEqual(listing.success, true);
+      assert.match(listing.content, /src\//);
+      assert.match(listing.content, /  nested\//);
+      assert.strictEqual(listing.content.includes('.hidden'), false);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('validateCodeTool validates JSON files and reports malformed JSON clearly', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'config'), { recursive: true });
+      const goodPath = path.join(workspacePath, 'config', 'valid.json');
+      const badPath = path.join(workspacePath, 'config', 'invalid.json');
+      fs.writeFileSync(goodPath, JSON.stringify({ ok: true }, null, 2), 'utf-8');
+      fs.writeFileSync(badPath, '{ "broken": true,, }', 'utf-8');
+
+      const valid = validateCodeTool(goodPath);
+      assert.strictEqual(valid.success, true);
+      assert.match(valid.content, /Valid JSON/i);
+
+      const invalid = validateCodeTool(badPath);
+      assert.strictEqual(invalid.success, false);
+      assert.match(invalid.error ?? '', /Validation failed/i);
+      assert.match(invalid.content, /JSON|Unexpected token|position/i);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('tool definitions honor capability toggles and discovered extension tools', () => {
+    const config: GalaxyConfig = {
+      ...DEFAULT_CONFIG,
+      toolCapabilities: {
+        ...DEFAULT_CONFIG.toolCapabilities,
+        webResearch: false,
+      },
+      toolToggles: {
+        ...DEFAULT_CONFIG.toolToggles,
+        read_file: true,
+        grep: true,
+      },
+      extensionToolToggles: {
+        ...DEFAULT_CONFIG.extensionToolToggles,
+        open_diff_tool: true,
+      },
+      availableExtensionToolGroups: [
+        {
+          extensionId: 'sample.extension',
+          label: 'Sample Extension',
+          description: 'Sample extension-contributed tools.',
+          version: '1.0.0',
+          source: 'mcp_curated',
+          tools: [
+            {
+              key: 'open_diff_tool',
+              title: 'Open Diff',
+              description: 'Open a diff view.',
+              runtimeName: 'sample_open_diff',
+              tags: ['diff'],
+              invocation: 'command',
+              commandId: 'sample.openDiff',
+            },
+          ],
+        },
+      ],
+    };
+
+    assert.strictEqual(isToolEnabled('read_file', config), true);
+    assert.strictEqual(isToolEnabled('search_web', config), false);
+    assert.ok(findDiscoveredExtensionTool(config, 'sample_open_diff'));
+
+    const definitions = getEnabledToolDefinitions(config);
+    const names = definitions.map((definition) => definition.name);
+    assert.ok(names.includes('read_file'));
+    assert.ok(!names.includes('search_web'));
+    assert.ok(names.includes('sample_open_diff'));
+  });
+
+  test('executeToolAsync dispatches read/write/list helpers through the shared tool context', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src'), { recursive: true });
+      let refreshCalls = 0;
+      const toolContext = {
+        workspaceRoot: workspacePath,
+        config: DEFAULT_CONFIG,
+        revealFile: async () => undefined,
+        refreshWorkspaceFiles: async () => {
+          refreshCalls += 1;
+        },
+      };
+
+      const writeResult = await executeToolAsync(
+        {
+          name: 'write_file',
+          params: {
+            path: 'src/dispatched.ts',
+            content: 'export const dispatched = true;\n',
+          },
+        },
+        toolContext,
+      );
+      assert.strictEqual(writeResult.success, true);
+      assert.strictEqual(refreshCalls, 1);
+
+      const readResult = await executeToolAsync(
+        {
+          name: 'read_file',
+          params: {
+            path: 'src/dispatched.ts',
+            maxLines: 10,
+            offset: 0,
+          },
+        },
+        toolContext,
+      );
+      assert.strictEqual(readResult.success, true);
+      assert.match(readResult.content, /dispatched = true/);
+
+      const listResult = await executeToolAsync(
+        {
+          name: 'list_dir',
+          params: {
+            path: 'src',
+            depth: 0,
+          },
+        },
+        toolContext,
+      );
+      assert.strictEqual(listResult.success, true);
+      assert.match(listResult.content, /dispatched\.ts/);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('runProjectCommandTool executes a direct finite command and captures its output', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const result = await runProjectCommandTool(
+        workspacePath,
+        'node -e "console.log(\'project-command-ok\')"',
+      );
+
+      assert.strictEqual(result.success, true);
+      assert.match(String(result.meta?.tailOutput ?? ''), /project-command-ok/);
+      assert.strictEqual(result.meta?.background, undefined);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('runProjectCommandTool resolves detected project-command ids from workspace profile', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.writeFileSync(
+        path.join(workspacePath, 'package.json'),
+        JSON.stringify(
+          {
+            name: 'command-profile-app',
+            scripts: {
+              build: 'node -e "console.log(\'profile-build-ok\')"',
+            },
+          },
+          null,
+          2,
+        ),
+        'utf-8',
+      );
+
+      const result = await runProjectCommandTool(workspacePath, 'npm-build');
+      assert.strictEqual(result.success, true);
+      assert.match(String(result.meta?.commandText ?? ''), /npm run build/);
+      assert.match(String(result.meta?.tailOutput ?? ''), /profile-build-ok/);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('managed project commands can be started, inspected, awaited, and cleaned up', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const started = startManagedCommandTool(
+        workspacePath,
+        'node -e "console.log(\'managed-start\'); setTimeout(() => console.log(\'managed-end\'), 50)"',
+      );
+      assert.strictEqual(started.success, true);
+      const commandId = String(started.meta?.commandId ?? '');
+      assert.ok(commandId);
+
+      const outputWhileRunning = getManagedProjectCommandOutputTool(commandId, { maxChars: 2000 });
+      assert.strictEqual(outputWhileRunning.success, true);
+
+      const completed = await awaitManagedProjectCommandTool(commandId, { timeoutMs: 4000, maxChars: 2000 });
+      assert.strictEqual(completed.success, true);
+      assert.match(String(completed.meta?.tailOutput ?? ''), /managed-start/);
+      assert.match(String(completed.meta?.tailOutput ?? ''), /managed-end/);
+
+      const killAfterDone = killManagedProjectCommandTool(commandId);
+      assert.strictEqual(killAfterDone.success, true);
+      assert.match(killAfterDone.content, /already completed/i);
+    } finally {
+      managedCommands.clear();
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('managed command await reports running state before completion', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const started = startManagedCommandTool(
+        workspacePath,
+        'node -e "setTimeout(() => console.log(\'late-finish\'), 300)"',
+      );
+      assert.strictEqual(started.success, true);
+      const commandId = String(started.meta?.commandId ?? '');
+
+      const pending = await awaitManagedProjectCommandTool(commandId, { timeoutMs: 10, maxChars: 1000 });
+      assert.strictEqual(pending.success, true);
+      assert.strictEqual(pending.meta?.running, true);
+
+      const completed = await awaitManagedProjectCommandTool(commandId, { timeoutMs: 4000, maxChars: 1000 });
+      assert.strictEqual(completed.success, true);
+      assert.match(String(completed.meta?.tailOutput ?? ''), /late-finish/);
+    } finally {
+      managedCommands.clear();
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('gitStatusTool and gitDiffTool report repository state for a temp git workspace', async () => {
+    const workspacePath = createTempGitWorkspace();
+    try {
+      fs.writeFileSync(path.join(workspacePath, 'tracked.ts'), 'export const value = 1;\n', 'utf-8');
+
+      const status = await gitStatusTool(workspacePath, { short: true });
+      assert.strictEqual(status.success, true);
+      assert.match(status.content, /tracked\.ts/);
+
+      const diff = await gitDiffTool(workspacePath, { pathspec: 'tracked.ts' });
+      assert.strictEqual(diff.success, true);
+      assert.match(String(diff.meta?.commandLabel ?? ''), /git diff/);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('gitAddTool and gitCommitTool stage and commit changes in a temp repo', async () => {
+    const workspacePath = createTempGitWorkspace();
+    try {
+      fs.writeFileSync(path.join(workspacePath, 'commit.ts'), 'export const version = 1;\n', 'utf-8');
+
+      const addResult = await gitAddTool(workspacePath, ['commit.ts']);
+      assert.strictEqual(addResult.success, true);
+
+      const stagedStatus = execSync('git status --short', { cwd: workspacePath, encoding: 'utf-8' });
+      assert.match(stagedStatus, /A\s+commit\.ts/);
+
+      const commitResult = await gitCommitTool(workspacePath, 'Add commit fixture');
+      assert.strictEqual(commitResult.success, true);
+      assert.match(commitResult.content, /Add commit fixture|1 file changed/i);
+
+      const log = execSync('git log --oneline -1', { cwd: workspacePath, encoding: 'utf-8' });
+      assert.match(log, /Add commit fixture/);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('gitCheckoutTool can create and switch to a new branch', async () => {
+    const workspacePath = createTempGitWorkspace();
+    try {
+      fs.writeFileSync(path.join(workspacePath, 'branch.ts'), 'export const branchValue = 1;\n', 'utf-8');
+      execSync('git add branch.ts && git commit -m "seed branch repo"', { cwd: workspacePath, stdio: 'ignore' });
+
+      const checkoutResult = await gitCheckoutTool(workspacePath, 'feature/test-branch', { createBranch: true });
+      assert.strictEqual(checkoutResult.success, true);
+      assert.match(checkoutResult.content, /Switched to a new branch|switched to branch/i);
+      assert.strictEqual(getCurrentGitBranch(workspacePath), 'feature/test-branch');
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('gitPushTool and gitPullTool work with a local bare remote', async function () {
+    this.timeout(10000);
+    const remotePath = fs.mkdtempSync(path.join(os.tmpdir(), 'galaxy-git-remote-'));
+    const clonePath = fs.mkdtempSync(path.join(os.tmpdir(), 'galaxy-git-clone-'));
+    const workspacePath = createTempGitWorkspace();
+    try {
+      execSync('git init --bare', { cwd: remotePath, stdio: 'ignore' });
+      execSync(`git remote add origin "${remotePath}"`, { cwd: workspacePath, stdio: 'ignore' });
+
+      fs.writeFileSync(path.join(workspacePath, 'shared.ts'), 'export const shared = 1;\n', 'utf-8');
+      execSync('git add shared.ts && git commit -m "initial commit"', { cwd: workspacePath, stdio: 'ignore' });
+      const currentBranch = getCurrentGitBranch(workspacePath);
+
+      const pushResult = await gitPushTool(workspacePath, { remote: 'origin', branch: currentBranch });
+      assert.strictEqual(pushResult.success, true);
+
+      execSync(`git clone "${remotePath}" "${clonePath}"`, { stdio: 'ignore' });
+      execSync('git config user.name "Galaxy Clone"', { cwd: clonePath, stdio: 'ignore' });
+      execSync('git config user.email "galaxy-clone@example.com"', { cwd: clonePath, stdio: 'ignore' });
+      fs.writeFileSync(path.join(clonePath, 'shared.ts'), 'export const shared = 2;\n', 'utf-8');
+      execSync('git add shared.ts && git commit -m "remote update"', { cwd: clonePath, stdio: 'ignore' });
+      execSync(`git push origin ${currentBranch}`, { cwd: clonePath, stdio: 'ignore' });
+
+      const pullResult = await gitPullTool(workspacePath, { remote: 'origin', branch: currentBranch });
+      assert.strictEqual(pullResult.success, true);
+      assert.match(fs.readFileSync(path.join(workspacePath, 'shared.ts'), 'utf-8'), /shared = 2/);
+    } finally {
+      fs.rmSync(remotePath, { recursive: true, force: true });
+      fs.rmSync(clonePath, { recursive: true, force: true });
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('gitPushTool and gitPullTool surface actionable failures when no remote is configured', async () => {
+    const workspacePath = createTempGitWorkspace();
+    try {
+      fs.writeFileSync(path.join(workspacePath, 'lonely.ts'), 'export const lonely = true;\n', 'utf-8');
+      execSync('git add lonely.ts && git commit -m "seed no-remote repo"', { cwd: workspacePath, stdio: 'ignore' });
+
+      const pushResult = await gitPushTool(workspacePath, { remote: 'origin', branch: getCurrentGitBranch(workspacePath) });
+      assert.strictEqual(pushResult.success, false);
+      assert.match(pushResult.error ?? '', /git push failed/i);
+      assert.match(String(pushResult.content), /origin|No configured push destination|does not appear to be a git repository/i);
+
+      const pullResult = await gitPullTool(workspacePath, { remote: 'origin', branch: getCurrentGitBranch(workspacePath) });
+      assert.strictEqual(pullResult.success, false);
+      assert.match(pullResult.error ?? '', /git pull failed/i);
+      assert.match(String(pullResult.content), /origin|does not appear to be a git repository|Could not read from remote repository/i);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('tokenizeDirectCommandText keeps quoted Windows-like arguments and rejects shell operators', () => {
+    assert.deepStrictEqual(
+      tokenizeDirectCommandText('git checkout "src/pages/Customer Info.tsx"'),
+      ['git', 'checkout', 'src/pages/Customer Info.tsx'],
+    );
+    assert.strictEqual(tokenizeDirectCommandText('npm run build && npm test'), null);
+  });
+
+  test('buildShellEnvironment adds Windows-preferred PATH entries under win32 simulation', async () => {
+    await withMockedPlatform('win32', async () => {
+      const env = buildShellEnvironment({
+        USERPROFILE: 'C:\\Users\\Galaxy',
+        LOCALAPPDATA: 'C:\\Users\\Galaxy\\AppData\\Local',
+        ProgramFiles: 'C:\\Program Files',
+        'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+        PATH: 'C:\\Windows\\System32',
+      });
+      const pathValue = String(env.PATH ?? '');
+      assert.match(pathValue, /Git[\\/]+cmd/i);
+      assert.match(pathValue, /scoop[\\/]+shims/i);
+      assert.match(pathValue, /Windows[\\/]+System32/i);
+    });
+  });
+
+  test('resolveShellProfile falls back to cmd under win32 simulation when PowerShell is unavailable', async () => {
+    await withMockedPlatform('win32', async () => {
+      const profile = resolveShellProfile();
+      assert.strictEqual(profile.kind, 'cmd');
+      assert.match(profile.executable.toLowerCase(), /cmd(\.exe)?/);
+      assert.deepStrictEqual(profile.commandArgs('echo hello'), ['/d', '/s', '/c', 'echo hello']);
+    });
+  });
+
+  test('resolveCommandBinary resolves relative .cmd paths under win32 simulation', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'scripts'), { recursive: true });
+      const scriptPath = path.join(workspacePath, 'scripts', 'test.cmd');
+      fs.writeFileSync(scriptPath, '@echo off\r\necho ok\r\n', 'utf-8');
+
+      await withMockedPlatform('win32', async () => {
+        const resolved = resolveCommandBinary('./scripts/test.cmd', workspacePath);
+        assert.strictEqual(resolved, scriptPath);
+      });
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('galaxyDesignProjectInfoTool detects framework and package manager from package.json', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.writeFileSync(
+        path.join(workspacePath, 'package.json'),
+        JSON.stringify(
+          {
+            name: 'design-app',
+            packageManager: 'pnpm@9.0.0',
+            dependencies: {
+              react: '^19.0.0',
+            },
+          },
+          null,
+          2,
+        ),
+        'utf-8',
+      );
+
+      const result = await galaxyDesignProjectInfoTool(workspacePath);
+      assert.strictEqual(result.success, true);
+      assert.match(result.content, /Framework: react/i);
+      assert.match(result.content, /Package manager: pnpm \(package-json\)/i);
+      assert.strictEqual(result.meta?.framework, 'react');
+      assert.strictEqual(result.meta?.packageManager, 'pnpm');
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('multiEditFileRangesTool updates a TSX component fixture without leaving duplicated state blocks', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src', 'pages', 'customer'), { recursive: true });
+      const filePath = path.join(workspacePath, 'src', 'pages', 'customer', 'CustomerInfoPage.tsx');
+      fs.writeFileSync(
+        filePath,
+        [
+          'import { useState } from "react";',
+          '',
+          'export function CustomerInfoPage() {',
+          '  const [filterFullName, setFilterFullName] = useState("");',
+          '  const [filterPhone, setFilterPhone] = useState("");',
+          '  const [customers, setCustomers] = useState<string[]>([]);',
+          '',
+          '  return (',
+          '    <section>',
+          '      <button type="button">Search</button>',
+          '    </section>',
+          '  );',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const result = multiEditFileRangesTool(
+        workspacePath,
+        'src/pages/customer/CustomerInfoPage.tsx',
+        [
+          {
+            start_line: 4,
+            end_line: 5,
+            new_content: [
+              '  const [filterFullName, setFilterFullName] = useState("");',
+              '  const [filterIdNumber, setFilterIdNumber] = useState("");',
+              '  const [filterPhone, setFilterPhone] = useState("");',
+            ].join('\n'),
+            expected_range_content: [
+              '  const [filterFullName, setFilterFullName] = useState("");',
+              '  const [filterPhone, setFilterPhone] = useState("");',
+            ].join('\n'),
+          },
+          {
+            start_line: 10,
+            end_line: 10,
+            new_content: '      <button type="button">Search Customer</button>',
+            expected_range_content: '      <button type="button">Search</button>',
+          },
+        ],
+        14,
+      );
+
+      assert.strictEqual(result.success, true);
+      const updated = fs.readFileSync(filePath, 'utf-8');
+      assert.match(updated, /filterIdNumber/);
+      assert.match(updated, /Search Customer/);
+      assert.strictEqual(updated.match(/filterFullName/g)?.length ?? 0, 1);
+      assert.strictEqual(updated.match(/filterPhone/g)?.length ?? 0, 1);
+      assert.strictEqual(updated.match(/Search<\/button>/g)?.length ?? 0, 0);
+      assert.strictEqual(updated.includes('const [filterPhone, setFilterPhone] = useState("");\n  const [filterPhone, setFilterPhone] = useState("");'), false);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('targeted edit tools reject stale snapshot variants without mutating the file', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src'), { recursive: true });
+      const filePath = path.join(workspacePath, 'src', 'stale.ts');
+      const original = [
+        'const first = 1;',
+        'const second = 2;',
+        'const third = 3;',
+        '',
+      ].join('\n');
+      fs.writeFileSync(filePath, original, 'utf-8');
+
+      const cases = [
+        {
+          label: 'range edit with stale expected_range_content',
+          run: () => editFileRangeTool(workspacePath, 'src/stale.ts', {
+            startLine: 2,
+            endLine: 2,
+            newContent: 'const second = 20;',
+            expectedTotalLines: 4,
+            expectedRangeContent: 'const second = 999;',
+          }),
+          pattern: /no longer matches the last read snapshot/i,
+        },
+        {
+          label: 'range edit with stale anchor_after',
+          run: () => editFileRangeTool(workspacePath, 'src/stale.ts', {
+            startLine: 2,
+            endLine: 2,
+            newContent: 'const second = 20;',
+            expectedTotalLines: 4,
+            anchorBefore: 'const first = 1;',
+            anchorAfter: 'const wrong = 0;',
+          }),
+          pattern: /anchor_after no longer matches/i,
+        },
+        {
+          label: 'insert with stale anchor_before',
+          run: () => insertFileAtLineTool(workspacePath, 'src/stale.ts', {
+            line: 2,
+            contentToInsert: 'const inserted = true;',
+            expectedTotalLines: 4,
+            anchorBefore: 'const missing = 0;',
+            anchorAfter: 'const second = 2;',
+          }),
+          pattern: /anchor_before no longer matches/i,
+        },
+      ];
+
+      for (const testCase of cases) {
+        const result = testCase.run();
+        assert.strictEqual(result.success, false, testCase.label);
+        assert.match(result.error ?? '', testCase.pattern, testCase.label);
+        assert.strictEqual(fs.readFileSync(filePath, 'utf-8'), original, testCase.label);
+      }
     } finally {
       cleanupTempWorkspace(workspacePath);
     }
