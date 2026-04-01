@@ -2,7 +2,7 @@
   "name": "galaxy-code-vscode",
   "displayName": "Galaxy Code",
   "description": "AI-powered coding assistant with a Galaxy chat experience for VS Code.",
-  "version": "0.1.53",
+  "version": "0.1.54",
   "publisher": "kevinbui",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -136,6 +136,7 @@
   },
   "scripts": {
     "vscode:prepublish": "yarn run package",
+    "acceptance:collect": "node scripts/collect-acceptance-artifacts.mjs",
     "compile": "yarn run check-types && yarn run lint && node esbuild.js && vite build",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
