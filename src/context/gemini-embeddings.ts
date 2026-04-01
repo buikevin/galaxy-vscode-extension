@@ -1,17 +1,32 @@
-const GEMINI_EMBEDDING_MODEL = 'gemini-embedding-001';
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-03-31
+ * @desc Gemini embedding helpers shared by semantic retrieval layers.
+ */
+
+import { EMBEDDING_TIMEOUT_MS, GEMINI_EMBEDDING_MODEL } from './entities/constants';
+import type { GeminiEmbeddingTaskType } from './entities/gemini';
+
 const GEMINI_EMBEDDING_API_KEY =
   process.env.GEMINI_API_KEY?.trim() ||
   process.env.GOOGLE_API_KEY?.trim() ||
   'AIzaSyBBEuo4Hz1d5oCtSxYe0uULMCXtQS-7DF0';
-const EMBEDDING_TIMEOUT_MS = 2500;
 
+/**
+ * Returns the embedding model name used by current retrieval flows.
+ */
 export function getGeminiEmbeddingModel(): string {
   return GEMINI_EMBEDDING_MODEL;
 }
 
+/**
+ * Requests Gemini embeddings for one batch of texts.
+ */
 export async function embedTexts(
   texts: readonly string[],
-  taskType: 'RETRIEVAL_QUERY' | 'RETRIEVAL_DOCUMENT',
+  taskType: GeminiEmbeddingTaskType,
 ): Promise<readonly (readonly number[])[] | null> {
   if (texts.length === 0) {
     return Object.freeze([]);
@@ -45,6 +60,9 @@ export async function embedTexts(
   }
 }
 
+/**
+ * Computes cosine similarity between two embedding vectors.
+ */
 export function cosineSimilarityEmbedding(
   left: readonly number[] | null | undefined,
   right: readonly number[] | null | undefined,

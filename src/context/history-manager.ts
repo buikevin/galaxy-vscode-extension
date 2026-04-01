@@ -1,281 +1,47 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-04-01
+ * @desc Session history management, working-turn compaction, and memory persistence.
+ */
+
 import path from 'node:path';
 import type { ChatMessage } from '../shared/protocol';
-import type { ToolCall, ToolResult } from '../tools/file-tools';
-import { estimateTokens, HARD_PROMPT_TOKENS } from './compaction';
-import type {
-  ActiveTaskMemory,
-  ProjectMemory,
-  SessionMemory,
-  ToolDigest,
-  TurnDigest,
-  WorkingTurn,
-} from './history-types';
+import type { ToolCall, ToolResult } from '../tools/entities/file-tools';
+import { HARD_PROMPT_TOKENS } from './entities/constants';
+import type { SessionMemory, TurnDigest, WorkingTurn } from './entities/history';
+import type { HistoryManager } from './entities/history-manager';
 import {
-  buildActiveTaskMemoryContent,
-  buildProjectMemoryContent,
   createEmptyActiveTaskMemory,
-  createEmptyProjectMemory,
   deriveCombinedKeyFiles,
-  estimateActiveTaskMemoryTokens,
-  estimateProjectMemoryTokens,
   normalizeActiveTaskMemory,
   normalizeProjectMemory,
 } from './memory-format';
-import { appendTaskMemoryEntry } from './rag-metadata-store';
+import { appendTaskMemoryEntry } from './rag-metadata/task-memory';
 import { createEmptySessionMemory, loadSessionMemory, saveSessionMemory } from './session-store';
 import { clearToolEvidence, createToolEvidence, appendToolEvidence as persistToolEvidence } from './tool-evidence-store';
+import {
+  buildWorkingSessionHandoff,
+  collectFilesTouched,
+  compactActiveTaskMemory,
+  compactProjectMemory,
+  createSessionSummaryLine,
+  createToolDigest,
+  estimateWorkingTurnTokens,
+  extractAttachments,
+  inferTaskMemoryTurnKind,
+  mergeProjectSummary,
+  mergeUniqueItems,
+  summarizeText,
+} from './history/helpers';
 
-const ACTIVE_TASK_MEMORY_SOFT_LIMIT = 32_000;
-const PROJECT_MEMORY_SOFT_LIMIT = 24_000;
-
-export interface HistoryManager {
-  getNotes(): string;
-  getWorkspaceId(): string;
-  getSessionMemory(): SessionMemory;
-  getWorkingTurn(): WorkingTurn | null;
-  startTurn(userMessage: ChatMessage, contextNote?: string): WorkingTurn;
-  appendAssistantDraft(text: string): void;
-  appendContextMessage(message: ChatMessage): void;
-  appendToolMessage(message: ChatMessage): void;
-  appendToolEvidence(opts: { call: ToolCall; result: ToolResult; toolCallId?: string }): void;
-  incrementRound(): void;
-  compactWorkingTurn(opts?: {
-    force?: boolean;
-    workingTurnBudget?: number;
-    promptTokensEstimate?: number;
-  }): boolean;
-  finalizeTurn(opts: { assistantText: string; commitConclusion?: boolean }): TurnDigest | null;
-  recordExternalEvent(summary: string, filesTouched?: readonly string[]): void;
-  clearCurrentTurn(): void;
-  clearAll(): void;
-  save(): void;
-}
-
-function summarizeText(text: string, maxChars = 400): string {
-  const normalized = text.replace(/\s+/g, ' ').trim();
-  if (!normalized) {
-    return '';
-  }
-  return normalized.length > maxChars ? `${normalized.slice(0, maxChars)}...` : normalized;
-}
-
-function getStringParam(message: ChatMessage, key: string): string {
-  const params = message.toolParams as Record<string, unknown> | undefined;
-  const value = params?.[key];
-  return typeof value === 'string' ? value : '';
-}
-
-function mergeUniqueItems(existing: readonly string[], incoming: readonly string[], maxItems: number): readonly string[] {
-  const seen = new Set<string>();
-  const merged: string[] = [];
-  for (const item of [...existing, ...incoming]) {
-    const trimmed = item.trim();
-    if (!trimmed || seen.has(trimmed)) {
-      continue;
-    }
-    seen.add(trimmed);
-    merged.push(trimmed);
-  }
-
-  return Object.freeze(merged.slice(-maxItems));
-}
-
-function createToolDigest(message: ChatMessage): ToolDigest {
-  const toolName = message.toolName ?? 'unknown_tool';
-  const pathParam = getStringParam(message, 'path');
-  const patternParam = getStringParam(message, 'pattern');
-  const success = message.toolSuccess ?? false;
-
-  const filesRead =
-    ['read_file', 'head', 'tail', 'read_document', 'validate_code'].includes(toolName) && pathParam
-      ? Object.freeze([pathParam])
-      : ['galaxy_design_project_info', 'galaxy_design_registry'].includes(toolName) && pathParam
-        ? Object.freeze([pathParam])
-        : toolName === 'grep' && pathParam
-          ? Object.freeze([pathParam])
-          : toolName === 'list_dir' && pathParam
-            ? Object.freeze([pathParam])
-            : Object.freeze([]);
-  const filesWritten =
-    ['write_file', 'edit_file', 'edit_file_range', 'multi_edit_file_ranges', 'galaxy_design_init', 'galaxy_design_add'].includes(toolName) && pathParam
-      ? Object.freeze([pathParam])
-      : Object.freeze([]);
-  const filesReverted = Object.freeze([]);
-
-  const summaryByTool: Record<string, string> = {
-    read_file: `Read ${pathParam || 'file'}`,
-    read_document: `Read document ${pathParam || ''}`.trim(),
-    search_web: `Searched web for ${getStringParam(message, 'query') || 'query'}`,
-    extract_web: 'Extracted web content from URLs',
-    map_web: `Mapped website ${getStringParam(message, 'url') || ''}`.trim(),
-    crawl_web: `Crawled website ${getStringParam(message, 'url') || ''}`.trim(),
-    head: `Read file head ${pathParam || ''}`.trim(),
-    tail: `Read file tail ${pathParam || ''}`.trim(),
-    grep: `Searched ${pathParam || '.'} for ${patternParam || 'pattern'}`,
-    list_dir: `Listed directory ${pathParam || '.'}`,
-    write_file: `Wrote ${pathParam || 'file'}`,
-    edit_file: `Edited ${pathParam || 'file'}`,
-    edit_file_range: `Edited ${pathParam || 'file'} by line range`,
-    multi_edit_file_ranges: `Edited ${pathParam || 'file'} with multiple line ranges`,
-    validate_code: `${success ? 'Validated' : 'Validation failed for'} ${pathParam || 'file'}`,
-    run_project_command: `Ran project command ${getStringParam(message, 'command') || getStringParam(message, 'commandId') || ''}`.trim(),
-    galaxy_design_project_info: `Inspected Galaxy Design project ${pathParam || '.'}`,
-    galaxy_design_registry: `Inspected Galaxy Design registry ${getStringParam(message, 'component') || getStringParam(message, 'group') || getStringParam(message, 'query') || getStringParam(message, 'framework') || ''}`.trim(),
-    galaxy_design_init: `Initialized Galaxy Design in ${pathParam || '.'}`,
-    galaxy_design_add: 'Added Galaxy Design components',
-    request_code_review: success ? 'Ran code review' : 'Code review failed',
-  };
-
-  return Object.freeze({
-    name: toolName,
-    success,
-    summary:
-      summaryByTool[toolName] ??
-      summarizeText(message.content, 140) ??
-      `${toolName} ${success ? 'ok' : 'failed'}`,
-    filesRead,
-    filesWritten,
-    filesReverted,
-  });
-}
-
-function collectFilesTouched(toolDigests: readonly ToolDigest[]): readonly string[] {
-  const files = new Set<string>();
-  for (const digest of toolDigests) {
-    digest.filesRead.forEach((file) => files.add(file));
-    digest.filesWritten.forEach((file) => files.add(file));
-    digest.filesReverted.forEach((file) => files.add(file));
-  }
-  return Object.freeze([...files]);
-}
-
-function extractAttachments(userMessage: ChatMessage, contextNote?: string): readonly string[] {
-  const fromMessage = [
-    ...(userMessage.attachments?.map((attachment) => attachment.label) ?? []),
-    ...(userMessage.figmaAttachments?.map((attachment) => attachment.label) ?? []),
-  ];
-  const fromContext = Array.from((contextNote ?? '').matchAll(/Read (?:file|document) with path "([^"]+)"/g)).map(
-    (match) => match[1]!,
-  );
-  return mergeUniqueItems([], [...fromMessage, ...fromContext], 10);
-}
-
-function buildWorkingSessionHandoff(turn: WorkingTurn, assistantText: string): string {
-  const lines: string[] = ['[WORKING SESSION HANDOFF]'];
-  lines.push(`User request: ${summarizeText(turn.userMessage.content, 260) || 'N/A'}`);
-
-  if (turn.contextNote?.trim()) {
-    lines.push(`Context note: ${summarizeText(turn.contextNote, 220)}`);
-  }
-
-  if (assistantText.trim()) {
-    lines.push(`Latest assistant state: ${summarizeText(assistantText, 320)}`);
-  }
-
-  const completed = turn.toolDigests.filter((digest) => digest.success).map((digest) => digest.summary);
-  const blockers = turn.toolDigests.filter((digest) => !digest.success).map((digest) => digest.summary);
-
-  if (completed.length > 0) {
-    lines.push('Completed actions:');
-    completed.slice(-8).forEach((item) => lines.push(`- ${item}`));
-  }
-
-  if (blockers.length > 0) {
-    lines.push('Blockers:');
-    blockers.slice(-6).forEach((item) => lines.push(`- ${item}`));
-  }
-
-  const filesTouched = collectFilesTouched(turn.toolDigests);
-  if (filesTouched.length > 0) {
-    lines.push(`Files touched: ${filesTouched.join(', ')}`);
-  }
-
-  return lines.join('\n');
-}
-
-function inferTaskMemoryTurnKind(turn: WorkingTurn, assistantText: string): 'analysis' | 'implementation' | 'review' | 'validation' | 'repair' {
-  const toolNames = new Set(turn.toolDigests.map((digest) => digest.name));
-  const lowerAssistantText = assistantText.toLowerCase();
-
-  if (toolNames.has('request_code_review') || lowerAssistantText.includes('review finding')) {
-    return 'review';
-  }
-  if (toolNames.has('validate_code')) {
-    return 'validation';
-  }
-  if (toolNames.has('edit_file_range') || toolNames.has('multi_edit_file_ranges') || toolNames.has('write_file') || toolNames.has('edit_file')) {
-    return lowerAssistantText.includes('fix') || lowerAssistantText.includes('repair') ? 'repair' : 'implementation';
-  }
-  return 'analysis';
-}
-
-function estimateWorkingTurnTokens(turn: WorkingTurn | null): number {
-  if (!turn) {
-    return 0;
-  }
-
-  return (
-    estimateTokens(turn.userMessage.content) +
-    estimateTokens(turn.contextNote ?? '') +
-    estimateTokens(turn.compactSummary ?? '') +
-    turn.contextMessages.reduce((sum, message) => sum + estimateTokens(message.content), 0)
-  );
-}
-
-function mergeProjectSummary(existing: string, next: string): string {
-  const merged = [existing.trim(), next.trim()].filter(Boolean).join('\n\n').trim();
-  return summarizeText(merged, 3_200);
-}
-
-function compactActiveTaskMemory(memory: ActiveTaskMemory): ActiveTaskMemory {
-  if (estimateActiveTaskMemoryTokens(memory) <= ACTIVE_TASK_MEMORY_SOFT_LIMIT) {
-    return normalizeActiveTaskMemory(memory);
-  }
-
-  return normalizeActiveTaskMemory(
-    Object.freeze({
-      ...memory,
-      completedSteps: Object.freeze(memory.completedSteps.slice(-6)),
-      pendingSteps: Object.freeze(memory.pendingSteps.slice(-6)),
-      blockers: Object.freeze(memory.blockers.slice(-4)),
-      filesTouched: Object.freeze(memory.filesTouched.slice(-10)),
-      keyFiles: Object.freeze(memory.keyFiles.slice(-10)),
-      attachments: Object.freeze(memory.attachments.slice(-8)),
-      deniedCommands: Object.freeze(memory.deniedCommands.slice(-8)),
-      recentTurnSummaries: Object.freeze(
-        memory.recentTurnSummaries.slice(-4).map((item) => summarizeText(item, 180)),
-      ),
-      handoffSummary: summarizeText(memory.handoffSummary, 700),
-    }),
-  );
-}
-
-function compactProjectMemory(memory: ProjectMemory): ProjectMemory {
-  if (estimateProjectMemoryTokens(memory) <= PROJECT_MEMORY_SOFT_LIMIT) {
-    return normalizeProjectMemory(memory);
-  }
-
-  return normalizeProjectMemory(
-    Object.freeze({
-      ...memory,
-      summary: summarizeText(memory.summary, 2_400),
-      conventions: Object.freeze(memory.conventions.slice(-6)),
-      recurringPitfalls: Object.freeze(memory.recurringPitfalls.slice(-6)),
-      recentDecisions: Object.freeze(memory.recentDecisions.slice(-8)),
-      keyFiles: Object.freeze(memory.keyFiles.slice(-10)),
-    }),
-  );
-}
-
-function createSessionSummaryLine(digest: TurnDigest): string {
-  const parts = [
-    summarizeText(digest.userMessage, 120),
-    summarizeText(digest.assistantSummary, 180),
-    digest.filesTouched.length > 0 ? `Files: ${digest.filesTouched.join(', ')}` : '',
-  ].filter(Boolean);
-  return parts.join(' | ');
-}
-
+/**
+ * Creates the history manager bound to one extension workspace session.
+ *
+ * @param opts Workspace location and optional persisted notes.
+ * @returns Stateful history manager used by the runtime and prompt builder.
+ */
 export function createHistoryManager(opts: { workspacePath: string; notes?: string }): HistoryManager {
   const workspacePath = path.resolve(opts.workspacePath);
   const notes = opts.notes ?? '';
@@ -285,6 +51,11 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
   let sessionMemory: SessionMemory = loadSessionMemory(workspacePath) ?? defaultSessionMemory;
   const workspaceId = sessionMemory.workspaceId;
 
+  /**
+   * Normalizes and stores the next persisted session memory snapshot.
+   *
+   * @param next Next session memory payload before derived fields are recomputed.
+   */
   function setSessionMemory(next: Omit<SessionMemory, 'keyFiles'>): void {
     const activeTaskMemory = compactActiveTaskMemory(next.activeTaskMemory);
     const projectMemory = compactProjectMemory(next.projectMemory);
@@ -296,6 +67,11 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
     });
   }
 
+  /**
+   * Recomputes the cached token estimate for the active working turn.
+   *
+   * @param next Working-turn payload before tokenEstimate is derived.
+   */
   function setWorkingTurn(next: Omit<WorkingTurn, 'tokenEstimate'>): void {
     const frozen = Object.freeze({
       ...next,
@@ -310,6 +86,12 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
     });
   }
 
+  /**
+   * Returns true when the current user message should open a new active task.
+   *
+   * @param userMessage User message starting the turn.
+   * @returns Whether the message should reset active-task memory.
+   */
   function shouldBeginNewActiveTask(userMessage: ChatMessage): boolean {
     const normalized = userMessage.content.trim().toLowerCase();
     if (normalized === 'continued') {
@@ -327,6 +109,12 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
     return true;
   }
 
+  /**
+   * Resets active task memory for a newly started user task.
+   *
+   * @param userMessage User message starting the new task.
+   * @param contextNote Optional context note attached to the turn.
+   */
   function beginNewActiveTask(userMessage: ChatMessage, contextNote?: string): void {
     const now = Date.now();
     const nextActiveTask = normalizeActiveTaskMemory(
@@ -347,19 +135,26 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
     });
   }
 
-function mergeWorkingSessionIntoMemory(
-  turn: WorkingTurn,
-  assistantText: string,
-  opts?: Readonly<{ commitConclusion?: boolean }>,
-): void {
-  const now = Date.now();
-  const filesTouched = collectFilesTouched(turn.toolDigests);
-  const completedSteps = turn.toolDigests.filter((digest) => digest.success).map((digest) => digest.summary);
-  const blockers = turn.toolDigests.filter((digest) => !digest.success).map((digest) => digest.summary);
-  const handoffSummary = buildWorkingSessionHandoff(turn, assistantText);
-  const commitConclusion = opts?.commitConclusion ?? true;
-  const taskMemory = sessionMemory.activeTaskMemory;
-  const projectMemory = sessionMemory.projectMemory;
+  /**
+   * Merges the finished or compacted working turn into persisted memories.
+   *
+   * @param turn Working turn to persist.
+   * @param assistantText Final assistant text or draft for the turn.
+   * @param opts Optional flags controlling conclusion persistence.
+   */
+  function mergeWorkingSessionIntoMemory(
+    turn: WorkingTurn,
+    assistantText: string,
+    opts?: Readonly<{ commitConclusion?: boolean }>,
+  ): void {
+    const now = Date.now();
+    const filesTouched = collectFilesTouched(turn.toolDigests);
+    const completedSteps = turn.toolDigests.filter((digest) => digest.success).map((digest) => digest.summary);
+    const blockers = turn.toolDigests.filter((digest) => !digest.success).map((digest) => digest.summary);
+    const handoffSummary = buildWorkingSessionHandoff(turn, assistantText);
+    const commitConclusion = opts?.commitConclusion ?? true;
+    const taskMemory = sessionMemory.activeTaskMemory;
+    const projectMemory = sessionMemory.projectMemory;
 
     const nextActiveTask = normalizeActiveTaskMemory(
       Object.freeze({
@@ -518,7 +313,11 @@ function mergeWorkingSessionIntoMemory(
       });
     },
 
-    compactWorkingTurn(opts): boolean {
+    compactWorkingTurn(opts?: {
+      force?: boolean;
+      workingTurnBudget?: number;
+      promptTokensEstimate?: number;
+    }): boolean {
       if (!workingTurn) {
         return false;
       }

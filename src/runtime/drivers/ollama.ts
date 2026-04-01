@@ -1,54 +1,27 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Local Ollama driver for the extension runtime.
+ */
+
 import { Ollama } from 'ollama';
-import type { GalaxyConfig } from '../../config/types';
-import type { AgentDriver, RuntimeMessage, StreamHandler } from '../types';
-import { buildSystemPrompt } from '../system-prompt';
-import { getEnabledToolDefinitions } from '../../tools/file-tools';
+import type { GalaxyConfig } from '../../shared/config';
+import type { AgentDriver, RuntimeMessage, StreamHandler } from '../../shared/runtime';
+import { buildFunctionTools } from './tool-schemas';
+import { buildOllamaCompatibleMessages } from './message-builders';
+import { buildDriverErrorChunk, createDoneEmitter } from './stream-utils';
 
-function buildApiMessages(messages: readonly RuntimeMessage[], config: GalaxyConfig) {
-  return [
-    { role: 'system', content: buildSystemPrompt('ollama', config) },
-    ...messages.flatMap((message): Array<Record<string, unknown>> => {
-      if (message.role === 'assistant' && message.toolCalls?.length) {
-        return [{
-          role: 'assistant',
-          content: message.content || '',
-          tool_calls: message.toolCalls.map((toolCall) => ({
-            function: {
-              name: toolCall.name,
-              arguments: toolCall.params,
-            },
-          })),
-        }];
-      }
-
-      if (message.role === 'tool') {
-        if (!message.toolName) {
-          return [];
-        }
-
-        return [{
-          role: 'tool',
-          content: message.content,
-          tool_name: message.toolName,
-        }];
-      }
-
-      if (message.role === 'user' && message.images?.length) {
-        return [{
-          role: message.role,
-          content: message.content,
-          images: [...message.images],
-        }];
-      }
-
-      return [{
-        role: message.role,
-        content: message.content,
-      }];
-    }),
-  ];
-}
-
+/**
+ * Creates the Ollama driver used by the extension runtime.
+ *
+ * @param model Optional model override selected by the user.
+ * @param baseUrl Optional Ollama host override.
+ * @param config Active Galaxy config used to build prompts and tool definitions.
+ * @param allowTools Whether tool definitions should be exposed to the provider.
+ * @returns Agent driver implementation for Ollama.
+ */
 export function createOllamaDriver(model: string | undefined, baseUrl: string | undefined, config: GalaxyConfig, allowTools = true): AgentDriver {
   const host = baseUrl ?? 'http://localhost:11434';
   const selectedModel = model ?? 'llama3.2';
@@ -59,25 +32,15 @@ export function createOllamaDriver(model: string | undefined, baseUrl: string | 
       const client = new Ollama({ host });
 
       try {
-        const tools = allowTools
-          ? getEnabledToolDefinitions(config).map((tool) => ({
-              type: 'function' as const,
-              function: {
-                name: tool.name,
-                description: tool.description,
-                parameters: tool.parameters as Record<string, unknown>,
-              },
-            }))
-          : undefined;
+        const tools = allowTools ? buildFunctionTools(config) : undefined;
+        const emitDone = createDoneEmitter(onChunk);
         const stream = await client.chat({
           model: selectedModel,
-          messages: buildApiMessages(messages, config) as unknown as import('ollama').Message[],
+          messages: buildOllamaCompatibleMessages('ollama', messages, config) as unknown as import('ollama').Message[],
           ...(tools ? { tools } : {}),
           think: /qwen|deepseek|r1/i.test(selectedModel) ? true : undefined,
           stream: true,
         } as never);
-
-        let doneSent = false;
 
         for await (const chunk of stream) {
           if (chunk.message?.content) {
@@ -103,20 +66,14 @@ export function createOllamaDriver(model: string | undefined, baseUrl: string | 
             }
           }
 
-          if (chunk.done && !doneSent) {
-            doneSent = true;
-            onChunk({ type: 'done' });
+          if (chunk.done) {
+            emitDone();
           }
         }
 
-        if (!doneSent) {
-          onChunk({ type: 'done' });
-        }
+        emitDone();
       } catch (error) {
-        onChunk({
-          type: 'error',
-          message: `Cannot connect to Ollama at ${host}. ${String(error)}`,
-        });
+        onChunk(buildDriverErrorChunk(`Cannot connect to Ollama at ${host}. `, error));
       }
     },
   };

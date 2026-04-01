@@ -1,13 +1,29 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Manual driver for the extension runtime, backed by the hosted Ollama-compatible API.
+ */
+
 import { Ollama } from 'ollama';
-import type { GalaxyConfig } from '../../config/types';
+import type { GalaxyConfig } from '../../shared/config';
 import { getConfigPath } from '../../config/manager';
-import type { AgentDriver, RuntimeMessage, StreamHandler } from '../types';
-import { buildSystemPrompt } from '../system-prompt';
-import { getEnabledToolDefinitions } from '../../tools/file-tools';
+import {
+  MANUAL_DRIVER_RETRY_ATTEMPTS,
+  MANUAL_DRIVER_RETRY_DELAY_MS,
+} from '../../shared/constants';
+import type { AgentDriver, RuntimeMessage, StreamHandler } from '../../shared/runtime';
+import { buildFunctionTools } from './tool-schemas';
+import { buildOllamaCompatibleMessages } from './message-builders';
+import { buildDriverErrorChunk, createDoneEmitter } from './stream-utils';
 
-const MANUAL_RETRY_ATTEMPTS = 2;
-const MANUAL_RETRY_DELAY_MS = 800;
-
+/**
+ * Determines whether a manual-driver error is transient enough to retry.
+ *
+ * @param error Unknown error thrown by the chat client.
+ * @returns `true` when the error looks network-related and worth retrying.
+ */
 function isRetryableManualError(error: unknown): boolean {
   const message = String(error).toLowerCase();
   return (
@@ -21,55 +37,26 @@ function isRetryableManualError(error: unknown): boolean {
   );
 }
 
+/**
+ * Waits for a short retry backoff interval.
+ *
+ * @param ms Delay duration in milliseconds.
+ * @returns Promise resolved after the delay elapses.
+ */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function buildApiMessages(messages: readonly RuntimeMessage[], config: GalaxyConfig) {
-  return [
-    { role: 'system', content: buildSystemPrompt('manual', config) },
-    ...messages.flatMap((message): Array<Record<string, unknown>> => {
-      if (message.role === 'assistant' && message.toolCalls?.length) {
-        return [{
-          role: 'assistant',
-          content: message.content || '',
-          tool_calls: message.toolCalls.map((toolCall) => ({
-            function: {
-              name: toolCall.name,
-              arguments: toolCall.params,
-            },
-          })),
-        }];
-      }
-
-      if (message.role === 'tool') {
-        if (!message.toolName) {
-          return [];
-        }
-
-        return [{
-          role: 'tool',
-          content: message.content,
-          tool_name: message.toolName,
-        }];
-      }
-
-      if (message.role === 'user' && message.images?.length) {
-        return [{
-          role: message.role,
-          content: message.content,
-          images: [...message.images],
-        }];
-      }
-
-      return [{
-        role: message.role,
-        content: message.content,
-      }];
-    }),
-  ];
-}
-
+/**
+ * Creates the manual driver used by the extension runtime.
+ *
+ * @param apiKey API key configured for the manual provider.
+ * @param model Optional model override selected by the user.
+ * @param baseUrl Optional host override for Ollama-compatible backends.
+ * @param config Active Galaxy config used to build prompts and tool definitions.
+ * @param allowTools Whether tool definitions should be exposed to the provider.
+ * @returns Agent driver implementation for the manual provider.
+ */
 export function createManualDriver(
   apiKey: string | undefined,
   model: string | undefined,
@@ -96,29 +83,19 @@ export function createManualDriver(
         headers: { Authorization: `Bearer ${apiKey}` },
       });
 
-      for (let attempt = 0; attempt < MANUAL_RETRY_ATTEMPTS; attempt += 1) {
-        const tools = allowTools
-          ? getEnabledToolDefinitions(config).map((tool) => ({
-              type: 'function' as const,
-              function: {
-                name: tool.name,
-                description: tool.description,
-                parameters: tool.parameters as Record<string, unknown>,
-              },
-            }))
-          : undefined;
+      for (let attempt = 0; attempt < MANUAL_DRIVER_RETRY_ATTEMPTS; attempt += 1) {
+        const tools = allowTools ? buildFunctionTools(config) : undefined;
         let emittedAnyChunk = false;
 
         try {
+          const emitDone = createDoneEmitter(onChunk);
           const stream = await client.chat({
             model: selectedModel,
-            messages: buildApiMessages(messages, config) as unknown as import('ollama').Message[],
+            messages: buildOllamaCompatibleMessages('manual', messages, config) as unknown as import('ollama').Message[],
             ...(tools ? { tools } : {}),
             think: /qwen|deepseek|r1/i.test(selectedModel) ? true : undefined,
             stream: true,
           } as never);
-
-          let doneSent = false;
 
           for await (const chunk of stream) {
             if (chunk.message?.content) {
@@ -147,30 +124,24 @@ export function createManualDriver(
               }
             }
 
-            if (chunk.done && !doneSent) {
-              doneSent = true;
-              onChunk({ type: 'done' });
+            if (chunk.done) {
+              emitDone();
             }
           }
 
-          if (!doneSent) {
-            onChunk({ type: 'done' });
-          }
+          emitDone();
           return;
         } catch (error) {
           const shouldRetry =
             !emittedAnyChunk &&
-            attempt < MANUAL_RETRY_ATTEMPTS - 1 &&
+            attempt < MANUAL_DRIVER_RETRY_ATTEMPTS - 1 &&
             isRetryableManualError(error);
           if (shouldRetry) {
-            await sleep(MANUAL_RETRY_DELAY_MS * (attempt + 1));
+            await sleep(MANUAL_DRIVER_RETRY_DELAY_MS * (attempt + 1));
             continue;
           }
 
-          onChunk({
-            type: 'error',
-            message: `Manual agent error: ${String(error)}`,
-          });
+          onChunk(buildDriverErrorChunk('Manual agent error: ', error));
           return;
         }
       }

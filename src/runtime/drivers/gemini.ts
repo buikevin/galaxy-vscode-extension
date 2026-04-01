@@ -1,9 +1,24 @@
-import type { GalaxyConfig } from '../../config/types';
-import { getConfigPath } from '../../config/manager';
-import type { AgentDriver, RuntimeMessage, StreamHandler } from '../types';
-import { buildSystemPrompt } from '../system-prompt';
-import { getEnabledToolDefinitions } from '../../tools/file-tools';
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Gemini driver for the extension runtime.
+ */
 
+import type { GalaxyConfig } from '../../shared/config';
+import { getConfigPath } from '../../config/manager';
+import type { AgentDriver, RuntimeMessage, StreamHandler } from '../../shared/runtime';
+import { buildGeminiFunctionDeclarations } from './tool-schemas';
+import { buildDriverSystemPrompt } from './message-builders';
+import { buildDriverErrorChunk, createDoneEmitter } from './stream-utils';
+
+/**
+ * Translates runtime messages into Gemini content parts.
+ *
+ * @param messages Runtime transcript messages for the current turn.
+ * @returns API-ready Gemini content payloads.
+ */
 function buildContents(messages: readonly RuntimeMessage[]) {
   const contents: Array<{ role: string; parts: unknown[] }> = [];
   let index = 0;
@@ -61,6 +76,15 @@ function buildContents(messages: readonly RuntimeMessage[]) {
   return contents;
 }
 
+/**
+ * Creates the Gemini driver used by the extension runtime.
+ *
+ * @param apiKey Google API key.
+ * @param model Optional model override selected by the user.
+ * @param config Active Galaxy config used to build prompts and tool definitions.
+ * @param allowTools Whether tool definitions should be exposed to the provider.
+ * @returns Agent driver implementation for Gemini.
+ */
 export function createGeminiDriver(apiKey: string | undefined, model: string | undefined, config: GalaxyConfig, allowTools = true): AgentDriver {
   const selectedModel = model ?? 'gemini-2.5-flash';
 
@@ -78,25 +102,18 @@ export function createGeminiDriver(apiKey: string | undefined, model: string | u
       try {
         const { GoogleGenAI } = await import('@google/genai');
         const client = new GoogleGenAI({ apiKey });
-        const tools = allowTools
-          ? [{
-              functionDeclarations: getEnabledToolDefinitions(config).map((tool) => ({
-                name: tool.name,
-                description: tool.description,
-                parameters: tool.parameters as Record<string, unknown>,
-              })),
-            }]
-          : undefined;
+        const tools = allowTools ? buildGeminiFunctionDeclarations(config) : undefined;
         const streamResult = await client.models.generateContentStream({
           model: selectedModel,
           contents: buildContents(messages) as never,
           config: {
-            systemInstruction: buildSystemPrompt('gemini', config),
+            systemInstruction: buildDriverSystemPrompt('gemini', config),
             ...(tools ? { tools } : {}),
             maxOutputTokens: 4096,
           },
         });
 
+        const emitDone = createDoneEmitter(onChunk);
         for await (const chunk of streamResult) {
           if (chunk.text) {
             onChunk({ type: 'text', delta: chunk.text });
@@ -115,12 +132,9 @@ export function createGeminiDriver(apiKey: string | undefined, model: string | u
           }
         }
 
-        onChunk({ type: 'done' });
+        emitDone();
       } catch (error) {
-        onChunk({
-          type: 'error',
-          message: `Gemini error: ${String(error).slice(0, 300)}`,
-        });
+        onChunk(buildDriverErrorChunk('Gemini error: ', error));
       }
     },
   };

@@ -1,9 +1,18 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-03-31
+ * @desc Converts tool results into durable evidence records and persists them to workspace storage.
+ */
+
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import type { ToolCall, ToolResult } from '../tools/file-tools';
+import type { ToolCall, ToolResult } from '../tools/entities/file-tools';
 import { ensureProjectStorage, getProjectStorageInfo } from './project-store';
-import { appendToolEvidenceMetadata, clearToolEvidenceMetadata } from './rag-metadata-store';
+import { appendToolEvidenceMetadata, clearToolEvidenceMetadata } from './rag-metadata/metadata-sync';
 import { appendTelemetryEvent } from './telemetry';
+import { MAX_RECENT_EVIDENCE } from './entities/constants';
 import type {
   DirectoryEntry,
   FileReadEvidence,
@@ -17,10 +26,11 @@ import type {
   ToolEvidenceBase,
   ToolReportEvidence,
   WebResearchEvidence,
-} from './tool-evidence-types';
+} from './entities/tool-evidence';
 
-const MAX_RECENT_EVIDENCE = 80;
-
+/**
+ * Produces a short summary string for evidence previews.
+ */
 function summarizeText(text: string, maxChars = 160): string {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (!normalized) {
@@ -30,15 +40,24 @@ function summarizeText(text: string, maxChars = 160): string {
   return normalized.length > maxChars ? `${normalized.slice(0, maxChars)}...` : normalized;
 }
 
+/**
+ * Reads a string parameter from a tool call.
+ */
 function getStringParam(call: ToolCall, key: string): string {
   const value = call.params[key];
   return typeof value === 'string' ? value : '';
 }
 
+/**
+ * Returns normalized metadata attached to one tool result.
+ */
 function getMeta(result: ToolResult): Readonly<Record<string, unknown>> {
   return result.meta ?? {};
 }
 
+/**
+ * Converts unknown JSON into strongly typed directory entries.
+ */
 function asDirectoryEntries(value: unknown): readonly DirectoryEntry[] {
   if (!Array.isArray(value)) {
     return Object.freeze([]);
@@ -69,6 +88,9 @@ function asDirectoryEntries(value: unknown): readonly DirectoryEntry[] {
   );
 }
 
+/**
+ * Converts unknown JSON into normalized changed-line ranges.
+ */
 function asChangedLineRanges(
   value: unknown,
 ): readonly Readonly<{ startLine: number; endLine: number }>[] {
@@ -95,6 +117,9 @@ function asChangedLineRanges(
   );
 }
 
+/**
+ * Builds the common evidence envelope shared by all tool evidence variants.
+ */
 function buildBase(opts: {
   workspaceId: string;
   turnId: string;
@@ -118,6 +143,9 @@ function buildBase(opts: {
   });
 }
 
+/**
+ * Converts one tool call/result pair into a structured evidence record when supported.
+ */
 export function createToolEvidence(opts: {
   workspaceId: string;
   turnId: string;
@@ -341,6 +369,9 @@ export function createToolEvidence(opts: {
   return null;
 }
 
+/**
+ * Parses one JSONL evidence row and discards invalid lines.
+ */
 function parseEvidenceLine(line: string): ToolEvidence | null {
   try {
     return JSON.parse(line) as ToolEvidence;
@@ -349,6 +380,9 @@ function parseEvidenceLine(line: string): ToolEvidence | null {
   }
 }
 
+/**
+ * Loads the most recent tool evidence records for one workspace.
+ */
 export function loadRecentToolEvidence(workspacePath: string): readonly ToolEvidence[] {
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);
@@ -369,6 +403,9 @@ export function loadRecentToolEvidence(workspacePath: string): readonly ToolEvid
   }
 }
 
+/**
+ * Appends one evidence record to JSONL storage and mirrors summary metadata to SQLite telemetry.
+ */
 export function appendToolEvidence(workspacePath: string, evidence: ToolEvidence): void {
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);
@@ -403,6 +440,9 @@ export function appendToolEvidence(workspacePath: string, evidence: ToolEvidence
   });
 }
 
+/**
+ * Clears the JSONL evidence stream and its mirrored SQLite metadata for one workspace.
+ */
 export function clearToolEvidence(workspacePath: string): void {
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);

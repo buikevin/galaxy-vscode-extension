@@ -1,6 +1,21 @@
-import type { GalaxyConfig } from '../config/types';
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Build the provider-neutral system prompt used by Galaxy runtime agents.
+ */
+
+import type { GalaxyConfig } from '../shared/config';
 import type { AgentType } from '../shared/protocol';
 
+/**
+ * Builds the full system prompt for the selected runtime agent.
+ *
+ * @param agentType Active agent type for the current turn.
+ * @param config Effective Galaxy configuration after workspace overrides.
+ * @returns Complete system prompt string passed to the provider driver.
+ */
 export function buildSystemPrompt(agentType: AgentType, config: GalaxyConfig): string {
   const capabilities = config.toolCapabilities;
   const identityLine =
@@ -46,6 +61,7 @@ export function buildSystemPrompt(agentType: AgentType, config: GalaxyConfig): s
 - list_dir(path, depth?) — List directory structure inside the workspace. By default this is shallow; increase depth only when needed.
 - head(path, lines?) — Read first N lines of a file.
 - tail(path, lines?) — Read last N lines of a file.
+- For flow/workflow questions, if the prompt already includes "WORKFLOW GRAPH RETRIEVAL", do not call read_file/read_document from offset 0 just to reconstruct the flow again. Reuse the graph first, and only do a targeted reread when exact implementation lines are missing.
 `);
   }
 

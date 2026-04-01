@@ -1,4 +1,12 @@
-import type { GalaxyConfig } from '../config/types';
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Orchestrate one extension chat turn, including prompt building, tool execution, approvals, review, and session tracking.
+ */
+
+import type { GalaxyConfig } from '../shared/config';
 import {
   askActionApproval,
   buildPermissionContextBlock,
@@ -9,159 +17,39 @@ import {
 import { computeWorkingContextBudget, estimateTokens } from '../context/compaction';
 import { buildPromptContext } from '../context/prompt-builder';
 import { appendTelemetryEvent } from '../context/telemetry';
-import type { HistoryManager } from '../context/history-manager';
+import type { HistoryManager } from '../context/entities/history-manager';
+import { scheduleWorkflowGraphRefresh } from '../context/workflow/extractor/runtime';
+import { evaluateWorkflowRereadGuard } from '../context/workflow/reread-guard';
 import type { AgentType, ChatMessage, ToolApprovalDecision } from '../shared/protocol';
+import type { PendingActionApproval, RunResult } from '../shared/runtime';
 import {
   executeToolAsync,
-  getEnabledToolDefinitions,
-  isToolEnabled,
-  normalizeToolName,
-  type FileToolContext,
-  type ToolCall,
-} from '../tools/file-tools';
+} from '../tools/file/dispatch';
+import { getEnabledToolDefinitions, isToolEnabled } from '../tools/file/definitions';
+import { normalizeToolName } from '../tools/file/tooling';
+import type { FileToolContext, ToolCall } from '../tools/entities/file-tools';
 import { runCodeReviewTool } from './code-reviewer';
+import { buildApprovalRequest, getBlockedCapability } from './chat-approvals';
 import { createDriver } from './driver-factory';
 import { captureWorkspaceSnapshot, getSessionFiles, trackWorkspaceChanges } from './session-tracker';
 import { buildSystemPrompt } from './system-prompt';
-import type { StreamChunk } from './types';
+import type { StreamChunk } from '../shared/runtime';
 
-type RunResult = Readonly<{
-  assistantText: string;
-  assistantThinking: string;
-  errorMessage?: string;
-  filesWritten: readonly string[];
-}>;
-
+/**
+ * Creates a stable-ish message id for transcript entries generated during one run.
+ *
+ * @returns Message id string.
+ */
 function createMessageId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-type PendingActionApproval = Readonly<{
-  approvalKey: string;
-  toolName: string;
-  title: string;
-  message: string;
-  details: readonly string[];
-}>;
-
-function getBlockedCapability(toolName: string): string {
-  if (toolName === 'request_code_review') {
-    return 'review';
-  }
-  if (toolName === 'validate_code') {
-    return 'validation';
-  }
-  if (toolName === 'search_web' || toolName === 'extract_web' || toolName === 'map_web' || toolName === 'crawl_web') {
-    return 'webResearch';
-  }
-  if (toolName.startsWith('vscode_')) {
-    return 'vscodeNative';
-  }
-  if (toolName === 'search_extension_tools' || toolName === 'activate_extension_tools') {
-    return 'vscodeNative';
-  }
-  if (toolName.startsWith('galaxy_design')) {
-    return 'galaxyDesign';
-  }
-  if (
-    toolName === 'write_file' ||
-    toolName === 'edit_file' ||
-    toolName === 'edit_file_range' ||
-    toolName === 'multi_edit_file_ranges' ||
-    toolName === 'revert_file' ||
-    toolName === 'diff_file'
-  ) {
-    return 'editFiles';
-  }
-  if (
-    toolName === 'run_project_command' ||
-    toolName === 'run_terminal_command' ||
-    toolName === 'await_terminal_command' ||
-    toolName === 'get_terminal_output' ||
-    toolName === 'kill_terminal_command' ||
-    toolName === 'git_status' ||
-    toolName === 'git_diff' ||
-    toolName === 'git_add' ||
-    toolName === 'git_commit' ||
-    toolName === 'git_push' ||
-    toolName === 'git_pull' ||
-    toolName === 'git_checkout'
-  ) {
-    return 'runCommands';
-  }
-  return 'readProject';
-}
-
-function buildApprovalRequest(opts: {
-  workspacePath: string;
-  config: GalaxyConfig;
-  toolName: string;
-  params: Record<string, unknown>;
-}): PendingActionApproval | null {
-  const toolName = normalizeToolName(opts.toolName);
-
-  if (toolName === 'run_project_command' || toolName === 'run_terminal_command') {
-    if (!opts.config.toolSafety.requireApprovalForProjectCommand) {
-      return null;
-    }
-    const command = String(opts.params.command ?? opts.params.commandId ?? '').trim();
-    const cwd = String(opts.params.cwd ?? '.').trim() || '.';
-    if (command) {
-      return Object.freeze({
-        approvalKey: command,
-        toolName,
-        title: 'Cấp quyền chạy lệnh',
-        message: 'AI Agent muốn chạy một lệnh trong workspace hiện tại.',
-        details: Object.freeze([
-          `Command: ${command}`,
-          `cwd: ${cwd}`,
-        ]),
-      });
-    }
-  }
-
-  if (toolName === 'git_pull' && opts.config.toolSafety.requireApprovalForGitPull) {
-    return Object.freeze({
-      approvalKey: `git_pull:${String(opts.params.remote ?? '').trim()}:${String(opts.params.branch ?? '').trim()}`,
-      toolName,
-      title: 'Cấp quyền git pull',
-      message: 'AI Agent muốn kéo thay đổi mới từ remote Git.',
-      details: Object.freeze([
-        `remote: ${String(opts.params.remote ?? '(default)')}`,
-        `branch: ${String(opts.params.branch ?? '(tracking branch)')}`,
-      ]),
-    });
-  }
-
-  if (toolName === 'git_push' && opts.config.toolSafety.requireApprovalForGitPush) {
-    return Object.freeze({
-      approvalKey: `git_push:${String(opts.params.remote ?? '').trim()}:${String(opts.params.branch ?? '').trim()}`,
-      toolName,
-      title: 'Cấp quyền git push',
-      message: 'AI Agent muốn đẩy commit lên remote Git.',
-      details: Object.freeze([
-        `remote: ${String(opts.params.remote ?? '(default)')}`,
-        `branch: ${String(opts.params.branch ?? '(current branch)')}`,
-      ]),
-    });
-  }
-
-  if (toolName === 'git_checkout' && opts.config.toolSafety.requireApprovalForGitCheckout) {
-    return Object.freeze({
-      approvalKey: `git_checkout:${String(opts.params.ref ?? '').trim()}`,
-      toolName,
-      title: 'Cấp quyền git checkout',
-      message: 'AI Agent muốn checkout hoặc tạo branch Git.',
-      details: Object.freeze([
-        `ref: ${String(opts.params.ref ?? '')}`,
-        `createBranch: ${String(Boolean(opts.params.createBranch ?? false))}`,
-      ]),
-    });
-  }
-
-  return null;
-}
-
+/**
+ * Runs one full extension chat turn, including prompt assembly, tool loops, approvals, validation handoff, and telemetry.
+ *
+ * @param opts Turn runtime dependencies and UI callbacks.
+ * @returns Final accumulated assistant output and file-write summary for the turn.
+ */
 export async function runExtensionChat(opts: {
   config: GalaxyConfig;
   agentType: AgentType;
@@ -449,6 +337,32 @@ export async function runExtensionChat(opts: {
         }
       }
 
+      const workflowGuardDecision = evaluateWorkflowRereadGuard({
+        workspacePath,
+        toolName,
+        params: call.params,
+        guard: promptBuild.workflowRereadGuard,
+      });
+      if (workflowGuardDecision.blocked) {
+        const blockedToolMessage: ChatMessage = Object.freeze({
+          id: createMessageId(),
+          role: 'tool',
+          content: `Error: ${workflowGuardDecision.reason}`,
+          timestamp: Date.now(),
+          toolName,
+          toolParams: Object.freeze(call.params),
+          toolSuccess: false,
+          toolCallId: toolCall.id,
+          toolMeta: Object.freeze({
+            blockedBy: 'workflow_reread_guard',
+            relativePath: workflowGuardDecision.relativePath ?? '',
+          }),
+        });
+        opts.historyManager.appendToolMessage(blockedToolMessage);
+        await opts.onMessage(blockedToolMessage);
+        continue;
+      }
+
       await opts.onStatus?.(`Executing: ${toolName}`);
       const shouldTrackWorkspaceChanges = [
         'run_project_command',
@@ -493,16 +407,34 @@ export async function runExtensionChat(opts: {
         result.success &&
         touchedPath &&
         (
-          ['write_file', 'edit_file', 'edit_file_range', 'multi_edit_file_ranges'].includes(toolName) ||
+          ['write_file', 'insert_file_at_line', 'edit_file', 'edit_file_range', 'multi_edit_file_ranges'].includes(toolName) ||
           ['galaxy_design_init', 'galaxy_design_add'].includes(toolName)
         )
       ) {
         filesWritten.add(touchedPath);
       }
+      const workflowRefreshPaths = new Set<string>();
+      if (
+        result.success &&
+        touchedPath &&
+        (
+          ['write_file', 'insert_file_at_line', 'edit_file', 'edit_file_range', 'multi_edit_file_ranges', 'revert_file'].includes(toolName) ||
+          ['galaxy_design_init', 'galaxy_design_add'].includes(toolName)
+        )
+      ) {
+        workflowRefreshPaths.add(touchedPath);
+      }
       if (result.success && workspaceSnapshotBefore) {
         for (const changedPath of trackWorkspaceChanges(workspacePath, workspaceSnapshotBefore)) {
           filesWritten.add(changedPath);
+          workflowRefreshPaths.add(changedPath);
         }
+      }
+      if (result.success && workflowRefreshPaths.size > 0) {
+        scheduleWorkflowGraphRefresh(workspacePath, {
+          reason: `tool:${toolName}`,
+          filePaths: [...workflowRefreshPaths],
+        });
       }
       const toolMessage: ChatMessage = Object.freeze({
         id: createMessageId(),

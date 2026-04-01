@@ -1,10 +1,25 @@
-import type Anthropic from '@anthropic-ai/sdk';
-import type { GalaxyConfig } from '../../config/types';
-import { getConfigPath } from '../../config/manager';
-import type { AgentDriver, RuntimeMessage, StreamHandler } from '../types';
-import { buildSystemPrompt } from '../system-prompt';
-import { getEnabledToolDefinitions } from '../../tools/file-tools';
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Claude driver for the extension runtime.
+ */
 
+import type Anthropic from '@anthropic-ai/sdk';
+import type { GalaxyConfig } from '../../shared/config';
+import { getConfigPath } from '../../config/manager';
+import type { AgentDriver, RuntimeMessage, StreamHandler } from '../../shared/runtime';
+import { buildDriverSystemPrompt } from './message-builders';
+import { buildDriverErrorChunk, createDoneEmitter, parseToolArguments } from './stream-utils';
+import { getEnabledToolDefinitions } from '../../tools/file/definitions';
+
+/**
+ * Translates runtime messages into Anthropic message blocks.
+ *
+ * @param messages Runtime transcript messages for the current turn.
+ * @returns API-ready Anthropic message payloads.
+ */
 function buildMessages(messages: readonly RuntimeMessage[]) {
   const apiMessages: Array<Record<string, unknown>> = [];
   let index = 0;
@@ -61,6 +76,15 @@ function buildMessages(messages: readonly RuntimeMessage[]) {
   return apiMessages;
 }
 
+/**
+ * Creates the Claude driver used by the extension runtime.
+ *
+ * @param apiKey Anthropic API key.
+ * @param model Optional model override selected by the user.
+ * @param config Active Galaxy config used to build prompts and tool definitions.
+ * @param allowTools Whether tool definitions should be exposed to the provider.
+ * @returns Agent driver implementation for Claude.
+ */
 export function createClaudeDriver(apiKey: string | undefined, model: string | undefined, config: GalaxyConfig, allowTools = true): AgentDriver {
   const selectedModel = model ?? 'claude-sonnet-4-5-20250929';
 
@@ -88,7 +112,7 @@ export function createClaudeDriver(apiKey: string | undefined, model: string | u
         const stream = client.messages.stream({
           model: selectedModel,
           max_tokens: 4096,
-          system: buildSystemPrompt('claude', config),
+          system: buildDriverSystemPrompt('claude', config),
           messages: buildMessages(messages) as never,
           ...(tools ? { tools } : {}),
         } as never);
@@ -96,7 +120,7 @@ export function createClaudeDriver(apiKey: string | undefined, model: string | u
         let currentToolName = '';
         let currentToolInput = '';
         let inToolUse = false;
-        let doneSent = false;
+        const emitDone = createDoneEmitter(onChunk);
 
         for await (const event of stream) {
           if (event.type === 'content_block_start' && event.content_block.type === 'tool_use') {
@@ -108,42 +132,26 @@ export function createClaudeDriver(apiKey: string | undefined, model: string | u
           } else if (event.type === 'content_block_delta' && event.delta.type === 'input_json_delta') {
             currentToolInput += event.delta.partial_json;
           } else if (event.type === 'content_block_stop' && inToolUse && currentToolName) {
-            try {
-              onChunk({
-                type: 'tool_call',
-                call: {
-                  name: currentToolName,
-                  params: JSON.parse(currentToolInput || '{}') as Record<string, unknown>,
-                },
-              });
-            } catch {
-              onChunk({
-                type: 'tool_call',
-                call: {
-                  name: currentToolName,
-                  params: {},
-                },
-              });
-            }
+            onChunk({
+              type: 'tool_call',
+              call: {
+                name: currentToolName,
+                params: parseToolArguments(currentToolInput),
+              },
+            });
             inToolUse = false;
             currentToolName = '';
             currentToolInput = '';
           }
 
-          if (event.type === 'message_stop' && !doneSent) {
-            doneSent = true;
-            onChunk({ type: 'done' });
+          if (event.type === 'message_stop') {
+            emitDone();
           }
         }
 
-        if (!doneSent) {
-          onChunk({ type: 'done' });
-        }
+        emitDone();
       } catch (error) {
-        onChunk({
-          type: 'error',
-          message: `Claude error: ${String(error).slice(0, 300)}`,
-        });
+        onChunk(buildDriverErrorChunk('Claude error: ', error));
       }
     },
   };

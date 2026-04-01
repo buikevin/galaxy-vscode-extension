@@ -1,22 +1,23 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Lightweight local HTTP bridge that accepts Figma imports from the companion plugin and forwards them into Galaxy storage.
+ */
+
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { FigmaImportRequest } from './design-types';
+import { FIGMA_BRIDGE_HOST, FIGMA_BRIDGE_PORT } from '../shared/constants';
+import type { FigmaBridgeImportHandler, FigmaBridgeServer, FigmaImportRequest } from '../shared/figma';
 
-export const FIGMA_BRIDGE_HOST = '127.0.0.1';
-export const FIGMA_BRIDGE_PORT = 47123;
-
-export type FigmaBridgeImportHandler = (payload: FigmaImportRequest) => Promise<Readonly<{
-  importId: string;
-  storedAt: string;
-  summary: string;
-}>>;
-
-export type FigmaBridgeServer = Readonly<{
-  host: string;
-  port: number;
-  stop(): Promise<void>;
-}>;
-
+/**
+ * Sends one JSON response with the standard bridge CORS headers.
+ *
+ * @param response Node HTTP response object.
+ * @param statusCode HTTP status code to send.
+ * @param payload JSON payload body.
+ */
 function sendJson(response: http.ServerResponse, statusCode: number, payload: unknown): void {
   response.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -27,10 +28,22 @@ function sendJson(response: http.ServerResponse, statusCode: number, payload: un
   response.end(JSON.stringify(payload));
 }
 
+/**
+ * Checks whether a value is a non-null object.
+ *
+ * @param value Unknown value to test.
+ * @returns `true` when the value is object-like.
+ */
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+/**
+ * Validates whether an unknown payload matches the expected Figma import request shape.
+ *
+ * @param value Unknown JSON payload.
+ * @returns `true` when the payload looks like a supported Figma import request.
+ */
 function isFigmaImportRequest(value: unknown): value is FigmaImportRequest {
   if (!isObject(value) || value.source !== 'figma-plugin' || !isObject(value.document)) {
     return false;
@@ -40,6 +53,12 @@ function isFigmaImportRequest(value: unknown): value is FigmaImportRequest {
   return document.source === 'figma' && document.version === 1 && Array.isArray(document.selection);
 }
 
+/**
+ * Starts the local Figma bridge server used by the Galaxy companion plugin.
+ *
+ * @param opts Import callback invoked when a valid payload is received.
+ * @returns Running bridge server handle.
+ */
 export async function startFigmaBridgeServer(opts: {
   onImport: FigmaBridgeImportHandler;
 }): Promise<FigmaBridgeServer> {

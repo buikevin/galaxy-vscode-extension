@@ -1,12 +1,24 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-03-31
+ * @desc Normalization and formatting helpers for active task and project memory.
+ */
+
 import { estimateTokens } from './compaction';
-import type { ActiveTaskMemory, ProjectMemory } from './history-types';
+import {
+  MAX_ACTIVE_LIST_ITEMS,
+  MAX_HANDOFF_SUMMARY_CHARS,
+  MAX_KEY_FILES,
+  MAX_PROJECT_DECISIONS,
+  MAX_PROJECT_SUMMARY_CHARS,
+} from './entities/constants';
+import type { ActiveTaskMemory, ProjectMemory } from './entities/history';
 
-const MAX_ACTIVE_LIST_ITEMS = 8;
-const MAX_KEY_FILES = 12;
-const MAX_PROJECT_DECISIONS = 10;
-const MAX_PROJECT_SUMMARY_CHARS = 3_200;
-const MAX_HANDOFF_SUMMARY_CHARS = 900;
-
+/**
+ * Deduplicates and trims one memory list while preserving recency.
+ */
 function normalizeList(items: readonly string[], maxItems: number): readonly string[] {
   const seen = new Set<string>();
   const normalized: string[] = [];
@@ -25,6 +37,9 @@ function normalizeList(items: readonly string[], maxItems: number): readonly str
   return Object.freeze(normalized.slice(-maxItems));
 }
 
+/**
+ * Produces a bounded single-line summary for memory fields.
+ */
 function summarizeText(text: string, maxChars: number): string {
   const normalized = text.replace(/\s+/g, ' ').trim();
   if (!normalized) {
@@ -33,6 +48,9 @@ function summarizeText(text: string, maxChars: number): string {
   return normalized.length > maxChars ? `${normalized.slice(0, maxChars)}...` : normalized;
 }
 
+/**
+ * Appends a titled list block into a memory content buffer.
+ */
 function pushList(lines: string[], title: string, items: readonly string[]): void {
   if (items.length === 0) {
     return;
@@ -44,6 +62,9 @@ function pushList(lines: string[], title: string, items: readonly string[]): voi
   lines.push('');
 }
 
+/**
+ * Creates an empty active task memory snapshot.
+ */
 export function createEmptyActiveTaskMemory(now = Date.now()): ActiveTaskMemory {
   return Object.freeze({
     taskId: null,
@@ -63,6 +84,9 @@ export function createEmptyActiveTaskMemory(now = Date.now()): ActiveTaskMemory 
   });
 }
 
+/**
+ * Creates an empty project memory snapshot.
+ */
 export function createEmptyProjectMemory(now = Date.now()): ProjectMemory {
   return Object.freeze({
     summary: '',
@@ -74,6 +98,9 @@ export function createEmptyProjectMemory(now = Date.now()): ProjectMemory {
   });
 }
 
+/**
+ * Derives the combined key file list shared across prompt retrieval.
+ */
 export function deriveCombinedKeyFiles(
   activeTaskMemory: ActiveTaskMemory,
   projectMemory: ProjectMemory,
@@ -84,6 +111,9 @@ export function deriveCombinedKeyFiles(
   );
 }
 
+/**
+ * Normalizes active task memory into bounded, deduplicated fields.
+ */
 export function normalizeActiveTaskMemory(memory: ActiveTaskMemory): ActiveTaskMemory {
   return Object.freeze({
     ...memory,
@@ -105,6 +135,9 @@ export function normalizeActiveTaskMemory(memory: ActiveTaskMemory): ActiveTaskM
   });
 }
 
+/**
+ * Normalizes project memory into bounded, deduplicated fields.
+ */
 export function normalizeProjectMemory(memory: ProjectMemory): ProjectMemory {
   return Object.freeze({
     ...memory,
@@ -119,6 +152,9 @@ export function normalizeProjectMemory(memory: ProjectMemory): ProjectMemory {
   });
 }
 
+/**
+ * Builds the prompt block for active task memory.
+ */
 export function buildActiveTaskMemoryContent(memory: ActiveTaskMemory): string {
   const normalized = normalizeActiveTaskMemory(memory);
   const lines: string[] = [];
@@ -151,6 +187,9 @@ export function buildActiveTaskMemoryContent(memory: ActiveTaskMemory): string {
   return lines.join('\n').trim();
 }
 
+/**
+ * Builds the prompt block for project memory.
+ */
 export function buildProjectMemoryContent(memory: ProjectMemory): string {
   const normalized = normalizeProjectMemory(memory);
   const lines: string[] = [];
@@ -169,10 +208,16 @@ export function buildProjectMemoryContent(memory: ProjectMemory): string {
   return lines.join('\n').trim();
 }
 
+/**
+ * Estimates token usage for the active task memory block.
+ */
 export function estimateActiveTaskMemoryTokens(memory: ActiveTaskMemory): number {
   return estimateTokens(buildActiveTaskMemoryContent(memory));
 }
 
+/**
+ * Estimates token usage for the project memory block.
+ */
 export function estimateProjectMemoryTokens(memory: ProjectMemory): number {
   return estimateTokens(buildProjectMemoryContent(memory));
 }

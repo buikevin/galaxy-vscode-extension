@@ -1,110 +1,51 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-03-31
+ * @desc Resolves and prepares per-workspace storage paths used by Galaxy context subsystems.
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getConfigDir } from '../config/manager';
+import { STORAGE_VERSION } from './entities/constants';
+import type { ProjectMeta, ProjectStorageInfo } from './entities/project-store';
 
-export type ProjectMeta = Readonly<{
-  workspaceId: string;
-  workspaceName: string;
-  workspacePath: string;
-  projectDirName: string;
-  createdAt: number;
-  lastOpenedAt: number;
-  storageVersion: number;
-  toolCapabilities?: Readonly<{
-    readProject?: boolean;
-    editFiles?: boolean;
-    runCommands?: boolean;
-    webResearch?: boolean;
-    validation?: boolean;
-    review?: boolean;
-    vscodeNative?: boolean;
-    galaxyDesign?: boolean;
-  }>;
-  toolToggles?: Readonly<Record<string, boolean>>;
-  extensionToolToggles?: Readonly<Record<string, boolean>>;
-  latestTestFailure?: Readonly<{
-    capturedAt: number;
-    summary: string;
-    command: string;
-    profile: string;
-    category: string;
-    issues: readonly Readonly<{
-      filePath?: string;
-      line?: number;
-      column?: number;
-      severity: 'error' | 'warning';
-      message: string;
-      source: string;
-    }>[];
-  }>;
-  latestReviewFindings?: Readonly<{
-    capturedAt: number;
-    summary: string;
-    findings: readonly Readonly<{
-      id: string;
-      severity: 'critical' | 'warning' | 'info';
-      location: string;
-      message: string;
-      status?: 'open' | 'dismissed';
-    }>[];
-  }>;
-}>;
-
-export type ProjectStorageInfo = Readonly<{
-  workspaceId: string;
-  workspaceName: string;
-  workspacePath: string;
-  projectDirName: string;
-  projectDirPath: string;
-  chromaDirPath: string;
-  chromaLogPath: string;
-  chromaStatePath: string;
-  localGalaxyDirPath: string;
-  localSettingsPath: string;
-  projectMetaPath: string;
-  debugLogPath: string;
-  sessionMemoryPath: string;
-  uiTranscriptPath: string;
-  actionApprovalsPath: string;
-  projectCommandsPath: string;
-  toolEvidencePath: string;
-  telemetryPath: string;
-  telemetrySummaryPath: string;
-  commandContextPath: string;
-  syntaxIndexPath: string;
-  semanticIndexPath: string;
-  ragMetadataDbPath: string;
-  figmaImportsPath: string;
-  figmaAssetsDirPath: string;
-  attachmentsDirPath: string;
-  attachmentsIndexPath: string;
-  attachmentsFilesDirPath: string;
-  attachmentsTextDirPath: string;
-  attachmentsImagesDirPath: string;
-  attachmentsFigmaDirPath: string;
-}>;
-
-const STORAGE_VERSION = 1;
-
+/**
+ * Converts arbitrary path segments into filesystem-safe names.
+ */
 function sanitizeSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'workspace';
 }
 
+/**
+ * Returns the root directory that stores per-workspace Galaxy data.
+ */
 function getProjectsDir(): string {
   return path.join(getConfigDir(), 'projects');
 }
 
+/**
+ * Ensures one directory exists.
+ */
 function ensureDir(dirPath: string): void {
   if (!fs.existsSync(dirPath)) {
     fs.mkdirSync(dirPath, { recursive: true });
   }
 }
 
+/**
+ * Creates a stable workspace id from the canonical workspace path.
+ */
 function createWorkspaceId(workspacePath: string): string {
   return createHash('sha1').update(path.resolve(workspacePath)).digest('hex');
 }
 
+/**
+ * Resolves all storage paths associated with one workspace.
+ */
 export function getProjectStorageInfo(workspacePath: string): ProjectStorageInfo {
   const resolvedPath = path.resolve(workspacePath);
   const workspaceId = createWorkspaceId(resolvedPath);
@@ -150,6 +91,9 @@ export function getProjectStorageInfo(workspacePath: string): ProjectStorageInfo
   });
 }
 
+/**
+ * Creates the on-disk storage layout for one workspace if it does not exist yet.
+ */
 export function ensureProjectStorage(info: ProjectStorageInfo): void {
   ensureDir(getProjectsDir());
   ensureDir(info.projectDirPath);
@@ -192,6 +136,9 @@ export function ensureProjectStorage(info: ProjectStorageInfo): void {
   }
 }
 
+/**
+ * Loads persisted project metadata for one workspace.
+ */
 export function loadProjectMeta(info: ProjectStorageInfo): ProjectMeta | null {
   ensureProjectStorage(info);
   if (!fs.existsSync(info.projectMetaPath)) {
@@ -206,6 +153,9 @@ export function loadProjectMeta(info: ProjectStorageInfo): ProjectMeta | null {
   }
 }
 
+/**
+ * Persists normalized project metadata and refreshes the last-opened timestamp.
+ */
 export function saveProjectMeta(info: ProjectStorageInfo, previous?: ProjectMeta | null): ProjectMeta {
   ensureProjectStorage(info);
   const now = Date.now();

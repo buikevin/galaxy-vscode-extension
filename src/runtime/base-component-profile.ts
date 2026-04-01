@@ -1,22 +1,22 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Detects the base component system used by the current workspace.
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
+import { BASE_COMPONENT_UI_DIRECTORY_CANDIDATES } from '../shared/constants';
+import type { BaseComponentLibrary, BaseComponentProfile } from '../shared/base-component-profile';
 
-export type BaseComponentLibrary =
-  | 'galaxy-design'
-  | 'shadcn-ui'
-  | 'antd'
-  | 'mui'
-  | 'chakra-ui'
-  | 'radix-custom'
-  | 'unknown';
-
-export type BaseComponentProfile = Readonly<{
-  library: BaseComponentLibrary;
-  confidence: 'high' | 'medium' | 'low';
-  evidence: readonly string[];
-  guidance: readonly string[];
-}>;
-
+/**
+ * Reads and parses a JSON file when it exists.
+ *
+ * @param filePath Absolute file path to parse.
+ * @returns Parsed JSON object or `null` when the file is missing or invalid.
+ */
 function readJsonFile(filePath: string): Record<string, unknown> | null {
   if (!fs.existsSync(filePath)) {
     return null;
@@ -29,6 +29,13 @@ function readJsonFile(filePath: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * Checks whether a directory exists under the workspace.
+ *
+ * @param workspacePath Absolute workspace root path.
+ * @param relativePath Relative directory path to inspect.
+ * @returns `true` when the target exists and is a directory.
+ */
 function hasDir(workspacePath: string, relativePath: string): boolean {
   try {
     return fs.statSync(path.join(workspacePath, relativePath)).isDirectory();
@@ -37,6 +44,12 @@ function hasDir(workspacePath: string, relativePath: string): boolean {
   }
 }
 
+/**
+ * Merges dependency and devDependency declarations into one lookup object.
+ *
+ * @param packageJson Parsed package.json content.
+ * @returns Combined dependency map used for library detection.
+ */
 function getDependencies(packageJson: Record<string, unknown> | null): Record<string, unknown> {
   if (!packageJson) {
     return {};
@@ -48,10 +61,26 @@ function getDependencies(packageJson: Record<string, unknown> | null): Record<st
   };
 }
 
+/**
+ * Checks whether a dependency is declared with a string version.
+ *
+ * @param dependencies Combined dependency map from package.json.
+ * @param name Package name to look up.
+ * @returns `true` when the dependency exists.
+ */
 function hasDependency(dependencies: Record<string, unknown>, name: string): boolean {
   return typeof dependencies[name] === 'string';
 }
 
+/**
+ * Builds an immutable base component profile result.
+ *
+ * @param library Detected component library family.
+ * @param confidence Confidence assigned to the detection result.
+ * @param evidence Evidence strings that justify the classification.
+ * @param guidance Guidance lines injected into prompts.
+ * @returns Immutable base component profile result.
+ */
 function buildProfile(
   library: BaseComponentLibrary,
   confidence: BaseComponentProfile['confidence'],
@@ -66,16 +95,21 @@ function buildProfile(
   });
 }
 
+/**
+ * Detects the likely base component system used by the workspace.
+ *
+ * @param workspacePath Absolute or relative workspace root path.
+ * @returns Structured component-profile result used by prompt context builders.
+ */
 export function detectBaseComponentProfile(workspacePath: string): BaseComponentProfile {
   const resolvedWorkspace = path.resolve(workspacePath);
   const packageJson = readJsonFile(path.join(resolvedWorkspace, 'package.json'));
   const componentsJson = readJsonFile(path.join(resolvedWorkspace, 'components.json'));
   const dependencies = getDependencies(packageJson);
 
-  const hasComponentsUiDir =
-    hasDir(resolvedWorkspace, 'components/ui') ||
-    hasDir(resolvedWorkspace, 'src/components/ui') ||
-    hasDir(resolvedWorkspace, 'app/components/ui');
+  const hasComponentsUiDir = BASE_COMPONENT_UI_DIRECTORY_CANDIDATES.some((directoryPath) =>
+    hasDir(resolvedWorkspace, directoryPath),
+  );
 
   const componentsFramework = typeof componentsJson?.framework === 'string'
     ? componentsJson.framework.toLowerCase()
@@ -193,6 +227,12 @@ export function detectBaseComponentProfile(workspacePath: string): BaseComponent
   );
 }
 
+/**
+ * Builds a prompt-ready note describing the detected base component system.
+ *
+ * @param workspacePath Absolute or relative workspace root path.
+ * @returns Multiline note that can be injected into runtime context.
+ */
 export function buildBaseComponentContextNote(workspacePath: string): string {
   const profile = detectBaseComponentProfile(workspacePath);
   const lines = [

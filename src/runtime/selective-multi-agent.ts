@@ -1,29 +1,39 @@
-import type { GalaxyConfig } from '../config/types';
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Build selective multi-agent execution plans for broad implementation requests.
+ */
+
+import type { GalaxyConfig } from '../shared/config';
 import type { AgentType, ChatMessage } from '../shared/protocol';
+import {
+  CODER_SUB_AGENT_MODEL,
+  ENABLE_SELECTIVE_MULTI_AGENT,
+} from '../shared/constants';
+import type {
+  SelectiveMultiAgentPlan,
+  SelectiveMultiAgentSubtask,
+} from '../shared/runtime';
 
-const CODER_SUB_AGENT_MODEL = 'qwen3-coder-next:cloud';
-const ENABLE_SELECTIVE_MULTI_AGENT = false;
-
-type SubtaskScope = 'backend' | 'frontend' | 'integration';
-
-export type SelectiveMultiAgentSubtask = Readonly<{
-  id: SubtaskScope;
-  title: string;
-  objective: string;
-  acceptanceCriteria: readonly string[];
-  scopeNotes?: readonly string[];
-}>;
-
-export type SelectiveMultiAgentPlan = Readonly<{
-  reason: string;
-  summary: string;
-  subtasks: readonly SelectiveMultiAgentSubtask[];
-}>;
-
+/**
+ * Checks whether any keyword is present in the normalized input.
+ *
+ * @param input Lowercased user request text.
+ * @param keywords Keywords associated with one task facet.
+ * @returns `true` when any keyword matches.
+ */
 function hasAnyKeyword(input: string, keywords: readonly string[]): boolean {
   return keywords.some((keyword) => input.includes(keyword));
 }
 
+/**
+ * Detects whether the request spans backend, frontend, or integration concerns.
+ *
+ * @param input User request text.
+ * @returns Facet flags used by the planner.
+ */
 function detectTaskFacets(input: string): Readonly<{
   backend: boolean;
   frontend: boolean;
@@ -77,6 +87,13 @@ function detectTaskFacets(input: string): Readonly<{
   return Object.freeze({ backend, frontend, integration });
 }
 
+/**
+ * Builds a selective multi-agent plan when the request is broad enough to benefit from scoped execution.
+ *
+ * @param agentType Agent type currently handling the turn.
+ * @param userContent Raw user message content.
+ * @returns Selective multi-agent plan, or `null` when the request should stay single-agent.
+ */
 export function maybeBuildSelectiveMultiAgentPlan(
   agentType: AgentType,
   userContent: string,
@@ -173,6 +190,12 @@ export function maybeBuildSelectiveMultiAgentPlan(
   });
 }
 
+/**
+ * Formats the generated selective multi-agent plan for transcript display.
+ *
+ * @param plan Plan generated for the current request.
+ * @returns User-facing markdown text describing the plan.
+ */
 export function buildSelectiveMultiAgentPlanMessage(plan: SelectiveMultiAgentPlan): string {
   return [
     '[PHASE 4 PLAN]',
@@ -184,6 +207,12 @@ export function buildSelectiveMultiAgentPlanMessage(plan: SelectiveMultiAgentPla
   ].join('\n');
 }
 
+/**
+ * Builds the scoped user message sent to one coder sub-agent turn.
+ *
+ * @param opts Original user request and scoped subtask definition.
+ * @returns Prompt message for the sub-agent.
+ */
 export function buildSelectiveMultiAgentSubtaskMessage(opts: {
   originalUserMessage: ChatMessage;
   subtask: SelectiveMultiAgentSubtask;
@@ -231,6 +260,12 @@ export function buildSelectiveMultiAgentSubtaskMessage(opts: {
   });
 }
 
+/**
+ * Builds a config override that forces the sub-agent to use the coder-focused hosted manual model.
+ *
+ * @param config Current Galaxy configuration.
+ * @returns Config copy with the manual agent rewritten for coder subtask execution.
+ */
 export function buildCoderSubAgentConfig(config: GalaxyConfig): GalaxyConfig {
   const nextAgent = [...config.agent];
   const manualIndex = nextAgent.findIndex((agent) => agent.type === 'manual');

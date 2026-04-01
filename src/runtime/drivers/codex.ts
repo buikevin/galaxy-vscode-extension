@@ -1,15 +1,31 @@
-import type OpenAI from 'openai';
-import type { GalaxyConfig } from '../../config/types';
-import { getConfigPath } from '../../config/manager';
-import type { AgentDriver, RuntimeMessage, StreamHandler } from '../types';
-import { buildSystemPrompt } from '../system-prompt';
-import { getEnabledToolDefinitions } from '../../tools/file-tools';
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc OpenAI/Codex driver for the extension runtime.
+ */
 
+import type OpenAI from 'openai';
+import type { GalaxyConfig } from '../../shared/config';
+import { getConfigPath } from '../../config/manager';
+import type { AgentDriver, RuntimeMessage, StreamHandler } from '../../shared/runtime';
+import { buildFunctionTools } from './tool-schemas';
+import { buildDriverSystemPrompt } from './message-builders';
+import { buildDriverErrorChunk, createDoneEmitter, parseToolArguments } from './stream-utils';
+
+/**
+ * Translates runtime messages into OpenAI chat-completions message payloads.
+ *
+ * @param messages Runtime transcript messages for the current turn.
+ * @param config Active Galaxy config used to build the system prompt.
+ * @returns API-ready OpenAI message payloads.
+ */
 function buildMessages(messages: readonly RuntimeMessage[], config: GalaxyConfig): OpenAI.ChatCompletionMessageParam[] {
   return [
     {
       role: 'system' as const,
-      content: buildSystemPrompt('codex', config),
+      content: buildDriverSystemPrompt('codex', config),
     },
     ...messages.flatMap((message) => {
       if (message.role === 'assistant' && message.toolCalls?.length) {
@@ -47,6 +63,15 @@ function buildMessages(messages: readonly RuntimeMessage[], config: GalaxyConfig
   ];
 }
 
+/**
+ * Creates the Codex/OpenAI driver used by the extension runtime.
+ *
+ * @param apiKey OpenAI API key.
+ * @param model Optional model override selected by the user.
+ * @param config Active Galaxy config used to build prompts and tool definitions.
+ * @param allowTools Whether tool definitions should be exposed to the provider.
+ * @returns Agent driver implementation for OpenAI-compatible chat completions.
+ */
 export function createCodexDriver(apiKey: string | undefined, model: string | undefined, config: GalaxyConfig, allowTools = true): AgentDriver {
   const selectedModel = model ?? 'gpt-4o';
 
@@ -64,16 +89,7 @@ export function createCodexDriver(apiKey: string | undefined, model: string | un
       try {
         const { default: OpenAI } = await import('openai');
         const client = new OpenAI({ apiKey });
-        const tools = allowTools
-          ? getEnabledToolDefinitions(config).map((tool) => ({
-              type: 'function' as const,
-              function: {
-                name: tool.name,
-                description: tool.description,
-                parameters: tool.parameters as Record<string, unknown>,
-              },
-            }))
-          : undefined;
+        const tools = allowTools ? buildFunctionTools(config) : undefined;
         const stream = await client.chat.completions.create({
           model: selectedModel,
           messages: buildMessages(messages, config) as never,
@@ -82,7 +98,7 @@ export function createCodexDriver(apiKey: string | undefined, model: string | un
         });
 
         const toolCallAccum: Record<number, { name: string; args: string }> = {};
-        let doneSent = false;
+        const emitDone = createDoneEmitter(onChunk);
 
         for await (const chunk of stream) {
           for (const choice of chunk.choices) {
@@ -108,41 +124,25 @@ export function createCodexDriver(apiKey: string | undefined, model: string | un
 
             if (choice.finish_reason === 'tool_calls') {
               for (const entry of Object.values(toolCallAccum)) {
-                try {
-                  onChunk({
-                    type: 'tool_call',
-                    call: {
-                      name: entry.name,
-                      params: JSON.parse(entry.args || '{}') as Record<string, unknown>,
-                    },
-                  });
-                } catch {
-                  onChunk({
-                    type: 'tool_call',
-                    call: {
-                      name: entry.name,
-                      params: {},
-                    },
-                  });
-                }
+                onChunk({
+                  type: 'tool_call',
+                  call: {
+                    name: entry.name,
+                    params: parseToolArguments(entry.args),
+                  },
+                });
               }
             }
 
-            if (choice.finish_reason === 'stop' && !doneSent) {
-              doneSent = true;
-              onChunk({ type: 'done' });
+            if (choice.finish_reason === 'stop') {
+              emitDone();
             }
           }
         }
 
-        if (!doneSent) {
-          onChunk({ type: 'done' });
-        }
+        emitDone();
       } catch (error) {
-        onChunk({
-          type: 'error',
-          message: `OpenAI error: ${String(error).slice(0, 300)}`,
-        });
+        onChunk(buildDriverErrorChunk('OpenAI error: ', error));
       }
     },
   };

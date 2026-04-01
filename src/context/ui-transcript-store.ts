@@ -1,13 +1,22 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-03-31
+ * @desc Persists and loads the UI transcript JSONL stream for one workspace.
+ */
+
 import fs from 'node:fs';
 import type { ChatMessage } from '../shared/protocol';
+import {
+  FULL_READ_THRESHOLD_BYTES,
+  TAIL_READ_BYTES,
+} from './entities/constants';
+import type { UiTranscriptLoadOptions } from './entities/ui-transcript';
 
-type LoadOptions = Readonly<{
-  maxMessages?: number;
-}>;
-
-const FULL_READ_THRESHOLD_BYTES = 256 * 1024;
-const TAIL_READ_BYTES = 128 * 1024;
-
+/**
+ * Revives one transcript row into a typed chat message.
+ */
 function reviveMessage(value: unknown): ChatMessage | null {
   if (typeof value !== 'object' || value === null) {
     return null;
@@ -63,10 +72,16 @@ function reviveMessage(value: unknown): ChatMessage | null {
   });
 }
 
+/**
+ * Appends one chat message to the JSONL transcript.
+ */
 export function appendUiTranscriptMessage(filePath: string, message: ChatMessage): void {
   fs.appendFileSync(filePath, `${JSON.stringify(message)}\n`, 'utf-8');
 }
 
+/**
+ * Reads the transcript source efficiently, using tail reads for large files.
+ */
 function readTranscriptSource(filePath: string): string {
   const stat = fs.statSync(filePath);
   if (stat.size <= FULL_READ_THRESHOLD_BYTES) {
@@ -92,7 +107,10 @@ function readTranscriptSource(filePath: string): string {
   return chunk;
 }
 
-export function loadUiTranscript(filePath: string, opts?: LoadOptions): readonly ChatMessage[] {
+/**
+ * Loads recent transcript messages from the JSONL store.
+ */
+export function loadUiTranscript(filePath: string, opts?: UiTranscriptLoadOptions): readonly ChatMessage[] {
   if (!fs.existsSync(filePath)) {
     return Object.freeze([]);
   }
@@ -116,6 +134,9 @@ export function loadUiTranscript(filePath: string, opts?: LoadOptions): readonly
   }
 }
 
+/**
+ * Clears the transcript file content.
+ */
 export function clearUiTranscript(filePath: string): void {
   fs.writeFileSync(filePath, '', 'utf-8');
 }

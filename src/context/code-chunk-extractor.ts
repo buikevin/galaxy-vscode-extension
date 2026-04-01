@@ -1,18 +1,20 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-03-31
+ * @desc Extracts AST-backed code chunk units for semantic indexing.
+ */
+
 import * as ts from 'typescript';
-import type { SyntaxSymbolKind } from './syntax-index';
-import { extractTreeSitterCodeUnits, type TreeSitterCodeUnit } from './tree-sitter-parser';
+import type { CodeChunkUnit } from './entities/code-chunk';
+import type { SyntaxSymbolKind } from './entities/syntax-index';
+import { extractTreeSitterCodeUnits } from './tree-sitter-parser';
+import type { TreeSitterCodeUnit } from './entities/tree-sitter';
 
-export type CodeChunkUnit = Readonly<{
-  name: string;
-  kind: SyntaxSymbolKind;
-  exported: boolean;
-  signature: string;
-  startLine: number;
-  endLine: number;
-  startIndex: number;
-  endIndex: number;
-}>;
-
+/**
+ * Checks whether a syntax node carries a specific modifier.
+ */
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
   if (!ts.canHaveModifiers(node)) {
     return false;
@@ -20,6 +22,9 @@ function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
   return Boolean(ts.getModifiers(node)?.some((modifier) => modifier.kind === kind));
 }
 
+/**
+ * Resolves the TypeScript parser mode from a source file extension.
+ */
 function getScriptKind(filePath: string): ts.ScriptKind {
   if (filePath.endsWith('.tsx')) {
     return ts.ScriptKind.TSX;
@@ -33,6 +38,9 @@ function getScriptKind(filePath: string): ts.ScriptKind {
   return ts.ScriptKind.TS;
 }
 
+/**
+ * Builds a human-readable function signature for retrieval output.
+ */
 function buildFunctionSignature(
   name: string,
   node: ts.FunctionLikeDeclarationBase,
@@ -48,6 +56,9 @@ function buildFunctionSignature(
   return `${prefix}${asyncPrefix}${label} ${name}(${params})${returnType}`.trim();
 }
 
+/**
+ * Builds a compact signature string for class-like declarations.
+ */
 function buildClassLikeSignature(
   kind: 'class' | 'interface' | 'type' | 'enum',
   name: string,
@@ -77,6 +88,9 @@ function buildClassLikeSignature(
   return `${prefix}class ${name}${heritage ? ` ${heritage}` : ''}`.trim();
 }
 
+/**
+ * Infers a semantic symbol kind from a variable declaration initializer.
+ */
 function detectVariableKind(name: string, initializer: ts.Expression | undefined): SyntaxSymbolKind {
   const isFunctionLike = initializer ? ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer) : false;
   if (isFunctionLike && /^use[A-Z0-9]/.test(name)) {
@@ -91,6 +105,9 @@ function detectVariableKind(name: string, initializer: ts.Expression | undefined
   return name === name.toUpperCase() ? 'const' : 'variable';
 }
 
+/**
+ * Normalizes one syntax node into a code chunk unit.
+ */
 function createUnit(
   sourceFile: ts.SourceFile,
   node: ts.Node,
@@ -111,6 +128,9 @@ function createUnit(
   });
 }
 
+/**
+ * Extracts top-level TypeScript and JavaScript symbols as chunk units.
+ */
 function extractTypeScriptCodeUnits(relativePath: string, content: string): readonly CodeChunkUnit[] {
   const sourceFile = ts.createSourceFile(relativePath, content, ts.ScriptTarget.Latest, true, getScriptKind(relativePath));
   const units: CodeChunkUnit[] = [];
@@ -174,10 +194,16 @@ function extractTypeScriptCodeUnits(relativePath: string, content: string): read
   return Object.freeze(units.slice(0, 24));
 }
 
+/**
+ * Returns true when the source file should be parsed through TypeScript AST.
+ */
 function isTypeScriptLike(relativePath: string): boolean {
   return ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'].some((suffix) => relativePath.endsWith(suffix));
 }
 
+/**
+ * Extracts code chunk units from TypeScript AST or Tree-sitter parsers.
+ */
 export async function extractCodeChunkUnits(opts: {
   relativePath: string;
   content: string;

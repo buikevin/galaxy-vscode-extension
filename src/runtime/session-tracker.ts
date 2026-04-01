@@ -1,80 +1,43 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Track session file changes, preserve original snapshots, and provide revert/diff summaries for the extension runtime.
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
-
-export type TrackedFile = Readonly<{
-  filePath: string;
-  language: string;
-  modifiedAt: number;
-  wasNew: boolean;
-}>;
-
-export type ChangedFileSummary = Readonly<{
-  filePath: string;
-  language: string;
-  wasNew: boolean;
-  addedLines: number;
-  deletedLines: number;
-  originalContent: string | null;
-  currentContent: string | null;
-  diffText: string;
-}>;
-
-export type SessionChangeSummary = Readonly<{
-  fileCount: number;
-  createdCount: number;
-  addedLines: number;
-  deletedLines: number;
-  files: readonly ChangedFileSummary[];
-}>;
-
-type OriginalSnapshot = Readonly<{
-  content: string | null;
-  savedAt: number;
-}>;
+import { SESSION_LANGUAGE_LABELS } from '../shared/constants';
+import type {
+  ChangedFileSummary,
+  OriginalSnapshot,
+  RevertAllResult,
+  RevertResult,
+  SessionChangeSummary,
+  TrackedFile,
+  WorkspaceFileSnapshot,
+} from '../shared/runtime';
 
 const sessionFiles = new Map<string, TrackedFile>();
 const originalSnapshots = new Map<string, OriginalSnapshot>();
 
-type WorkspaceFileSnapshot = Readonly<{
-  filePath: string;
-  mtimeMs: number;
-  size: number;
-  content: string | null;
-}>;
-
+/**
+ * Detects a user-facing language label from the file extension.
+ *
+ * @param filePath File path whose extension should be mapped.
+ * @returns Human-readable language label.
+ */
 export function detectLanguage(filePath: string): string {
   const ext = path.extname(filePath).toLowerCase().slice(1);
-  const languageMap: Record<string, string> = {
-    ts: 'TypeScript',
-    tsx: 'TypeScript (React)',
-    js: 'JavaScript',
-    mjs: 'JavaScript',
-    cjs: 'JavaScript',
-    jsx: 'JavaScript (React)',
-    json: 'JSON',
-    md: 'Markdown',
-    css: 'CSS',
-    scss: 'SCSS',
-    html: 'HTML',
-    py: 'Python',
-    go: 'Go',
-    rs: 'Rust',
-    java: 'Java',
-    kt: 'Kotlin',
-    rb: 'Ruby',
-    php: 'PHP',
-    sh: 'Shell',
-    bash: 'Bash',
-    zsh: 'Zsh',
-    yml: 'YAML',
-    yaml: 'YAML',
-    toml: 'TOML',
-    dart: 'Dart',
-  };
-
-  return languageMap[ext] ?? (ext ? ext.toUpperCase() : 'Unknown');
+  return SESSION_LANGUAGE_LABELS[ext] ?? (ext ? ext.toUpperCase() : 'Unknown');
 }
 
+/**
+ * Captures the original file content before the session edits the file for the first time.
+ *
+ * @param filePath File path that may be edited by the session.
+ */
 export function captureOriginal(filePath: string): void {
   const resolved = path.resolve(filePath);
   if (originalSnapshots.has(resolved)) {
@@ -96,6 +59,11 @@ export function captureOriginal(filePath: string): void {
   }));
 }
 
+/**
+ * Records that a file was written successfully by the current session.
+ *
+ * @param filePath File path that was just written or edited.
+ */
 export function trackFileWrite(filePath: string): void {
   const resolved = path.resolve(filePath);
   const snapshot = originalSnapshots.get(resolved);
@@ -109,10 +77,22 @@ export function trackFileWrite(filePath: string): void {
   }));
 }
 
+/**
+ * Reads the original content stored for a tracked file.
+ *
+ * @param filePath File path whose original snapshot should be returned.
+ * @returns Original file content, `null` for newly created files, or `undefined` when untracked.
+ */
 export function getOriginalContent(filePath: string): string | null | undefined {
   return originalSnapshots.get(path.resolve(filePath))?.content;
 }
 
+/**
+ * Determines whether a directory or file path should be skipped during workspace snapshot traversal.
+ *
+ * @param entryPath Absolute path under the workspace tree.
+ * @returns `true` when the path should not be traversed or read.
+ */
 function shouldSkipPath(entryPath: string): boolean {
   const name = path.basename(entryPath);
   return (
@@ -128,6 +108,13 @@ function shouldSkipPath(entryPath: string): boolean {
   );
 }
 
+/**
+ * Recursively collects textual workspace files for snapshot-based change detection.
+ *
+ * @param dirPath Directory currently being traversed.
+ * @param files Mutable output array of captured file snapshots.
+ * @param depth Current recursion depth used to enforce the traversal limit.
+ */
 function collectWorkspaceFiles(dirPath: string, files: WorkspaceFileSnapshot[], depth = 0): void {
   if (depth > 8 || !fs.existsSync(dirPath)) {
     return;
@@ -170,12 +157,25 @@ function collectWorkspaceFiles(dirPath: string, files: WorkspaceFileSnapshot[], 
   }
 }
 
+/**
+ * Captures a shallow textual snapshot of the workspace tree for later change detection.
+ *
+ * @param workspacePath Workspace root to snapshot.
+ * @returns Map keyed by absolute file path.
+ */
 export function captureWorkspaceSnapshot(workspacePath: string): ReadonlyMap<string, WorkspaceFileSnapshot> {
   const files: WorkspaceFileSnapshot[] = [];
   collectWorkspaceFiles(path.resolve(workspacePath), files);
   return new Map(files.map((file) => [file.filePath, file] as const));
 }
 
+/**
+ * Compares two workspace snapshots and records any new, changed, or deleted files as session writes.
+ *
+ * @param workspacePath Workspace root being tracked.
+ * @param before Snapshot captured before a command or agent action.
+ * @returns Changed paths detected between the snapshots.
+ */
 export function trackWorkspaceChanges(
   workspacePath: string,
   before: ReadonlyMap<string, WorkspaceFileSnapshot>,
@@ -210,6 +210,12 @@ export function trackWorkspaceChanges(
   return Object.freeze([...changedPaths]);
 }
 
+/**
+ * Saves an original snapshot from a previously captured workspace snapshot instead of rereading the file.
+ *
+ * @param filePath File path being tracked.
+ * @param snapshot Snapshot captured before the file changed, or `null` for deleted/new files.
+ */
 function captureOriginalFromWorkspaceSnapshot(
   filePath: string,
   snapshot: WorkspaceFileSnapshot | null,
@@ -225,15 +231,12 @@ function captureOriginalFromWorkspaceSnapshot(
   }));
 }
 
-export type RevertResult =
-  | Readonly<{ success: true; wasNew: boolean; filePath: string }>
-  | Readonly<{ success: false; reason: string }>;
-
-export type RevertAllResult = Readonly<{
-  revertedPaths: readonly string[];
-  failedReasons: readonly string[];
-}>;
-
+/**
+ * Reverts one tracked file back to the original snapshot captured before the session edited it.
+ *
+ * @param filePath File path to revert.
+ * @returns Revert result describing success or failure.
+ */
 export function revertFile(filePath: string): RevertResult {
   const resolved = path.resolve(filePath);
   const snapshot = originalSnapshots.get(resolved);
@@ -274,6 +277,11 @@ export function revertFile(filePath: string): RevertResult {
   }
 }
 
+/**
+ * Returns tracked files that still exist on disk, ordered by modification time.
+ *
+ * @returns Session files sorted by their last recorded modification time.
+ */
 export function getSessionFiles(): readonly TrackedFile[] {
   return Object.freeze(
     [...sessionFiles.values()]
@@ -282,6 +290,14 @@ export function getSessionFiles(): readonly TrackedFile[] {
   );
 }
 
+/**
+ * Builds a unified diff between the original and current file contents.
+ *
+ * @param filePath File path whose diff is being formatted.
+ * @param originalContent Original snapshot content.
+ * @param currentContent Current on-disk content.
+ * @returns Unified diff text.
+ */
 function buildUnifiedDiff(filePath: string, originalContent: string, currentContent: string): string {
   const originalLines = originalContent.split('\n');
   const currentLines = currentContent.split('\n');
@@ -320,6 +336,13 @@ function buildUnifiedDiff(filePath: string, originalContent: string, currentCont
   ].join('\n');
 }
 
+/**
+ * Counts added and deleted lines from two text snapshots.
+ *
+ * @param originalContent Original snapshot content.
+ * @param currentContent Current content.
+ * @returns Added/deleted line counts.
+ */
 function countLineStats(originalContent: string | null, currentContent: string | null): Readonly<{ addedLines: number; deletedLines: number }> {
   if (originalContent === null && currentContent !== null) {
     return Object.freeze({
@@ -362,6 +385,11 @@ function countLineStats(originalContent: string | null, currentContent: string |
   });
 }
 
+/**
+ * Summarizes all tracked workspace changes for UI panels, review, and validation.
+ *
+ * @returns Aggregate session change summary.
+ */
 export function getSessionChangeSummary(): SessionChangeSummary {
   const files = getSessionFiles().map((tracked) => {
     const originalContent = getOriginalContent(tracked.filePath) ?? null;
@@ -398,6 +426,11 @@ export function getSessionChangeSummary(): SessionChangeSummary {
   });
 }
 
+/**
+ * Reverts every tracked file in the session.
+ *
+ * @returns Aggregate revert result for the whole session.
+ */
 export function revertAllSessionFiles(): RevertAllResult {
   const revertedPaths: string[] = [];
   const failedReasons: string[] = [];
@@ -417,6 +450,9 @@ export function revertAllSessionFiles(): RevertAllResult {
   });
 }
 
+/**
+ * Clears all in-memory session tracking state.
+ */
 export function clearSession(): void {
   sessionFiles.clear();
   originalSnapshots.clear();

@@ -1,82 +1,43 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Run the dedicated hosted reviewer over files changed in the current session and format the result for Galaxy.
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { Ollama } from 'ollama';
-import type { GalaxyConfig } from '../config/types';
+import type { GalaxyConfig } from '../shared/config';
 import type { AgentType } from '../shared/protocol';
-import type { ToolResult } from '../tools/file-tools';
-import type { TrackedFile } from './session-tracker';
+import {
+  REVIEWER_API_KEY,
+  REVIEWER_HOST,
+  REVIEWER_KEEP_ALIVE,
+  REVIEWER_MAX_BATCH_FILES,
+  REVIEWER_MAX_FILE_CHARS,
+  REVIEWER_MAX_REQUEST_CHARS,
+  REVIEWER_SYSTEM_PROMPT,
+  REVIEWER_MAX_VALIDATION_SUMMARY_CHARS,
+  REVIEWER_MODEL,
+  REVIEWER_OPTIONS,
+} from '../shared/constants';
+import type {
+  ReviewBatchRequest,
+  ReviewMessage,
+  RuntimeReviewFinding,
+  RuntimeReviewResult,
+  TrackedFile,
+} from '../shared/runtime';
+import type { ToolResult } from '../tools/entities/file-tools';
 
-const REVIEWER_SYSTEM_PROMPT = `You are a senior code reviewer with 15+ years of experience across all programming languages.
-
-Your job is to review code that was just written or modified, and provide clear, actionable feedback.
-
-Only report issues that are directly supported by the provided code and validation context.
-If you are unsure, omit the issue instead of speculating.
-Do not propose unnecessary rewrites when a smaller fix would be enough.
-
-For each file, check for:
-1. Logic errors and bugs
-2. Missing edge cases
-3. Security vulnerabilities
-4. Type/runtime errors
-5. Code quality
-6. Cross-file consistency
-
-Output format:
-- [CRITICAL] \`filename:line\` - Clear description and how to fix
-- [WARNING] \`filename:line\` - Clear description and suggestion
-- [INFO] \`filename\` - General observation or improvement
-
-At the end, write one of:
-- ✅ LGTM
-- ⚠️ Issues found - N critical, M warnings
-
-Be specific and concise. Skip trivial style comments.
-Respond in the same language as the code comments/strings.`;
-
-const MAX_FILE_CHARS = 6_000;
-const MAX_REVIEW_BATCH_FILES = 4;
-const MAX_REVIEW_REQUEST_CHARS = 18_000;
-const MAX_VALIDATION_SUMMARY_CHARS = 2_500;
-const REVIEWER_HOST = 'https://ollama.com';
-const REVIEWER_MODEL = 'qwen3-coder-next:cloud';
-const REVIEWER_API_KEY = '073a6aa5975f4cc5a68fe6c4a7f702f8.vhWYaW8O4o9JX-O-FLZatUGF';
-const REVIEWER_KEEP_ALIVE = '10m';
-const REVIEWER_OPTIONS = Object.freeze({
-  temperature: 0.1,
-  top_p: 0.85,
-  repeat_penalty: 1.05,
-  num_predict: 4096,
-});
-
-export type ReviewFinding = Readonly<{
-  severity: 'critical' | 'warning' | 'info';
-  location: string;
-  message: string;
-}>;
-
-export type ReviewResult = Readonly<{
-  success: boolean;
-  review: string;
-  filesReviewed: number;
-  hadCritical: boolean;
-  hadWarnings: boolean;
-  findings: readonly ReviewFinding[];
-}>;
-
-type ReviewMessage = Readonly<{
-  role: 'system' | 'user';
-  content: string;
-}>;
-
-type ReviewBatchRequest = Readonly<{
-  userPrompt: string;
-  fileCount: number;
-  skipped: number;
-  batchIndex: number;
-  batchCount: number;
-}>;
-
+/**
+ * Builds reviewer prompt batches from the files changed in the current session.
+ *
+ * @param opts Session files and optional validation summary.
+ * @returns Prompt batches sized for the hosted reviewer model.
+ */
 function buildReviewRequests(opts: {
   sessionFiles: readonly TrackedFile[];
   validationSummary?: string;
@@ -88,8 +49,8 @@ function buildReviewRequests(opts: {
     try {
       const raw = fs.readFileSync(tracked.filePath, 'utf-8');
       const content =
-        raw.length > MAX_FILE_CHARS
-          ? `${raw.slice(0, MAX_FILE_CHARS)}\n... [truncated ${raw.length - MAX_FILE_CHARS} chars]`
+        raw.length > REVIEWER_MAX_FILE_CHARS
+          ? `${raw.slice(0, REVIEWER_MAX_FILE_CHARS)}\n... [truncated ${raw.length - REVIEWER_MAX_FILE_CHARS} chars]`
           : raw;
       const relPath = path.relative(process.cwd(), tracked.filePath);
       fileSections.push(
@@ -105,15 +66,15 @@ function buildReviewRequests(opts: {
   }
 
   const validationBlock = opts.validationSummary?.trim()
-    ? `Validation summary before review:\n${opts.validationSummary.trim().slice(0, MAX_VALIDATION_SUMMARY_CHARS)}\n\n`
+    ? `Validation summary before review:\n${opts.validationSummary.trim().slice(0, REVIEWER_MAX_VALIDATION_SUMMARY_CHARS)}\n\n`
     : '';
   const sectionsByBatch: string[][] = [];
   let currentBatch: string[] = [];
   let currentChars = 0;
 
   for (const section of fileSections) {
-    const wouldExceedBatchSize = currentBatch.length >= MAX_REVIEW_BATCH_FILES;
-    const wouldExceedCharBudget = currentBatch.length > 0 && currentChars + section.length > MAX_REVIEW_REQUEST_CHARS;
+    const wouldExceedBatchSize = currentBatch.length >= REVIEWER_MAX_BATCH_FILES;
+    const wouldExceedCharBudget = currentBatch.length > 0 && currentChars + section.length > REVIEWER_MAX_REQUEST_CHARS;
     if (wouldExceedBatchSize || wouldExceedCharBudget) {
       sectionsByBatch.push(currentBatch);
       currentBatch = [];
@@ -146,8 +107,14 @@ function buildReviewRequests(opts: {
   );
 }
 
-function parseReviewFindings(reviewText: string): readonly ReviewFinding[] {
-  const findings: ReviewFinding[] = [];
+/**
+ * Parses structured findings from the reviewer markdown output.
+ *
+ * @param reviewText Raw reviewer response text.
+ * @returns Structured review findings derived from the response.
+ */
+function parseReviewFindings(reviewText: string): readonly RuntimeReviewFinding[] {
+  const findings: RuntimeReviewFinding[] = [];
   const pattern = /^- \[(CRITICAL|WARNING|INFO)\]\s+`([^`]+)`\s+-\s+(.+)$/gm;
 
   for (const match of reviewText.matchAll(pattern)) {
@@ -168,12 +135,18 @@ function parseReviewFindings(reviewText: string): readonly ReviewFinding[] {
   return Object.freeze(findings);
 }
 
+/**
+ * Executes the hosted reviewer for the files changed in the current session.
+ *
+ * @param opts Session files, config, agent metadata, and optional validation summary.
+ * @returns Structured review result, or `null` when there are no files to review.
+ */
 async function runReviewer(opts: {
   sessionFiles: readonly TrackedFile[];
   config: GalaxyConfig;
   agentType: AgentType;
   validationSummary?: string;
-}): Promise<ReviewResult | null> {
+}): Promise<RuntimeReviewResult | null> {
   if (opts.sessionFiles.length === 0) {
     return null;
   }
@@ -191,7 +164,7 @@ async function runReviewer(opts: {
     headers: { Authorization: `Bearer ${REVIEWER_API_KEY}` },
   });
   const reviewChunks: string[] = [];
-  const findings: ReviewFinding[] = [];
+  const findings: RuntimeReviewFinding[] = [];
   let filesReviewed = 0;
 
   for (const reviewRequest of reviewRequests) {
@@ -273,15 +246,27 @@ async function runReviewer(opts: {
   });
 }
 
+/**
+ * Runs the hosted reviewer and returns its structured result.
+ *
+ * @param opts Review inputs for the current session.
+ * @returns Structured review result or `null` when nothing can be reviewed.
+ */
 export async function runCodeReview(opts: {
   sessionFiles: readonly TrackedFile[];
   config: GalaxyConfig;
   agentType: AgentType;
   validationSummary?: string;
-}): Promise<ReviewResult | null> {
+}): Promise<RuntimeReviewResult | null> {
   return runReviewer(opts);
 }
 
+/**
+ * Adapts the reviewer result into the generic tool result shape used by the runtime.
+ *
+ * @param opts Review inputs for the current session.
+ * @returns Tool result wrapping the reviewer output.
+ */
 export async function runCodeReviewTool(opts: {
   sessionFiles: readonly TrackedFile[];
   config: GalaxyConfig;
@@ -327,7 +312,13 @@ export async function runCodeReviewTool(opts: {
   });
 }
 
-export function formatReviewSummary(result: ReviewResult): string {
+/**
+ * Formats one review result into the summary block displayed in the UI.
+ *
+ * @param result Structured review result returned by the reviewer.
+ * @returns User-facing markdown summary.
+ */
+export function formatReviewSummary(result: RuntimeReviewResult): string {
   const statusLine = result.hadCritical
     ? 'Critical issues found'
     : result.hadWarnings
@@ -343,3 +334,5 @@ export function formatReviewSummary(result: ReviewResult): string {
     result.review,
   ].join('\n').trim();
 }
+
+export type { RuntimeReviewFinding as ReviewFinding, RuntimeReviewResult as ReviewResult } from '../shared/runtime';

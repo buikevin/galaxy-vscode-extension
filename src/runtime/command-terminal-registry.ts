@@ -7,21 +7,25 @@
  */
 
 import * as vscode from 'vscode';
+import { MAX_TERMINAL_BUFFER_CHARS } from '../shared/constants';
+import type { CommandTerminalCompletion, CommandTerminalRecord } from '../shared/runtime';
 
-const MAX_TERMINAL_BUFFER_CHARS = 200_000;
-
-type CommandTerminalRecord = Readonly<{
-  toolCallId: string;
-  title: string;
-  terminal: vscode.Terminal;
-  append: (chunk: string) => void;
-  finalize: (opts: Readonly<{ exitCode: number; success: boolean; durationMs: number }>) => void;
-}>;
-
+/**
+ * Normalizes output chunks for VS Code pseudoterminal line endings.
+ *
+ * @param chunk Raw terminal output chunk.
+ * @returns Normalized chunk using CRLF line endings.
+ */
 function normalizeTerminalChunk(chunk: string): string {
   return chunk.replace(/\r?\n/g, '\r\n');
 }
 
+/**
+ * Shortens long commands for terminal tab labels.
+ *
+ * @param commandText Full command text.
+ * @returns Truncated command label suitable for a terminal title.
+ */
 function shortenCommand(commandText: string): string {
   const trimmed = commandText.trim();
   if (trimmed.length <= 72) {
@@ -30,6 +34,14 @@ function shortenCommand(commandText: string): string {
   return `${trimmed.slice(0, 69)}...`;
 }
 
+/**
+ * Creates one pseudoterminal-backed registry record for a tool call.
+ *
+ * @param toolCallId Stable tool call id used to reveal the correct terminal later.
+ * @param commandText Full command text shown in the terminal.
+ * @param cwd Working directory displayed in the terminal header.
+ * @returns Terminal registry record with append/finalize hooks.
+ */
 function createTerminalRecord(toolCallId: string, commandText: string, cwd: string): CommandTerminalRecord {
   const writeEmitter = new vscode.EventEmitter<string>();
   const closeEmitter = new vscode.EventEmitter<number>();
@@ -72,7 +84,7 @@ function createTerminalRecord(toolCallId: string, commandText: string, cwd: stri
 
   append(`[Galaxy] Run Shell\r\n$ ${commandText}\r\ncwd: ${cwd}\r\n\r\n`);
 
-  const finalize = (opts: Readonly<{ exitCode: number; success: boolean; durationMs: number }>): void => {
+  const finalize = (opts: CommandTerminalCompletion): void => {
     if (finished) {
       return;
     }
@@ -98,6 +110,14 @@ function createTerminalRecord(toolCallId: string, commandText: string, cwd: stri
 export class CommandTerminalRegistry {
   private readonly records = new Map<string, CommandTerminalRecord>();
 
+  /**
+   * Opens a new buffered terminal entry for one tool call.
+   *
+   * @param toolCallId Stable tool call id that owns the terminal session.
+   * @param commandText Full command text rendered in the terminal header.
+   * @param cwd Working directory used by the command.
+   * @returns User-facing terminal title created for the session.
+   */
   start(toolCallId: string, commandText: string, cwd: string): string {
     this.dispose(toolCallId);
     const record = createTerminalRecord(toolCallId, commandText, cwd);
@@ -105,17 +125,35 @@ export class CommandTerminalRegistry {
     return record.title;
   }
 
+  /**
+   * Appends one streamed output chunk into the registered terminal.
+   *
+   * @param toolCallId Stable tool call id that owns the terminal session.
+   * @param chunk Output chunk to append.
+   */
   append(toolCallId: string, chunk: string): void {
     this.records.get(toolCallId)?.append(chunk);
   }
 
+  /**
+   * Finalizes one terminal session when its command completes.
+   *
+   * @param toolCallId Stable tool call id that owns the terminal session.
+   * @param opts Completion metadata shown in the terminal footer.
+   */
   complete(
     toolCallId: string,
-    opts: Readonly<{ exitCode: number; success: boolean; durationMs: number }>,
+    opts: CommandTerminalCompletion,
   ): void {
     this.records.get(toolCallId)?.finalize(opts);
   }
 
+  /**
+   * Reveals the terminal associated with one tool call.
+   *
+   * @param toolCallId Stable tool call id that owns the terminal session.
+   * @returns `true` when the terminal existed and was shown.
+   */
   reveal(toolCallId: string): boolean {
     const record = this.records.get(toolCallId);
     if (!record) {
@@ -125,6 +163,11 @@ export class CommandTerminalRegistry {
     return true;
   }
 
+  /**
+   * Disposes the terminal associated with one tool call.
+   *
+   * @param toolCallId Stable tool call id that owns the terminal session.
+   */
   dispose(toolCallId: string): void {
     const record = this.records.get(toolCallId);
     if (!record) {
@@ -134,6 +177,7 @@ export class CommandTerminalRegistry {
     record.terminal.dispose();
   }
 
+  /** Disposes every tracked terminal session. */
   clear(): void {
     const ids = [...this.records.keys()];
     ids.forEach((toolCallId) => this.dispose(toolCallId));

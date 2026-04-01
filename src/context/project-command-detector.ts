@@ -1,41 +1,30 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-03-31
+ * @desc Detects project-specific validation and execution commands from workspace files.
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
+import type {
+  ProjectCommandCategory,
+  ProjectCommandDefinition,
+  ProjectCommandProfile,
+  ProjectCommandRisk,
+} from './entities/project-command';
 
-export type ProjectCommandCategory =
-  | 'build'
-  | 'test'
-  | 'lint'
-  | 'typecheck'
-  | 'format-check'
-  | 'custom';
-
-export type ProjectCommandRisk = 'safe' | 'confirm';
-
-export type ProjectCommandDefinition = Readonly<{
-  id: string;
-  label: string;
-  command: string;
-  cwd: string;
-  category: ProjectCommandCategory;
-  source: 'detected' | 'configured';
-  risk: ProjectCommandRisk;
-  enabled: boolean;
-  timeoutMs?: number;
-  filePatterns?: readonly string[];
-}>;
-
-export type ProjectCommandProfile = Readonly<{
-  workspaceId: string;
-  workspacePath: string;
-  commands: readonly ProjectCommandDefinition[];
-  detectedStack: readonly string[];
-  updatedAt: number;
-}>;
-
+/**
+ * Returns true when a workspace file exists.
+ */
 function hasFile(workspacePath: string, fileName: string): boolean {
   return fs.existsSync(path.join(workspacePath, fileName));
 }
 
+/**
+ * Reads a text file and returns an empty string on failure.
+ */
 function readTextFile(filePath: string): string {
   try {
     return fs.readFileSync(filePath, 'utf-8');
@@ -44,6 +33,9 @@ function readTextFile(filePath: string): string {
   }
 }
 
+/**
+ * Extracts npm scripts from package.json when present.
+ */
 function parsePackageScripts(workspacePath: string): Record<string, string> {
   const packagePath = path.join(workspacePath, 'package.json');
   if (!fs.existsSync(packagePath)) {
@@ -58,6 +50,9 @@ function parsePackageScripts(workspacePath: string): Record<string, string> {
   }
 }
 
+/**
+ * Appends one detected command while preventing duplicate ids or command strings.
+ */
 function addCommand(
   commands: ProjectCommandDefinition[],
   seen: Set<string>,
@@ -71,6 +66,9 @@ function addCommand(
   commands.push(command);
 }
 
+/**
+ * Detects common project commands by inspecting manifests and build files.
+ */
 export function detectProjectCommands(workspacePath: string): Readonly<{
   commands: readonly ProjectCommandDefinition[];
   detectedStack: readonly string[];

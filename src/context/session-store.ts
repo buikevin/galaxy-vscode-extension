@@ -1,5 +1,13 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-03-31
+ * @desc Loads, migrates, and persists workspace session memory snapshots.
+ */
+
 import fs from 'node:fs';
-import type { ActiveTaskMemory, ProjectMemory, SessionMemory, TurnDigest } from './history-types';
+import type { ActiveTaskMemory, ProjectMemory, SessionMemory, TurnDigest } from './entities/history';
 import {
   createEmptyActiveTaskMemory,
   createEmptyProjectMemory,
@@ -9,18 +17,30 @@ import {
 } from './memory-format';
 import { ensureProjectStorage, getProjectStorageInfo } from './project-store';
 
+/**
+ * Returns true when a value is a string array.
+ */
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
+/**
+ * Returns true when a value is a plain JSON-like object.
+ */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Converts unknown input into a frozen string array.
+ */
 function toStringArray(value: unknown): readonly string[] {
   return isStringArray(value) ? Object.freeze(value) : Object.freeze([]);
 }
 
+/**
+ * Revives persisted active-task memory into the normalized in-memory shape.
+ */
 function reviveActiveTaskMemory(value: unknown, now: number): ActiveTaskMemory {
   if (!isPlainObject(value)) {
     return createEmptyActiveTaskMemory(now);
@@ -46,6 +66,9 @@ function reviveActiveTaskMemory(value: unknown, now: number): ActiveTaskMemory {
   );
 }
 
+/**
+ * Revives persisted project memory into the normalized in-memory shape.
+ */
 function reviveProjectMemory(value: unknown, now: number): ProjectMemory {
   if (!isPlainObject(value)) {
     return createEmptyProjectMemory(now);
@@ -63,10 +86,16 @@ function reviveProjectMemory(value: unknown, now: number): ProjectMemory {
   );
 }
 
+/**
+ * Revives legacy recent digests stored before the current session-memory schema.
+ */
 function reviveLegacyRecentDigests(value: unknown): readonly TurnDigest[] {
   return Object.freeze(Array.isArray(value) ? (value as TurnDigest[]) : []);
 }
 
+/**
+ * Migrates one legacy session-memory payload into the current normalized schema.
+ */
 function migrateLegacySessionMemory(
   workspaceId: string,
   workspacePath: string,
@@ -136,6 +165,9 @@ function migrateLegacySessionMemory(
   });
 }
 
+/**
+ * Creates an empty session memory snapshot for a workspace with fresh timestamps.
+ */
 export function createEmptySessionMemory(workspacePath: string): SessionMemory {
   const info = getProjectStorageInfo(workspacePath);
   const now = Date.now();
@@ -153,12 +185,18 @@ export function createEmptySessionMemory(workspacePath: string): SessionMemory {
   });
 }
 
+/**
+ * Returns the absolute path of the session memory file for one workspace.
+ */
 export function getSessionStorePath(workspacePath: string): string {
   const info = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(info);
   return info.sessionMemoryPath;
 }
 
+/**
+ * Loads, validates, and migrates one persisted session memory snapshot.
+ */
 export function loadSessionMemory(workspacePath: string): SessionMemory | null {
   const filePath = getSessionStorePath(workspacePath);
   if (!fs.existsSync(filePath)) {
@@ -204,6 +242,9 @@ export function loadSessionMemory(workspacePath: string): SessionMemory | null {
   }
 }
 
+/**
+ * Persists one normalized session memory snapshot to disk.
+ */
 export function saveSessionMemory(memory: SessionMemory): void {
   const filePath = getSessionStorePath(memory.workspacePath);
   fs.writeFileSync(filePath, JSON.stringify(memory, null, 2), 'utf-8');

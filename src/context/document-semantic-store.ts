@@ -1,20 +1,29 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-03-31
+ * @desc Semantic document chunking and retrieval for workspace documents.
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { ChromaClient } from 'chromadb';
-import { resolveChromaUrl } from './chroma-manager';
+import { createChromaClient, resolveChromaUrl } from './chroma-manager';
+import {
+  DOCUMENT_CHROMA_RESOLVE_TIMEOUT_MS,
+  DOCUMENT_CHROMA_TIMEOUT_MS,
+  DOCUMENT_CHUNK_MIN_CHARS,
+  DOCUMENT_CHUNK_OVERLAP_CHARS,
+  DOCUMENT_CHUNK_TARGET_CHARS,
+  DOCUMENT_SOURCE_CACHE_LIMIT,
+  DOCUMENT_SOURCE_CACHE_OFFSET,
+} from './entities/constants';
+import type { DocumentSemanticQueryResult, DocumentSemanticSource } from './entities/document-semantic';
 import { embedTexts } from './gemini-embeddings';
 import { getProjectStorageInfo } from './project-store';
-import { getCachedReadResult, storeReadCache } from './rag-metadata-store';
+import { getCachedReadResult, storeReadCache } from './rag-metadata/read-cache';
 import { readDocumentFile } from '../tools/document-reader';
-
-const DOCUMENT_CHUNK_TARGET_CHARS = 1_400;
-const DOCUMENT_CHUNK_MIN_CHARS = 240;
-const DOCUMENT_CHUNK_OVERLAP_CHARS = 180;
-const DOCUMENT_CHROMA_TIMEOUT_MS = 2_500;
-const DOCUMENT_CHROMA_RESOLVE_TIMEOUT_MS = 600;
-const DOCUMENT_SOURCE_CACHE_OFFSET = 0;
-const DOCUMENT_SOURCE_CACHE_LIMIT = 0;
 const MANUAL_EMBEDDING_FUNCTION = Object.freeze({
   name: 'galaxy-manual-embedding',
   async generate(): Promise<number[][]> {
@@ -25,20 +34,32 @@ const MANUAL_EMBEDDING_FUNCTION = Object.freeze({
   },
 });
 
+/**
+ * Collapses noisy whitespace so retrieval snippets remain compact.
+ */
 function normalizeWhitespace(content: string): string {
   return content.replace(/\r\n/g, '\n').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * Builds the per-workspace Chroma collection name for document chunks.
+ */
 function buildDocumentCollectionName(workspaceId: string): string {
   return `galaxy-document-chunks-v2-${workspaceId.replace(/[^a-z0-9_-]+/gi, '-').toLowerCase()}`;
 }
 
+/**
+ * Generates a stable chunk identifier for one document slice.
+ */
 function createDocumentChunkId(filePath: string, sourceVersion: string, chunkIndex: number): string {
   return createHash('sha1')
     .update(`${filePath}:${sourceVersion}:${chunkIndex}`)
     .digest('hex');
 }
 
+/**
+ * Splits one decoded document into overlapping semantic chunks.
+ */
 function chunkDocumentContent(content: string): readonly string[] {
   const normalized = content.replace(/\r\n/g, '\n').trim();
   if (!normalized) {
@@ -70,6 +91,9 @@ function chunkDocumentContent(content: string): readonly string[] {
   return Object.freeze(chunks.map((chunk) => chunk.trim()).filter(Boolean));
 }
 
+/**
+ * Builds the embedding payload enriched with source metadata.
+ */
 function buildEmbeddingDocument(
   filePath: string,
   format: string | undefined,
@@ -85,6 +109,9 @@ function buildEmbeddingDocument(
   ].filter(Boolean).join('\n');
 }
 
+/**
+ * Tokenizes free-text queries for lexical fallback ranking.
+ */
 function tokenize(text: string): readonly string[] {
   return Object.freeze(
     text
@@ -94,6 +121,9 @@ function tokenize(text: string): readonly string[] {
   );
 }
 
+/**
+ * Produces a lightweight lexical ranking when embeddings are unavailable.
+ */
 function lexicalRankChunks(queryText: string, chunks: readonly string[], limit: number): readonly string[] {
   const queryTokens = tokenize(queryText);
   return Object.freeze(
@@ -110,6 +140,9 @@ function lexicalRankChunks(queryText: string, chunks: readonly string[], limit: 
   );
 }
 
+/**
+ * Computes cosine similarity between two embedding vectors.
+ */
 function cosineSimilarityEmbedding(left: readonly number[], right: readonly number[] | null): number {
   if (!right || left.length === 0 || right.length === 0 || left.length !== right.length) {
     return 0;
@@ -130,14 +163,10 @@ function cosineSimilarityEmbedding(left: readonly number[], right: readonly numb
   return dot / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
 }
 
-async function loadDocumentSource(workspacePath: string, filePath: string): Promise<Readonly<{
-  resolvedPath: string;
-  stat: fs.Stats;
-  sourceVersion: string;
-  content: string;
-  format?: string;
-  pageCount?: number;
-}> | null> {
+/**
+ * Loads and caches the fully decoded text of one document source.
+ */
+async function loadDocumentSource(workspacePath: string, filePath: string): Promise<DocumentSemanticSource | null> {
   const resolvedPath = path.resolve(filePath);
   if (!fs.existsSync(resolvedPath)) {
     return null;
@@ -196,12 +225,15 @@ async function loadDocumentSource(workspacePath: string, filePath: string): Prom
   });
 }
 
+/**
+ * Retrieves ranked document snippets for one natural-language query.
+ */
 export async function queryDocumentSemanticSnippets(opts: {
   workspacePath: string;
   filePath: string;
   queryText: string;
   limit?: number;
-}): Promise<Readonly<{ snippets: readonly string[]; format?: string; pageCount?: number }>> {
+}): Promise<DocumentSemanticQueryResult> {
   const query = opts.queryText.trim();
   if (!query) {
     return Object.freeze({ snippets: Object.freeze([]) });
@@ -233,7 +265,7 @@ export async function queryDocumentSemanticSnippets(opts: {
 
   try {
     const storage = getProjectStorageInfo(opts.workspacePath);
-    const client = new ChromaClient({ path: chromaUrl });
+    const client = createChromaClient(chromaUrl);
     const collection = await Promise.race([
       client.getOrCreateCollection({
         name: buildDocumentCollectionName(storage.workspaceId),

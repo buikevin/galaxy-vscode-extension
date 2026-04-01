@@ -3,7 +3,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { getAgentConfig, getConfigDir, loadConfig, saveConfig } from './config/manager';
-import { DEFAULT_CONFIG, type GalaxyConfig } from './config/types';
+import type { GalaxyConfig } from './shared/config';
+import { DEFAULT_CONFIG } from './shared/constants';
 import {
   buildAttachmentContextNote,
   buildAttachmentImagePaths,
@@ -15,18 +16,19 @@ import {
 } from './attachments/attachment-store';
 import { clearActionApprovals } from './context/action-approval-store';
 import type { ApprovalRequestPayload, ToolApprovalDecision } from './shared/protocol';
-import { createHistoryManager, type HistoryManager } from './context/history-manager';
+import { createHistoryManager } from './context/history-manager';
+import type { HistoryManager } from './context/entities/history-manager';
 import { loadNotes } from './context/notes';
 import {
   ensureProjectStorage,
   getProjectStorageInfo,
   loadProjectMeta,
-  type ProjectMeta,
   saveProjectMeta,
-  type ProjectStorageInfo,
 } from './context/project-store';
-import { appendTaskMemoryEntry, replaceTaskMemoryFindings, updateTaskMemoryFindingStatus } from './context/rag-metadata-store';
+import type { ProjectMeta, ProjectStorageInfo } from './context/entities/project-store';
+import { appendTaskMemoryEntry, replaceTaskMemoryFindings, updateTaskMemoryFindingStatus } from './context/rag-metadata/task-memory';
 import { appendTelemetryEvent, formatTelemetrySummary, loadTelemetrySummary } from './context/telemetry';
+import { scheduleWorkflowGraphRefresh } from './context/workflow/extractor/runtime';
 import {
   appendUiTranscriptMessage,
   clearUiTranscript,
@@ -41,9 +43,8 @@ import {
   getSessionFiles,
   revertAllSessionFiles,
   revertFile,
-  type ChangedFileSummary,
 } from './runtime/session-tracker';
-import { formatReviewSummary, runCodeReview, type ReviewResult } from './runtime/code-reviewer';
+import { formatReviewSummary, runCodeReview } from './runtime/code-reviewer';
 import { runExtensionChat } from './runtime/run-chat';
 import { CommandTerminalRegistry } from './runtime/command-terminal-registry';
 import { discoverExtensionToolGroups, searchExtensionToolGroups } from './runtime/extension-tool-discovery';
@@ -53,17 +54,19 @@ import {
   buildSelectiveMultiAgentSubtaskMessage,
   maybeBuildSelectiveMultiAgentPlan,
 } from './runtime/selective-multi-agent';
-import { formatValidationSummary, runFinalValidation } from './validation/project-validator';
-import type { FinalValidationResult } from './validation/types';
-import type { ToolResult } from './tools/file-tools';
+import { runFinalValidation } from './validation/project-validator';
+import { formatValidationSummary } from './validation/summary';
+import type { FinalValidationResult } from './shared/validation';
+import type { ToolResult } from './tools/entities/file-tools';
 import {
   appendFigmaImport,
   buildAttachedFigmaContextNote,
   buildFigmaAttachment,
   buildFigmaClipboardToken,
 } from './figma/design-store';
-import { FIGMA_BRIDGE_HOST, FIGMA_BRIDGE_PORT, startFigmaBridgeServer, type FigmaBridgeServer } from './figma/bridge-server';
-import type { FigmaImportRecord } from './figma/design-types';
+import { startFigmaBridgeServer } from './figma/bridge-server';
+import { FIGMA_BRIDGE_HOST, FIGMA_BRIDGE_PORT } from './shared/constants';
+import type { FigmaBridgeServer, FigmaImportRecord } from './shared/figma';
 import type {
   AgentType,
   ChatMessage,
@@ -86,6 +89,7 @@ import type {
   SessionInitPayload,
   WebviewMessage,
 } from './shared/protocol';
+import type { ChangedFileSummary, RuntimeReviewResult as ReviewResult } from './shared/runtime';
 
 const MAX_AUTO_REPAIR_ATTEMPTS = 2;
 const MAX_AUTO_REVIEW_REPAIR_ATTEMPTS = 1;
@@ -1872,107 +1876,106 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         });
 
         if (!reviewResult) {
-          return Object.freeze({ passed: false, repaired });
-        }
-
-        if (!reviewResult.success) {
-          this.appendLog('review', 'Code reviewer failed to complete successfully.');
-          await this.postMessage({
-            type: 'error',
-            payload: { message: reviewResult.review },
+          this.appendLog('review', 'Code reviewer returned no review result. Continuing without blocking validation.');
+          this.writeDebug('review', 'Code reviewer returned null result; skipping blocking review gate.');
+        } else if (!reviewResult.success) {
+          const failureSummary = reviewResult.review.trim() || 'Code reviewer failed to complete successfully.';
+          this.appendLog('review', 'Code reviewer was unavailable for this turn. Continuing without blocking validation.');
+          this.writeDebugBlock('review-error', failureSummary);
+          this.updateQualityDetails({
+            reviewSummary: `Code review unavailable.\n\n${failureSummary.slice(0, 2_000)}`,
+            reviewFindings: Object.freeze([]),
           });
-          this.showWorkbenchError(reviewResult.review);
-          return Object.freeze({ passed: false, repaired });
-        }
-
-        const structuredFindings = Object.freeze(
-          reviewResult.findings.map((finding, index) =>
-            Object.freeze({
-              id: `review-${Date.now()}-${index + 1}`,
-              severity: finding.severity,
-              location: finding.location,
-              message: finding.message,
-              status: 'open' as const,
-            }),
-          ),
-        );
-        this.updateQualityDetails({
-          reviewSummary: formatReviewSummary(reviewResult),
-          reviewFindings: structuredFindings,
-        });
-        this.persistProjectMetaPatch((previousMeta) =>
-          previousMeta
-            ? {
-                ...previousMeta,
-                latestReviewFindings: Object.freeze({
-                  capturedAt: Date.now(),
-                  summary: reviewResult.hadCritical
-                    ? 'Critical review findings available.'
-                    : reviewResult.hadWarnings
-                      ? 'Review warnings available.'
-                      : 'Review completed with no actionable findings.',
-                  findings: structuredFindings,
-                }),
-              }
-            : null,
-        );
-        const reviewEntryTurnId = `review-${Date.now()}`;
-        appendTaskMemoryEntry(this.workspacePath, {
-          workspaceId: this.projectStorage.workspaceId,
-          turnId: reviewEntryTurnId,
-          turnKind: 'review',
-          userIntent: 'Code review findings after implementation.',
-          assistantConclusion: reviewResult.review.slice(0, 2_400),
-          filesJson: JSON.stringify(sessionFiles.map((file) => file.filePath)),
-          confidence: 0.9,
-          freshnessScore: 1,
-          createdAt: Date.now(),
-        });
-        replaceTaskMemoryFindings(
-          this.workspacePath,
-          reviewEntryTurnId,
-          structuredFindings.map((finding) =>
-            Object.freeze({
-              id: finding.id,
-              entryTurnId: reviewEntryTurnId,
-              kind: 'review_finding' as const,
-              summary: `${finding.location}: ${finding.message}`,
-              status: finding.status ?? 'open',
-              createdAt: Date.now(),
-            }),
-          ),
-        );
-        this.appendLog(
-          'review',
-          !reviewResult.hadCritical && !reviewResult.hadWarnings
-            ? 'Code review completed with no actionable findings.'
-            : 'Code review produced actionable findings.',
-        );
-
-        if (reviewResult.hadCritical || reviewResult.hadWarnings) {
-          if (reviewRepairAttempt >= MAX_AUTO_REVIEW_REPAIR_ATTEMPTS) {
-            return Object.freeze({ passed: false, repaired });
-          }
-
-          reviewRepairAttempt += 1;
-          repaired = true;
-          await this.addMessage(
-            createAssistantMessage(
-              `Attempting automatic repair from code review findings (${reviewRepairAttempt}/${MAX_AUTO_REVIEW_REPAIR_ATTEMPTS})...`,
+        } else {
+          const structuredFindings = Object.freeze(
+            reviewResult.findings.map((finding, index) =>
+              Object.freeze({
+                id: `review-${Date.now()}-${index + 1}`,
+                severity: finding.severity,
+                location: finding.location,
+                message: finding.message,
+                status: 'open' as const,
+              }),
             ),
           );
-
-          const repairResult = await this.runInternalRepairTurn({
-            config: this.getEffectiveConfig(),
-            agentType: currentAgent,
-            userMessage: this.buildReviewRepairMessage(reviewResult, reviewRepairAttempt),
+          this.updateQualityDetails({
+            reviewSummary: formatReviewSummary(reviewResult),
+            reviewFindings: structuredFindings,
           });
+          this.persistProjectMetaPatch((previousMeta) =>
+            previousMeta
+              ? {
+                  ...previousMeta,
+                  latestReviewFindings: Object.freeze({
+                    capturedAt: Date.now(),
+                    summary: reviewResult.hadCritical
+                      ? 'Critical review findings available.'
+                      : reviewResult.hadWarnings
+                        ? 'Review warnings available.'
+                        : 'Review completed with no actionable findings.',
+                    findings: structuredFindings,
+                  }),
+                }
+              : null,
+          );
+          const reviewEntryTurnId = `review-${Date.now()}`;
+          appendTaskMemoryEntry(this.workspacePath, {
+            workspaceId: this.projectStorage.workspaceId,
+            turnId: reviewEntryTurnId,
+            turnKind: 'review',
+            userIntent: 'Code review findings after implementation.',
+            assistantConclusion: reviewResult.review.slice(0, 2_400),
+            filesJson: JSON.stringify(sessionFiles.map((file) => file.filePath)),
+            confidence: 0.9,
+            freshnessScore: 1,
+            createdAt: Date.now(),
+          });
+          replaceTaskMemoryFindings(
+            this.workspacePath,
+            reviewEntryTurnId,
+            structuredFindings.map((finding) =>
+              Object.freeze({
+                id: finding.id,
+                entryTurnId: reviewEntryTurnId,
+                kind: 'review_finding' as const,
+                summary: `${finding.location}: ${finding.message}`,
+                status: finding.status ?? 'open',
+                createdAt: Date.now(),
+              }),
+            ),
+          );
+          this.appendLog(
+            'review',
+            !reviewResult.hadCritical && !reviewResult.hadWarnings
+              ? 'Code review completed with no actionable findings.'
+              : 'Code review produced actionable findings.',
+          );
 
-          if (repairResult.hadError || repairResult.filesWritten.length === 0) {
-            return Object.freeze({ passed: false, repaired });
+          if (reviewResult.hadCritical || reviewResult.hadWarnings) {
+            if (reviewRepairAttempt >= MAX_AUTO_REVIEW_REPAIR_ATTEMPTS) {
+              return Object.freeze({ passed: false, repaired });
+            }
+
+            reviewRepairAttempt += 1;
+            repaired = true;
+            await this.addMessage(
+              createAssistantMessage(
+                `Attempting automatic repair from code review findings (${reviewRepairAttempt}/${MAX_AUTO_REVIEW_REPAIR_ATTEMPTS})...`,
+              ),
+            );
+
+            const repairResult = await this.runInternalRepairTurn({
+              config: this.getEffectiveConfig(),
+              agentType: currentAgent,
+              userMessage: this.buildReviewRepairMessage(reviewResult, reviewRepairAttempt),
+            });
+
+            if (repairResult.hadError || repairResult.filesWritten.length === 0) {
+              return Object.freeze({ passed: false, repaired });
+            }
+
+            continue;
           }
-
-          continue;
         }
       }
 
@@ -1993,6 +1996,11 @@ class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
           onChunk: async (payload) => this.emitCommandStreamChunk(payload),
           onEnd: async (payload) => this.emitCommandStreamEnd(payload),
         },
+      });
+      scheduleWorkflowGraphRefresh(this.workspacePath, {
+        reason: 'validation',
+        filePaths: sessionFiles.map((file) => file.filePath),
+        delayMs: 250,
       });
       this.appendLog('validation', validationResult.selectionSummary);
       this.updateQualityDetails({

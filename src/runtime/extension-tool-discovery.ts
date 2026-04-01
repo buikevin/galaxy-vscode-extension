@@ -7,73 +7,19 @@
  */
 
 import * as vscode from 'vscode';
+import { CURATED_MCP_EXTENSION_SUBSETS } from '../shared/constants';
+import type {
+  PackageJsonCommand,
+  PackageJsonLanguageModelTool,
+} from '../shared/extension-tools';
 import type { ExtensionToolGroup, ExtensionToolItem } from '../shared/protocol';
 
-type PackageJsonCommand = Readonly<{
-  command?: string;
-  title?: string;
-  category?: string;
-}>;
-
-type PackageJsonLanguageModelTool = Readonly<{
-  name?: string;
-  displayName?: string;
-  userDescription?: string;
-  modelDescription?: string;
-  inputSchema?: object;
-  tags?: readonly string[];
-}>;
-
-type CuratedExtensionSubset = Readonly<{
-  label: string;
-  description: string;
-  commands: readonly string[];
-}>;
-
-const CURATED_MCP_EXTENSION_SUBSETS: Readonly<Record<string, CuratedExtensionSubset>> = Object.freeze({
-  'eamodio.gitlens': Object.freeze({
-    label: 'GitKraken / GitLens MCP',
-    description:
-      'Curated Git workflows from GitLens, preferred as a compact fallback while Galaxy waits for VS Code to surface MCP-backed tools through the public LM tool registry.',
-    commands: Object.freeze([
-      'gitlens.git.status',
-      'gitlens.git.checkout',
-      'gitlens.git.branch',
-      'gitlens.git.merge',
-      'gitlens.git.rebase',
-      'gitlens.startWork',
-      'gitlens.startReview',
-      'gitlens.openPullRequestOnRemote',
-      'gitlens.createPullRequestOnRemote',
-    ]),
-  }),
-  'nrwl.angular-console': Object.freeze({
-    label: 'Nx MCP Server',
-    description:
-      'Curated Nx workspace tools from Nx Console. These remain a compact fallback until Nx surfaces runtime LM tools through MCP discovery.',
-    commands: Object.freeze([
-      'nx.run',
-      'nx.run-many',
-      'nx.generate.ui',
-      'nx.affected.test',
-      'nx.affected.build',
-      'nx.affected.lint',
-      'nxConsole.showProblems',
-      'nx.configureMcpServer',
-    ]),
-  }),
-  'mongodb.mongodb-vscode': Object.freeze({
-    label: 'MongoDB MCP Server',
-    description:
-      'Curated MongoDB MCP management tools from the MongoDB extension. These are used until MongoDB LM tools are surfaced in the runtime registry.',
-    commands: Object.freeze([
-      'mdb.startMCPServer',
-      'mdb.stopMCPServer',
-      'mdb.getMCPServerConfig',
-    ]),
-  }),
-});
-
+/**
+ * Normalizes one text segment for use in runtime tool keys and lexical matching.
+ *
+ * @param input Raw text segment.
+ * @returns Lowercased, underscore-delimited identifier.
+ */
 function normalizeSegment(input: string): string {
   return input
     .trim()
@@ -82,6 +28,12 @@ function normalizeSegment(input: string): string {
     .replace(/^_+|_+$/g, '');
 }
 
+/**
+ * Tokenizes searchable text into lowercase segments for ranking.
+ *
+ * @param value Raw search text.
+ * @returns Search tokens extracted from the value.
+ */
 function tokenize(value: string): readonly string[] {
   return value
     .toLowerCase()
@@ -90,6 +42,13 @@ function tokenize(value: string): readonly string[] {
     .filter(Boolean);
 }
 
+/**
+ * Scores a haystack string against a set of query tokens.
+ *
+ * @param queryTokens Tokenized search query.
+ * @param haystack Text being scored.
+ * @returns Higher score for better lexical matches.
+ */
 function scoreMatch(queryTokens: readonly string[], haystack: string): number {
   if (queryTokens.length === 0) {
     return 0;
@@ -108,6 +67,12 @@ function scoreMatch(queryTokens: readonly string[], haystack: string): number {
   return score;
 }
 
+/**
+ * Builds a human-readable description for a fallback command contribution.
+ *
+ * @param command Package.json command contribution from an extension.
+ * @returns User-facing description string.
+ */
 function buildCommandDescription(command: PackageJsonCommand): string {
   const title = command.title?.trim();
   const category = command.category?.trim();
@@ -120,6 +85,13 @@ function buildCommandDescription(command: PackageJsonCommand): string {
   return command.command?.trim() ?? 'Public command exposed by the extension.';
 }
 
+/**
+ * Converts one extension command contribution into a fallback Galaxy tool item.
+ *
+ * @param extensionId Owning extension id.
+ * @param command Package.json command contribution.
+ * @returns Tool item, or `null` when the command lacks the required metadata.
+ */
 function buildCommandFallbackToolItem(extensionId: string, command: PackageJsonCommand): ExtensionToolItem | null {
   if (!command.command || !command.title) {
     return null;
@@ -146,6 +118,14 @@ function buildCommandFallbackToolItem(extensionId: string, command: PackageJsonC
   });
 }
 
+/**
+ * Builds one tool item from a public VS Code language model tool contribution.
+ *
+ * @param extensionId Owning extension id.
+ * @param runtimeInfo Runtime LM tool information exposed by VS Code.
+ * @param contribution Optional package.json contribution metadata.
+ * @returns Extension tool item for Galaxy.
+ */
 function buildLmToolItem(
   extensionId: string,
   runtimeInfo: vscode.LanguageModelToolInformation,
@@ -169,6 +149,11 @@ function buildLmToolItem(
   });
 }
 
+/**
+ * Indexes currently exposed VS Code LM tools by runtime name.
+ *
+ * @returns Map of runtime LM tools keyed by tool name.
+ */
 function getRuntimeLmToolsByName(): ReadonlyMap<string, vscode.LanguageModelToolInformation> {
   const entries = new Map<string, vscode.LanguageModelToolInformation>();
   for (const tool of vscode.lm.tools) {
@@ -177,6 +162,12 @@ function getRuntimeLmToolsByName(): ReadonlyMap<string, vscode.LanguageModelTool
   return entries;
 }
 
+/**
+ * Builds extension tool groups backed by the public VS Code LM tool registry.
+ *
+ * @param contextExtensionId Current Galaxy extension id that should be excluded from discovery.
+ * @returns Discoverable extension tool groups sourced from runtime LM tools.
+ */
 function buildLmToolGroups(contextExtensionId: string): readonly ExtensionToolGroup[] {
   const runtimeToolsByName = getRuntimeLmToolsByName();
   const claimedRuntimeNames = new Set<string>();
@@ -260,6 +251,12 @@ function buildLmToolGroups(contextExtensionId: string): readonly ExtensionToolGr
   return Object.freeze(groups.sort((left, right) => left.label.localeCompare(right.label)));
 }
 
+/**
+ * Builds curated MCP fallback groups for extensions that do not yet expose public LM tools.
+ *
+ * @param contextExtensionId Current Galaxy extension id that should be excluded from discovery.
+ * @returns Curated extension tool groups used as fallbacks.
+ */
 function buildCuratedMcpFallbackGroups(contextExtensionId: string): readonly ExtensionToolGroup[] {
   return Object.freeze(
     vscode.extensions.all
@@ -309,6 +306,15 @@ export function discoverExtensionToolGroups(contextExtensionId: string): readonl
   return Object.freeze(groups.sort((left, right) => left.label.localeCompare(right.label)));
 }
 
+/**
+ * Searches discovered extension tool groups using a simple lexical ranking strategy.
+ *
+ * @param groups Candidate extension tool groups to search.
+ * @param query Search query entered by the user or model.
+ * @param maxGroups Maximum number of matched groups to return.
+ * @param maxToolsPerGroup Maximum number of matched tools kept in one group.
+ * @returns Matched extension tool groups with filtered tool lists.
+ */
 export function searchExtensionToolGroups(
   groups: readonly ExtensionToolGroup[],
   query: string,

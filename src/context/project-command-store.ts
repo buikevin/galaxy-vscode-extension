@@ -1,16 +1,24 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-03-31
+ * @desc Persists and merges detected project command profiles per workspace.
+ */
+
 import fs from 'node:fs';
 import path from 'node:path';
-import { detectProjectCommands, type ProjectCommandDefinition, type ProjectCommandProfile } from './project-command-detector';
+import { detectProjectCommands } from './project-command-detector';
+import type {
+  PersistedProjectCommandProfile,
+  ProjectCommandDefinition,
+  ProjectCommandProfile,
+} from './entities/project-command';
 import { ensureProjectStorage, getProjectStorageInfo } from './project-store';
 
-type PersistedProjectCommandProfile = Readonly<{
-  workspaceId: string;
-  workspacePath: string;
-  commands: readonly ProjectCommandDefinition[];
-  detectedStack: readonly string[];
-  updatedAt: number;
-}>;
-
+/**
+ * Loads a previously persisted project command profile.
+ */
 export function loadProjectCommandProfile(workspacePath: string): ProjectCommandProfile | null {
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);
@@ -25,6 +33,9 @@ export function loadProjectCommandProfile(workspacePath: string): ProjectCommand
   }
 }
 
+/**
+ * Persists one normalized project command profile to disk.
+ */
 export function saveProjectCommandProfile(workspacePath: string, profile: PersistedProjectCommandProfile): ProjectCommandProfile {
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);
@@ -39,6 +50,9 @@ export function saveProjectCommandProfile(workspacePath: string, profile: Persis
   return normalized;
 }
 
+/**
+ * Returns the merged command profile combining saved enablement with fresh detection.
+ */
 export function getOrCreateProjectCommandProfile(workspacePath: string): ProjectCommandProfile {
   const resolvedWorkspace = path.resolve(workspacePath);
   const storage = getProjectStorageInfo(resolvedWorkspace);
@@ -63,11 +77,17 @@ export function getOrCreateProjectCommandProfile(workspacePath: string): Project
   });
 }
 
+/**
+ * Finds one enabled command by id.
+ */
 export function findProjectCommand(workspacePath: string, commandId: string): ProjectCommandDefinition | null {
   const profile = getOrCreateProjectCommandProfile(workspacePath);
   return profile.commands.find((command) => command.id === commandId && command.enabled) ?? null;
 }
 
+/**
+ * Builds the prompt context block listing enabled project commands.
+ */
 export function buildProjectCommandsContextBlock(workspacePath: string): string {
   const profile = getOrCreateProjectCommandProfile(workspacePath);
   const enabledCommands = profile.commands.filter((command) => command.enabled);

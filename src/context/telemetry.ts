@@ -1,117 +1,15 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-03-31
+ * @modify date 2026-03-31
+ * @desc Persists telemetry events and maintains a rolling summary for retrieval diagnostics.
+ */
+
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { ensureProjectStorage, getProjectStorageInfo } from './project-store';
-
-type TelemetryEvent =
-  | Readonly<{
-      id: string;
-      kind: 'prompt_build';
-      capturedAt: number;
-      promptTokensEstimate: number;
-      evidenceEntryCount: number;
-      syntaxIndexEntryCount: number;
-      confirmedReadCount: number;
-      readPlanCount: number;
-      compactedWorkingTurn: boolean;
-      hybridCandidateCount?: number;
-      semanticCandidateCount?: number;
-    }>
-  | Readonly<{
-      id: string;
-      kind: 'working_turn_compacted';
-      capturedAt: number;
-      promptTokensEstimate: number;
-      workingTurnBudget: number;
-      workingTurnTokens: number;
-    }>
-  | Readonly<{
-      id: string;
-      kind: 'tool_evidence';
-      capturedAt: number;
-      toolName: string;
-      success: boolean;
-      targetPath?: string;
-      readMode?: string;
-    }>
-  | Readonly<{
-      id: string;
-      kind: 'multi_agent_plan';
-      capturedAt: number;
-      subtaskCount: number;
-      scopes: readonly string[];
-      completed: boolean;
-      filesWritten: number;
-    }>
-  | Readonly<{
-      id: string;
-      kind: 'sub_agent_turn';
-      capturedAt: number;
-      scope: string;
-      filesWritten: number;
-      hadError: boolean;
-    }>
-  | Readonly<{
-      id: string;
-      kind: 'user_revert';
-      capturedAt: number;
-      fileCount: number;
-    }>
-  | Readonly<{
-      id: string;
-      kind: 'capability_snapshot';
-      capturedAt: number;
-      source: 'chat_turn' | 'repair_turn';
-      agentType: string;
-      enabledCapabilities: readonly string[];
-    }>
-  | Readonly<{
-      id: string;
-      kind: 'validation_selection';
-      capturedAt: number;
-      mode: 'project' | 'file' | 'none';
-      profiles: readonly string[];
-      commandCount: number;
-      usedFileSafetyNet: boolean;
-    }>
-  | Readonly<{
-      id: string;
-      kind: 'blocked_tool';
-      capturedAt: number;
-      toolName: string;
-      capability: string;
-    }>;
-
-type TelemetryEventInput =
-  | Omit<Extract<TelemetryEvent, { kind: 'prompt_build' }>, 'id' | 'capturedAt'>
-  | Omit<Extract<TelemetryEvent, { kind: 'working_turn_compacted' }>, 'id' | 'capturedAt'>
-  | Omit<Extract<TelemetryEvent, { kind: 'tool_evidence' }>, 'id' | 'capturedAt'>
-  | Omit<Extract<TelemetryEvent, { kind: 'multi_agent_plan' }>, 'id' | 'capturedAt'>
-  | Omit<Extract<TelemetryEvent, { kind: 'sub_agent_turn' }>, 'id' | 'capturedAt'>
-  | Omit<Extract<TelemetryEvent, { kind: 'user_revert' }>, 'id' | 'capturedAt'>
-  | Omit<Extract<TelemetryEvent, { kind: 'capability_snapshot' }>, 'id' | 'capturedAt'>
-  | Omit<Extract<TelemetryEvent, { kind: 'validation_selection' }>, 'id' | 'capturedAt'>
-  | Omit<Extract<TelemetryEvent, { kind: 'blocked_tool' }>, 'id' | 'capturedAt'>;
-
-export type TelemetrySummary = Readonly<{
-  totalEvents: number;
-  promptBuilds: number;
-  avgPromptTokensEstimate: number;
-  maxPromptTokensEstimate: number;
-  compactedTurns: number;
-  readEvidenceEvents: number;
-  fullFileReads: number;
-  rereads: number;
-  grepEvents: number;
-  multiAgentPlans: number;
-  multiAgentSuccesses: number;
-  subAgentTurns: number;
-  userReverts: number;
-  capabilitySnapshots: number;
-  validationSelections: number;
-  blockedToolCalls: number;
-  lastUpdatedAt: number;
-  readCountsByPath: Readonly<Record<string, number>>;
-}>;
+import type { TelemetryEvent, TelemetryEventInput, TelemetrySummary } from './entities/telemetry';
 
 const EMPTY_SUMMARY: TelemetrySummary = Object.freeze({
   totalEvents: 0,
@@ -130,10 +28,16 @@ const EMPTY_SUMMARY: TelemetrySummary = Object.freeze({
   capabilitySnapshots: 0,
   validationSelections: 0,
   blockedToolCalls: 0,
+  workflowQueries: 0,
+  workflowHits: 0,
+  workflowGuardActivations: 0,
   lastUpdatedAt: 0,
   readCountsByPath: Object.freeze({}),
 });
 
+/**
+ * Loads the persisted telemetry summary or falls back to an empty one.
+ */
 function loadSummary(summaryPath: string): TelemetrySummary {
   try {
     if (!fs.existsSync(summaryPath)) {
@@ -179,6 +83,9 @@ export function formatTelemetrySummary(summary: TelemetrySummary): string {
     `Capability snapshots: ${summary.capabilitySnapshots}`,
     `Validation selections: ${summary.validationSelections}`,
     `Blocked tool calls: ${summary.blockedToolCalls}`,
+    `Workflow queries: ${summary.workflowQueries}`,
+    `Workflow hits: ${summary.workflowHits}`,
+    `Workflow guard activations: ${summary.workflowGuardActivations}`,
     summary.lastUpdatedAt > 0 ? `Last updated: ${new Date(summary.lastUpdatedAt).toISOString()}` : 'Last updated: n/a',
     topReadPaths ? `Top reread paths:\n${topReadPaths}` : 'Top reread paths:\n- none',
   ].join('\n');
@@ -237,6 +144,10 @@ function updateSummary(summary: TelemetrySummary, event: TelemetryEvent): Teleme
     capabilitySnapshots: summary.capabilitySnapshots + (event.kind === 'capability_snapshot' ? 1 : 0),
     validationSelections: summary.validationSelections + (event.kind === 'validation_selection' ? 1 : 0),
     blockedToolCalls: summary.blockedToolCalls + (event.kind === 'blocked_tool' ? 1 : 0),
+    workflowQueries: summary.workflowQueries + (event.kind === 'workflow_retrieval' && event.flowQuery ? 1 : 0),
+    workflowHits: summary.workflowHits + (event.kind === 'workflow_retrieval' && event.hadHits ? 1 : 0),
+    workflowGuardActivations:
+      summary.workflowGuardActivations + (event.kind === 'workflow_retrieval' && event.rereadGuardEnabled ? 1 : 0),
     lastUpdatedAt: event.capturedAt,
     readCountsByPath: Object.freeze(nextReadCounts),
   });

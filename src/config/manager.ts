@@ -1,16 +1,35 @@
+/**
+ * @author Bùi Trọng Hiếu
+ * @email kevinbui210191@gmail.com
+ * @create date 2026-04-01
+ * @modify date 2026-04-01
+ * @desc Load, normalize, and persist Galaxy extension configuration from the user config directory.
+ */
+
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { AgentType } from '../shared/protocol';
-import { DEFAULT_CONFIG, type AgentConfig, type GalaxyConfig, type ToolCapabilityConfig, type ValidationPreferencesConfig } from './types';
+import { DEFAULT_CONFIG } from '../shared/constants';
+import type {
+  AgentConfig,
+  GalaxyConfig,
+  RawGalaxyConfig,
+  ToolCapabilityConfig,
+  ValidationPreferencesConfig,
+} from '../shared/config';
 
-type RawGalaxyConfig = Partial<GalaxyConfig> & {
-  review?: boolean;
-  test?: boolean;
-  git?: boolean;
-};
-
-function normalizeToolCapabilities(input: Partial<ToolCapabilityConfig> | undefined, config: Pick<GalaxyConfig, 'quality' | 'toolSafety'>): ToolCapabilityConfig {
+/**
+ * Normalizes tool-capability flags while keeping dependent quality and safety toggles in sync.
+ *
+ * @param input Partial persisted capability map.
+ * @param config Quality and tool-safety settings that drive derived capability flags.
+ * @returns Fully populated tool-capability config.
+ */
+function normalizeToolCapabilities(
+  input: Partial<ToolCapabilityConfig> | undefined,
+  config: Pick<GalaxyConfig, 'quality' | 'toolSafety'>,
+): ToolCapabilityConfig {
   return {
     ...DEFAULT_CONFIG.toolCapabilities,
     ...(input ?? {}),
@@ -20,6 +39,12 @@ function normalizeToolCapabilities(input: Partial<ToolCapabilityConfig> | undefi
   };
 }
 
+/**
+ * Normalizes built-in tool toggles by merging them with defaults.
+ *
+ * @param input Partial persisted tool-toggle map.
+ * @returns Fully populated built-in tool-toggle config.
+ */
 function normalizeToolToggles(input: Partial<GalaxyConfig['toolToggles']> | undefined): GalaxyConfig['toolToggles'] {
   return {
     ...DEFAULT_CONFIG.toolToggles,
@@ -27,6 +52,12 @@ function normalizeToolToggles(input: Partial<GalaxyConfig['toolToggles']> | unde
   };
 }
 
+/**
+ * Freezes extension tool toggles so runtime code can treat them as immutable state.
+ *
+ * @param input Persisted extension-tool toggle state.
+ * @returns Frozen extension-tool toggle map.
+ */
 function normalizeExtensionToolToggles(
   input: Readonly<Record<string, boolean>> | undefined,
 ): GalaxyConfig['extensionToolToggles'] {
@@ -35,6 +66,12 @@ function normalizeExtensionToolToggles(
   });
 }
 
+/**
+ * Normalizes one unknown value into a frozen trimmed string list.
+ *
+ * @param value Raw persisted JSON value.
+ * @returns Frozen list of non-empty strings.
+ */
 function normalizeStringList(value: unknown): readonly string[] {
   return Object.freeze(
     Array.isArray(value)
@@ -43,6 +80,12 @@ function normalizeStringList(value: unknown): readonly string[] {
   );
 }
 
+/**
+ * Normalizes validation command preferences by trimming and freezing each command list.
+ *
+ * @param input Partial persisted validation preferences.
+ * @returns Fully normalized validation preferences.
+ */
 function normalizeValidationConfig(input: Partial<ValidationPreferencesConfig> | undefined): ValidationPreferencesConfig {
   return Object.freeze({
     lint: normalizeStringList(input?.lint),
@@ -52,6 +95,11 @@ function normalizeValidationConfig(input: Partial<ValidationPreferencesConfig> |
   });
 }
 
+/**
+ * Resolves the per-user Galaxy config directory for the current operating system.
+ *
+ * @returns Absolute config directory path.
+ */
 export function getConfigDir(): string {
   const platform = os.platform();
   if (platform === 'darwin') {
@@ -69,10 +117,20 @@ export function getConfigDir(): string {
   return path.join(os.homedir(), '.config', 'galaxy');
 }
 
+/**
+ * Resolves the JSON config file path inside the Galaxy config directory.
+ *
+ * @returns Absolute config file path.
+ */
 export function getConfigPath(): string {
   return path.join(getConfigDir(), 'config.json');
 }
 
+/**
+ * Loads Galaxy config from disk and repairs missing or malformed fields with defaults.
+ *
+ * @returns Fully normalized Galaxy config.
+ */
 export function loadConfig(): GalaxyConfig {
   const configDir = getConfigDir();
   const configPath = getConfigPath();
@@ -120,6 +178,11 @@ export function loadConfig(): GalaxyConfig {
   }
 }
 
+/**
+ * Persists one normalized Galaxy config object to disk.
+ *
+ * @param config Config object to persist.
+ */
 export function saveConfig(config: GalaxyConfig): void {
   const configDir = getConfigDir();
   const configPath = getConfigPath();
@@ -138,14 +201,29 @@ export function saveConfig(config: GalaxyConfig): void {
 
   const { availableExtensionToolGroups: _availableExtensionToolGroups, ...persistedConfig } = normalizedConfig;
 
-  fs.writeFileSync(configPath, JSON.stringify({
-    ...persistedConfig,
-    review: persistedConfig.quality.review,
-    test: persistedConfig.quality.test,
-    git: persistedConfig.toolSafety.enableGitWriteTools,
-  }, null, 2), 'utf-8');
+  fs.writeFileSync(
+    configPath,
+    JSON.stringify(
+      {
+        ...persistedConfig,
+        review: persistedConfig.quality.review,
+        test: persistedConfig.quality.test,
+        git: persistedConfig.toolSafety.enableGitWriteTools,
+      },
+      null,
+      2,
+    ),
+    'utf-8',
+  );
 }
 
+/**
+ * Finds one agent configuration by provider type.
+ *
+ * @param config Loaded Galaxy config.
+ * @param type Agent provider to look up.
+ * @returns Matching agent config when present.
+ */
 export function getAgentConfig(config: GalaxyConfig, type: AgentType): AgentConfig | undefined {
   return config.agent.find((agent) => agent.type === type);
 }
