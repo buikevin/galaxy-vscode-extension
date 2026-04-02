@@ -7,7 +7,12 @@
  */
 
 import * as ts from 'typescript';
-import type { ParsedFile, SymbolUnit } from '../entities/extractor';
+import type {
+  ParsedFile,
+  SymbolUnit,
+  WorkflowExecutionGraphState,
+  WorkflowSymbolResolutionContext,
+} from '../entities/extractor';
 import type { WorkflowEdgeRecord, WorkflowNodeRecord } from '../entities/graph';
 import { DB_QUERY_METHODS, HTTP_METHODS, QUEUE_PUBLISH_METHODS } from '../entities/constants';
 import { getLineNumber, maybeGetStringLiteralValue } from './files';
@@ -24,9 +29,78 @@ import {
 } from './nodes';
 
 /**
- * Visits executable bodies and extracts call, HTTP, queue, and DB edges.
+ * Resolves a JSX tag expression to a known workflow node id when possible.
  */
-export function visitExecutableUnit(
+function resolveJsxTargetId(
+  parsedFile: ParsedFile,
+  tagName: ts.JsxTagNameExpression,
+  exportedSymbolsByFile: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): string | null {
+  if (ts.isIdentifier(tagName)) {
+    if (!/^[A-Z]/.test(tagName.text)) {
+      return null;
+    }
+    return resolveSymbolTargetId(parsedFile, tagName, exportedSymbolsByFile);
+  }
+
+  if (ts.isPropertyAccessExpression(tagName)) {
+    return resolveSymbolTargetId(parsedFile, tagName, exportedSymbolsByFile);
+  }
+
+  return null;
+}
+
+/**
+ * Visits executable bodies and extracts React-style JSX composition edges.
+ *
+ * @param unit Workflow unit whose callable bodies should be traversed.
+ * @param parsedFile Parsed source file that owns the unit.
+ * @param edges Mutable edge collection that receives discovered composition edges.
+ * @param exportedSymbolsByFile Exported symbol lookup used for component resolution.
+ */
+export function visitJsxCompositionUnit(
+  unit: SymbolUnit,
+  parsedFile: ParsedFile,
+  edges: Map<string, WorkflowEdgeRecord>,
+  exportedSymbolsByFile: ReadonlyMap<string, ReadonlyMap<string, string>>,
+): void {
+  unit.callableNodes.forEach((callableNode) => {
+    walkNode(callableNode, (current) => {
+      if (ts.isJsxSelfClosingElement(current) || ts.isJsxOpeningElement(current)) {
+        const targetId = resolveJsxTargetId(parsedFile, current.tagName, exportedSymbolsByFile);
+        if (!targetId || targetId === unit.id) {
+          return;
+        }
+        const line = getLineNumber(parsedFile.sourceFile, current);
+        const edge = createEdge({
+          fromNodeId: unit.id,
+          toNodeId: targetId,
+          edgeType: 'renders',
+          label: current.tagName.getText(parsedFile.sourceFile),
+          filePath: parsedFile.relativePath,
+          symbolName: unit.symbolName,
+          line,
+          sourceHash: parsedFile.sourceHash,
+          confidence: 0.74,
+          provenanceKind: 'jsx_component_reference',
+        });
+        edges.set(edge.id, edge);
+        return;
+      }
+    });
+  });
+}
+
+/**
+ * Visits executable bodies and extracts generic call, HTTP, queue, and DB edges.
+ *
+ * @param unit Workflow unit whose executable bodies should be traversed.
+ * @param parsedFile Parsed source file that owns the unit.
+ * @param nodes Mutable workflow node collection.
+ * @param edges Mutable workflow edge collection.
+ * @param exportedSymbolsByFile Exported symbol lookup used for cross-file resolution.
+ */
+export function visitGenericExecutableUnit(
   unit: SymbolUnit,
   parsedFile: ParsedFile,
   nodes: Map<string, WorkflowNodeRecord>,
@@ -248,4 +322,22 @@ export function visitExecutableUnit(
       edges.set(edge.id, edge);
     });
   });
+}
+
+/**
+ * Backward-compatible wrapper that applies both generic executable edges and JSX composition edges.
+ *
+ * @param unit Workflow unit whose executable bodies should be traversed.
+ * @param parsedFile Parsed source file that owns the unit.
+ * @param graphState Mutable workflow graph state updated during traversal.
+ * @param symbolContext Exported symbol lookup used for cross-file resolution.
+ */
+export function visitExecutableUnit(
+  unit: SymbolUnit,
+  parsedFile: ParsedFile,
+  graphState: WorkflowExecutionGraphState,
+  symbolContext: WorkflowSymbolResolutionContext,
+): void {
+  visitGenericExecutableUnit(unit, parsedFile, graphState.nodes, graphState.edges, symbolContext.exportedSymbolsByFile);
+  visitJsxCompositionUnit(unit, parsedFile, graphState.edges, symbolContext.exportedSymbolsByFile);
 }

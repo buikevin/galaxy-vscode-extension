@@ -92,6 +92,10 @@ type UseChatViewModelOptions = Readonly<{
   isPlusMenuOpen: boolean;
   /** Pending user message id. */
   pendingMessageId: string | null;
+  /** Whether older transcript history exists. */
+  hasOlderMessages: boolean;
+  /** Whether one older transcript batch is currently loading. */
+  isLoadingOlderMessages: boolean;
   /** Raw transcript messages. */
   messages: Parameters<typeof buildRenderItems>[0];
   /** Scroll-area ref used by the transcript. */
@@ -122,6 +126,8 @@ type UseChatViewModelOptions = Readonly<{
   setInput: Dispatch<SetStateAction<string>>;
   /** Update selected agent. */
   setSelectedAgent: Dispatch<SetStateAction<AgentType>>;
+  /** Loads one older transcript batch before the oldest visible message. */
+  loadOlderMessages: () => void;
   /** Send current message through the host. */
   sendMessage: () => void;
   /** Retry the last retryable request. */
@@ -434,6 +440,8 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
     scrollAreaRef: options.scrollAreaRef,
     renderItems,
     pendingMessageId: options.pendingMessageId,
+    hasOlderMessages: options.hasOlderMessages,
+    isLoadingOlderMessages: options.isLoadingOlderMessages,
     streamingAssistant: options.streamingAssistant,
     streamingThinking: options.streamingThinking,
     selectedAgent: options.selectedAgent,
@@ -443,6 +451,7 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
     toggleExpanded,
     isMessageExpanded,
     toggleMessageExpanded,
+    loadOlderMessages: options.loadOlderMessages,
     renderShellSession: toolRenderers.renderShellSession,
     renderActionBody,
     renderActionSummary: toolRenderers.renderActionSummary,

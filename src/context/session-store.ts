@@ -7,6 +7,7 @@
  */
 
 import fs from 'node:fs';
+import { normalizeActiveProjectPath } from './active-project';
 import type { ActiveTaskMemory, ProjectMemory, SessionMemory, TurnDigest } from './entities/history';
 import {
   createEmptyActiveTaskMemory,
@@ -154,6 +155,7 @@ function migrateLegacySessionMemory(
   return Object.freeze({
     workspaceId,
     workspacePath,
+    activeProjectPath: undefined,
     activeTaskMemory,
     projectMemory,
     lastFinalAssistantConclusion:
@@ -177,6 +179,7 @@ export function createEmptySessionMemory(workspacePath: string): SessionMemory {
   return Object.freeze({
     workspaceId: info.workspaceId,
     workspacePath: info.workspacePath,
+    activeProjectPath: undefined,
     activeTaskMemory,
     projectMemory,
     lastFinalAssistantConclusion: '',
@@ -230,6 +233,10 @@ export function loadSessionMemory(workspacePath: string): SessionMemory | null {
     return Object.freeze({
       workspaceId: parsed.workspaceId,
       workspacePath: parsed.workspacePath,
+      activeProjectPath: normalizeActiveProjectPath(
+        parsed.workspacePath,
+        typeof parsed.activeProjectPath === 'string' ? parsed.activeProjectPath : undefined,
+      ),
       activeTaskMemory,
       projectMemory,
       lastFinalAssistantConclusion:

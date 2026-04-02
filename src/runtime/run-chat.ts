@@ -14,6 +14,7 @@ import {
   getCommandPermission,
   grantActionApproval,
 } from '../context/action-approval-store';
+import { mapPathsToProjectScope, resolveEffectiveProjectPath } from '../context/active-project';
 import { computeWorkingContextBudget, estimateTokens } from '../context/compaction';
 import { buildPromptContext } from '../context/prompt-builder';
 import { appendTelemetryEvent } from '../context/telemetry';
@@ -71,7 +72,16 @@ function formatToolResultContent(toolName: string, result: Readonly<{
       typeof result.meta?.commandLabel === 'string' && result.meta.commandLabel.trim()
         ? result.meta.commandLabel
         : toolName;
-    return `Command started and is still running in the background: ${commandLabel}\nUse View terminal to inspect live output while Galaxy continues working.`;
+    const commandId =
+      typeof result.meta?.commandId === 'string' && result.meta.commandId.trim()
+        ? result.meta.commandId
+        : '';
+    return [
+      `Command started and is still running in the background: ${commandLabel}`,
+      ...(commandId ? [`commandId: ${commandId}`] : []),
+      ...(commandId ? [`Use await_terminal_command with commandId "${commandId}" to wait for completion.`] : []),
+      'Use View terminal to inspect live output while Galaxy continues working.',
+    ].join('\n');
   }
 
   return result.content || '(no output)';
@@ -468,9 +478,19 @@ export async function runExtensionChat(opts: {
         }
       }
       if (result.success && workflowRefreshPaths.size > 0) {
-        scheduleWorkflowGraphRefresh(workspacePath, {
+        const workflowRefreshWorkspacePath = resolveEffectiveProjectPath({
+          workspacePath,
+          activeProjectPath: opts.historyManager.getSessionMemory().activeProjectPath,
+          candidateFilePaths: [...workflowRefreshPaths],
+        });
+        const scopedWorkflowRefreshPaths = mapPathsToProjectScope(
+          workspacePath,
+          workflowRefreshWorkspacePath,
+          [...workflowRefreshPaths],
+        );
+        scheduleWorkflowGraphRefresh(workflowRefreshWorkspacePath, {
           reason: `tool:${toolName}`,
-          filePaths: [...workflowRefreshPaths],
+          filePaths: scopedWorkflowRefreshPaths,
         });
       }
       const toolMessage: ChatMessage = Object.freeze({

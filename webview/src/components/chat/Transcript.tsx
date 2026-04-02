@@ -6,7 +6,7 @@
  * @desc Transcript renderer for Galaxy Code chat, including grouped actions, message cards, and live streaming blocks.
  */
 
-import type { RefObject } from "react";
+import { useEffect, type RefObject } from "react";
 import { ScrollArea } from "@webview/components/ui/scroll-area";
 import { ActionGroupCard } from "@webview/components/chat/ActionGroupCard";
 import { MessageAttachmentGrid } from "@webview/components/chat/MessageAttachmentGrid";
@@ -22,6 +22,36 @@ import { useTranscriptContext } from "@webview/context/TranscriptViewContext";
  */
 export function Transcript() {
   const transcript = useTranscriptContext();
+
+  useEffect(() => {
+    const root = transcript.scrollAreaRef.current;
+    const viewport = root?.querySelector(
+      "[data-radix-scroll-area-viewport]"
+    ) as HTMLElement | null;
+    if (!viewport) {
+      return;
+    }
+
+    const handleScroll = () => {
+      if (
+        transcript.hasOlderMessages &&
+        !transcript.isLoadingOlderMessages &&
+        viewport.scrollTop <= 120
+      ) {
+        transcript.loadOlderMessages();
+      }
+    };
+
+    viewport.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      viewport.removeEventListener("scroll", handleScroll);
+    };
+  }, [
+    transcript.hasOlderMessages,
+    transcript.isLoadingOlderMessages,
+    transcript.loadOlderMessages,
+    transcript.scrollAreaRef,
+  ]);
 
   function formatCount(count: number, singular: string, plural: string): string {
     return `${count} ${count === 1 ? singular : plural}`;
@@ -108,6 +138,14 @@ export function Transcript() {
       className="flex-1 min-h-0 overflow-x-hidden"
     >
       <div className="mx-auto flex w-full max-w-[980px] min-w-0 flex-col overflow-x-hidden px-3 pb-5 pt-3 max-[620px]:px-2 max-[620px]:pb-3 max-[620px]:pt-2">
+        {transcript.hasOlderMessages || transcript.isLoadingOlderMessages ? (
+          <div className="pb-2 pt-1 text-center text-xs text-muted-foreground/80">
+            {transcript.isLoadingOlderMessages
+              ? "Đang nạp lịch sử cũ..."
+              : "Kéo lên để nạp lịch sử cũ hơn"}
+          </div>
+        ) : null}
+
         {transcript.renderItems.map((item) => {
           if (item.type === "live-shell") {
             return (
@@ -159,37 +197,38 @@ export function Transcript() {
           const messageAttachments = buildMessageAttachments(message);
 
           return (
-            <MessageCard
-              key={item.key}
-              message={message}
-              expanded={transcript.isMessageExpanded(message.id)}
-              pending={transcript.pendingMessageId === message.id}
-              titleLabel={
-                message.role === "assistant"
-                  ? transcript.getAssistantLabel(message.agentType)
-                  : "User"
-              }
-              timestampLabel={new Date(message.timestamp).toLocaleTimeString()}
-              attachmentsContent={
-                messageAttachments.length > 0
-                  ? (
-                    <MessageAttachmentGrid
-                      attachments={messageAttachments}
-                      onOpenPreview={transcript.onOpenMessageAttachmentPreview}
+            <div key={item.key} className="mt-4 max-[620px]:mt-3">
+              <MessageCard
+                message={message}
+                expanded={transcript.isMessageExpanded(message.id)}
+                pending={transcript.pendingMessageId === message.id}
+                titleLabel={
+                  message.role === "assistant"
+                    ? transcript.getAssistantLabel(message.agentType)
+                    : "User"
+                }
+                timestampLabel={new Date(message.timestamp).toLocaleTimeString()}
+                attachmentsContent={
+                  messageAttachments.length > 0
+                    ? (
+                      <MessageAttachmentGrid
+                        attachments={messageAttachments}
+                        onOpenPreview={transcript.onOpenMessageAttachmentPreview}
+                      />
+                    )
+                    : null
+                }
+                body={
+                  message.role === "tool" ? transcript.renderToolBody(message) : transcript.isMessageExpanded(message.id) ? (
+                    <RichMessageBody
+                      content={message.content}
+                      tone={message.role === "assistant" ? "assistant" : "muted"}
                     />
-                  )
-                  : null
-              }
-              body={
-                message.role === "tool" ? transcript.renderToolBody(message) : transcript.isMessageExpanded(message.id) ? (
-                  <RichMessageBody
-                    content={message.content}
-                    tone={message.role === "assistant" ? "assistant" : "muted"}
-                  />
-                ) : null
-              }
-              onToggleExpand={() => transcript.toggleMessageExpanded(message.id)}
-            />
+                  ) : null
+                }
+                onToggleExpand={() => transcript.toggleMessageExpanded(message.id)}
+              />
+            </div>
           );
         })}
 

@@ -117,6 +117,7 @@ export class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
   private isRunning = false;
   private statusText = "Phase 8 Polish ready";
   private messages: ChatMessage[] = [];
+  private hasOlderTranscriptHistory = false;
   private selectedAgent: AgentType = "manual";
   private pendingApprovalRequestId: string | null = null;
   private pendingApprovalResolver:

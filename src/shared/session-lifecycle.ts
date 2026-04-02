@@ -29,6 +29,11 @@ export type LoadInitialMessagesParams = Readonly<{
   ) => void;
 }>;
 
+export type LoadedInitialMessagesResult = Readonly<{
+  messages: readonly ChatMessage[];
+  hasOlderMessages: boolean;
+}>;
+
 /** Parameters required to persist one project-meta mutation. */
 export type PersistProjectMetaPatchParams = Readonly<{
   /** Project storage info containing the persisted meta path. */

@@ -72,6 +72,22 @@ function reviveMessage(value: unknown): ChatMessage | null {
   });
 }
 
+function parseTranscriptMessages(source: string): readonly ChatMessage[] {
+  return Object.freeze(
+    source
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return reviveMessage(JSON.parse(line));
+        } catch {
+          return null;
+        }
+      })
+      .filter((message): message is ChatMessage => message !== null)
+  );
+}
+
 /**
  * Appends one chat message to the JSONL transcript.
  */
@@ -116,21 +132,89 @@ export function loadUiTranscript(filePath: string, opts?: UiTranscriptLoadOption
   }
 
   try {
-    const lines = readTranscriptSource(filePath).split(/\r?\n/).filter(Boolean);
-    const messages = lines
-      .map((line) => {
-        try {
-          return reviveMessage(JSON.parse(line));
-        } catch {
-          return null;
-        }
-      })
-      .filter((message): message is ChatMessage => message !== null);
-
+    const messages = parseTranscriptMessages(readTranscriptSource(filePath));
     const maxMessages = opts?.maxMessages ?? messages.length;
     return Object.freeze(messages.slice(-maxMessages));
   } catch {
     return Object.freeze([]);
+  }
+}
+
+export function loadInitialUiTranscriptBatch(
+  filePath: string,
+  opts?: UiTranscriptLoadOptions,
+): Readonly<{
+  messages: readonly ChatMessage[];
+  hasOlderMessages: boolean;
+}> {
+  if (!fs.existsSync(filePath)) {
+    return Object.freeze({
+      messages: Object.freeze([]),
+      hasOlderMessages: false,
+    });
+  }
+
+  try {
+    const stat = fs.statSync(filePath);
+    const parsedMessages = parseTranscriptMessages(readTranscriptSource(filePath));
+    const maxMessages = opts?.maxMessages ?? parsedMessages.length;
+    const messages = Object.freeze(parsedMessages.slice(-maxMessages));
+    return Object.freeze({
+      messages,
+      hasOlderMessages:
+        parsedMessages.length > messages.length ||
+        stat.size > FULL_READ_THRESHOLD_BYTES,
+    });
+  } catch {
+    return Object.freeze({
+      messages: Object.freeze([]),
+      hasOlderMessages: false,
+    });
+  }
+}
+
+export function loadOlderUiTranscriptBatch(
+  filePath: string,
+  opts?: Readonly<{
+    beforeMessageId?: string;
+    batchSize?: number;
+  }>,
+): Readonly<{
+  messages: readonly ChatMessage[];
+  hasOlderMessages: boolean;
+}> {
+  if (!fs.existsSync(filePath)) {
+    return Object.freeze({
+      messages: Object.freeze([]),
+      hasOlderMessages: false,
+    });
+  }
+
+  try {
+    const allMessages = parseTranscriptMessages(fs.readFileSync(filePath, "utf-8"));
+    const beforeMessageId = opts?.beforeMessageId?.trim();
+    const batchSize = Math.max(1, opts?.batchSize ?? 60);
+    const beforeIndex = beforeMessageId
+      ? allMessages.findIndex((message) => message.id === beforeMessageId)
+      : allMessages.length;
+
+    if (beforeIndex <= 0) {
+      return Object.freeze({
+        messages: Object.freeze([]),
+        hasOlderMessages: false,
+      });
+    }
+
+    const startIndex = Math.max(0, beforeIndex - batchSize);
+    return Object.freeze({
+      messages: Object.freeze(allMessages.slice(startIndex, beforeIndex)),
+      hasOlderMessages: startIndex > 0,
+    });
+  } catch {
+    return Object.freeze({
+      messages: Object.freeze([]),
+      hasOlderMessages: false,
+    });
   }
 }
 

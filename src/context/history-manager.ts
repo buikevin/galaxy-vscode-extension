@@ -9,6 +9,7 @@
 import path from 'node:path';
 import type { ChatMessage } from '../shared/protocol';
 import type { ToolCall, ToolResult } from '../tools/entities/file-tools';
+import { normalizeActiveProjectPath, resolveEffectiveProjectPath } from './active-project';
 import { HARD_PROMPT_TOKENS } from './entities/constants';
 import type { SessionMemory, TurnDigest, WorkingTurn } from './entities/history';
 import type { HistoryManager } from './entities/history-manager';
@@ -18,6 +19,7 @@ import {
   normalizeActiveTaskMemory,
   normalizeProjectMemory,
 } from './memory-format';
+import { getProjectStorageInfo } from './project-store';
 import { appendTaskMemoryEntry } from './rag-metadata/task-memory';
 import { createEmptySessionMemory, loadSessionMemory, saveSessionMemory } from './session-store';
 import { clearToolEvidence, createToolEvidence, appendToolEvidence as persistToolEvidence } from './tool-evidence-store';
@@ -61,6 +63,7 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
     const projectMemory = compactProjectMemory(next.projectMemory);
     sessionMemory = Object.freeze({
       ...next,
+      activeProjectPath: normalizeActiveProjectPath(workspacePath, next.activeProjectPath),
       activeTaskMemory,
       projectMemory,
       keyFiles: deriveCombinedKeyFiles(activeTaskMemory, projectMemory),
@@ -130,6 +133,7 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
 
     setSessionMemory({
       ...sessionMemory,
+      activeProjectPath: undefined,
       activeTaskMemory: nextActiveTask,
       lastUpdatedAt: now,
     });
@@ -155,6 +159,14 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
     const commitConclusion = opts?.commitConclusion ?? true;
     const taskMemory = sessionMemory.activeTaskMemory;
     const projectMemory = sessionMemory.projectMemory;
+    const nextActiveProjectPath = normalizeActiveProjectPath(
+      workspacePath,
+      resolveEffectiveProjectPath({
+        workspacePath,
+        activeProjectPath: sessionMemory.activeProjectPath,
+        candidateFilePaths: filesTouched,
+      }),
+    );
 
     const nextActiveTask = normalizeActiveTaskMemory(
       Object.freeze({
@@ -203,6 +215,7 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
 
     setSessionMemory({
       ...sessionMemory,
+      activeProjectPath: nextActiveProjectPath,
       activeTaskMemory: nextActiveTask,
       projectMemory: nextProjectMemory,
       lastFinalAssistantConclusion: commitConclusion && assistantText.trim()
@@ -380,8 +393,9 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
 
       mergeWorkingSessionIntoMemory(workingTurn, finalAssistantText, { commitConclusion });
       if (commitConclusion && finalAssistantText.trim()) {
-        appendTaskMemoryEntry(sessionMemory.workspacePath, {
-          workspaceId: sessionMemory.workspaceId,
+        const taskMemoryWorkspacePath = sessionMemory.activeProjectPath ?? sessionMemory.workspacePath;
+        appendTaskMemoryEntry(taskMemoryWorkspacePath, {
+          workspaceId: getProjectStorageInfo(taskMemoryWorkspacePath).workspaceId,
           turnId: workingTurn.turnId,
           turnKind: inferTaskMemoryTurnKind(workingTurn, finalAssistantText),
           userIntent: summarizeText(workingTurn.userMessage.content, 1_200),
@@ -405,6 +419,14 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
       }
 
       const now = Date.now();
+      const nextActiveProjectPath = normalizeActiveProjectPath(
+        workspacePath,
+        resolveEffectiveProjectPath({
+          workspacePath,
+          activeProjectPath: sessionMemory.activeProjectPath,
+          candidateFilePaths: filesTouched,
+        }),
+      );
       const nextActiveTask = normalizeActiveTaskMemory(
         Object.freeze({
           ...sessionMemory.activeTaskMemory,
@@ -434,6 +456,7 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
 
       setSessionMemory({
         ...sessionMemory,
+        activeProjectPath: nextActiveProjectPath,
         activeTaskMemory: nextActiveTask,
         projectMemory: nextProjectMemory,
         lastUpdatedAt: now,

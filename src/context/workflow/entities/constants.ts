@@ -22,14 +22,33 @@ export const MAX_SCAN_FILES = 320;
 export const MAX_FILE_BYTES = 256 * 1024;
 
 /**
- * Source suffixes considered eligible for workflow extraction.
+ * Source suffixes considered eligible for any workflow extraction adapter.
  */
-export const SUPPORTED_SOURCE_SUFFIXES = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+export const SUPPORTED_SOURCE_SUFFIXES = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.java', '.py', '.go', '.rs', '.dart', '.php'];
 
 /**
- * Directory names excluded from workflow source scanning.
+ * Source suffixes parsed by the TypeScript and JavaScript generic extractor.
  */
-export const IGNORED_SEGMENTS = new Set(['.git', '.galaxy', 'node_modules', 'dist', 'build', 'out', 'coverage']);
+export const TYPESCRIPT_SOURCE_SUFFIXES = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'];
+
+/**
+ * Directory names excluded from workflow source scanning because they are generated output,
+ * dependency caches, or workspace metadata that would pollute graph extraction.
+ */
+export const IGNORED_SEGMENTS = new Set([
+  '.git',
+  '.galaxy',
+  '.next',
+  '.nuxt',
+  '.svelte-kit',
+  '.turbo',
+  '.vercel',
+  'node_modules',
+  'dist',
+  'build',
+  'out',
+  'coverage',
+]);
 
 /**
  * HTTP method names used to detect route registrations and fetch calls.
@@ -89,12 +108,14 @@ export const WORKFLOW_MAP_ENTRY_TYPES = new Set([
   'component',
   'entrypoint',
   'api_endpoint',
+  'rpc_endpoint',
   'webhook_handler',
   'controller',
   'worker',
   'job',
   'message_handler',
   'queue_topic',
+  'desktop_entrypoint',
 ]);
 
 /**

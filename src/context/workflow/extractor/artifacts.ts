@@ -7,6 +7,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import type { WorkflowArtifactBuildInput, WorkflowArtifactBuildResult, WorkflowSnapshotSubgraph } from '../entities/artifacts';
 import type {
   WorkflowEdgeRecord,
   WorkflowMapRecord,
@@ -135,11 +136,7 @@ export function buildSnapshotSubgraph(
   entryNodeId: string,
   nodeMap: ReadonlyMap<string, WorkflowNodeRecord>,
   edges: readonly WorkflowEdgeRecord[],
-): Readonly<{
-  entryNode: WorkflowNodeRecord;
-  nodes: readonly WorkflowNodeRecord[];
-  edges: readonly WorkflowEdgeRecord[];
-}> | null {
+): WorkflowSnapshotSubgraph | null {
   const entryNode = nodeMap.get(entryNodeId);
   if (!entryNode) {
     return null;
@@ -185,11 +182,7 @@ export function buildSnapshotSubgraph(
 /**
  * Builds a concise workflow summary line from a subgraph.
  */
-export function buildWorkflowMapSummary(subgraph: Readonly<{
-  entryNode: WorkflowNodeRecord;
-  nodes: readonly WorkflowNodeRecord[];
-  edges: readonly WorkflowEdgeRecord[];
-}>): string {
+export function buildWorkflowMapSummary(subgraph: WorkflowSnapshotSubgraph): string {
   const relatedNodes = subgraph.nodes.filter((node) => node.id !== subgraph.entryNode.id);
   const filePaths = [...new Set(subgraph.nodes.flatMap((node) => (node.filePath ? [node.filePath] : [])))];
   const edgeTypes = [...new Set(subgraph.edges.map((edge) => edge.edgeType))];
@@ -210,11 +203,7 @@ export function buildWorkflowMapSummary(subgraph: Readonly<{
 /**
  * Builds a numbered workflow trace narrative from a subgraph.
  */
-export function buildWorkflowTraceNarrative(subgraph: Readonly<{
-  entryNode: WorkflowNodeRecord;
-  nodes: readonly WorkflowNodeRecord[];
-  edges: readonly WorkflowEdgeRecord[];
-}>): string {
+export function buildWorkflowTraceNarrative(subgraph: WorkflowSnapshotSubgraph): string {
   const steps = subgraph.edges.slice(0, MAX_WORKFLOW_TRACE_STEPS).map((edge, index) => {
     const fromNode = subgraph.nodes.find((node) => node.id === edge.fromNodeId);
     const toNode = subgraph.nodes.find((node) => node.id === edge.toNodeId);
@@ -229,14 +218,7 @@ export function buildWorkflowTraceNarrative(subgraph: Readonly<{
 /**
  * Builds workflow map and trace artifacts from a full graph snapshot.
  */
-export function buildWorkflowArtifacts(snapshot: Readonly<{
-  nodes: readonly WorkflowNodeRecord[];
-  edges: readonly WorkflowEdgeRecord[];
-}>): Readonly<{
-  maps: readonly WorkflowMapRecord[];
-  mapSources: readonly WorkflowMapSourceRecord[];
-  traceSummaries: readonly WorkflowTraceSummaryRecord[];
-}> {
+export function buildWorkflowArtifacts(snapshot: WorkflowArtifactBuildInput): WorkflowArtifactBuildResult {
   const nodeMap = new Map(snapshot.nodes.map((node) => [node.id, node] as const));
   const entryNodes = snapshot.nodes
     .filter((node) => WORKFLOW_MAP_ENTRY_TYPES.has(node.nodeType))

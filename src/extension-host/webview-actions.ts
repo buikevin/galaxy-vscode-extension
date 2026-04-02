@@ -45,6 +45,8 @@ export function createWebviewActionCallbacks(
     },
     revealShellTerminal: async (toolCallId) =>
       params.revealShellTerminal(toolCallId),
+    loadOlderTranscriptMessages: async (oldestMessageId, batchSize) =>
+      params.loadOlderTranscriptMessages(oldestMessageId, batchSize),
     handleApprovalResponse: (requestId, decision) => {
       if (!params.hasPendingApproval(requestId)) {
         return;
@@ -99,6 +101,7 @@ export function createProviderWebviewActionCallbacks(
     openWorkspaceFile: bindings.openWorkspaceFile,
     openTrackedDiff: bindings.openTrackedDiff,
     revealShellTerminal: bindings.revealShellTerminal,
+    loadOlderTranscriptMessages: bindings.loadOlderTranscriptMessages,
     appendApprovalLog: (decision) => {
       bindings.appendLog(
         "approval",
@@ -155,6 +158,20 @@ export async function handleWebviewAction(
     case "shell-open-terminal":
       await callbacks.revealShellTerminal(message.payload.toolCallId);
       return true;
+    case "transcript-load-older": {
+      const result = await callbacks.loadOlderTranscriptMessages(
+        message.payload.oldestMessageId,
+        message.payload.batchSize,
+      );
+      await callbacks.postMessage({
+        type: "transcript-older-loaded",
+        payload: {
+          messages: [...result.messages],
+          hasOlderMessages: result.hasOlderMessages,
+        },
+      });
+      return true;
+    }
     case "approval-response":
       callbacks.handleApprovalResponse(
         message.payload.requestId,

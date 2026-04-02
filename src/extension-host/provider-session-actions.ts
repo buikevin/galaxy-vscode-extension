@@ -67,6 +67,7 @@ export function createProviderSessionActions(
           sanitizeChatMessageForWebview: bindings.sanitizeChatMessageForWebview,
           postMessage,
         },
+        hasOlderMessages: bindings.getHasOlderMessages(),
       });
     },
     getEffectiveConfig: bindings.getEffectiveConfig,

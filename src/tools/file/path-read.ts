@@ -365,7 +365,7 @@ export function readFileTool(workspaceRoot: string, rawPath: string, options?: R
     }
 
     const offset = Math.max(0, Number(options?.offset ?? 0));
-    const maxLines = Math.max(1, Number(options?.maxLines ?? 200));
+    const maxLines = Math.max(1, Number(options?.maxLines ?? 400));
     const cached = getCachedReadResult(workspaceRoot, {
       filePath: resolved,
       mtimeMs: stat.mtimeMs,

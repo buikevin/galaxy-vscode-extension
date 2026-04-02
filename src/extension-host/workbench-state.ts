@@ -6,16 +6,12 @@
  * @desc Workbench chrome and webview session-state builders extracted from the extension host entrypoint.
  */
 
-import { getAgentConfig, loadConfig } from "../config/manager";
 import type {
-  AgentType,
   PlanItem,
-  QualityPreferences,
   QualityDetails,
   SessionInitPayload,
 } from "../shared/protocol";
 import type {
-  ApprovalModeSummary,
   BuildSessionInitPayloadParams,
   WorkbenchChromeUpdateParams,
 } from "../shared/extension-host";
@@ -23,96 +19,11 @@ import type {
   PhasePlanItems,
   UpdateQualityDetailsParams,
 } from "../shared/workbench-runtime";
-import { getAgentLabel } from "./utils";
-
-/** Returns the current selected-agent detail line used in the status bar tooltip. */
-export function getSelectedAgentDetail(selectedAgent: AgentType): string {
-  const config = loadConfig();
-  const agentConfig = getAgentConfig(config, selectedAgent);
-  if (!agentConfig) {
-    return "No configured model";
-  }
-
-  const parts = [agentConfig.model?.trim(), agentConfig.baseUrl?.trim()].filter(
-    (value): value is string => Boolean(value),
-  );
-
-  return parts.join(" · ") || "Configured in ~/.galaxy/config.json";
-}
-
-/** Summarizes the current approval mode for the status bar. */
-export function getApprovalModeSummary(params: {
-  pendingApprovalRequestId: string | null;
-  pendingApprovalTitle: string | null;
-  qualityPreferences: QualityPreferences;
-}): ApprovalModeSummary {
-  if (params.pendingApprovalRequestId) {
-    return Object.freeze({
-      label: "Pending",
-      tooltip:
-        params.pendingApprovalTitle ??
-        "A Galaxy Code tool is waiting for approval.",
-    });
-  }
-
-  const config = loadConfig();
-  const approvalFlags = [
-    ["Git pull", config.toolSafety.requireApprovalForGitPull],
-    ["Git push", config.toolSafety.requireApprovalForGitPush],
-    ["Git checkout", config.toolSafety.requireApprovalForGitCheckout],
-    ["Delete path", config.toolSafety.requireApprovalForDeletePath],
-    ["Scaffold", config.toolSafety.requireApprovalForScaffold],
-    ["Project command", config.toolSafety.requireApprovalForProjectCommand],
-  ] as const;
-  const enabled = approvalFlags
-    .filter(([, requiresApproval]) => requiresApproval)
-    .map(([label]) => label);
-
-  if (enabled.length === 0) {
-    return Object.freeze({
-      label: params.qualityPreferences.fullAccessEnabled ? "Full" : "Off",
-      tooltip: params.qualityPreferences.fullAccessEnabled
-        ? "run_project_command, git pull/push/checkout, delete_path, and scaffold actions can run without asking for approval."
-        : "No tool approvals are currently required.",
-    });
-  }
-
-  if (enabled.length === approvalFlags.length) {
-    return Object.freeze({
-      label: "On",
-      tooltip: "All supported write-capable tools currently require approval.",
-    });
-  }
-
-  return Object.freeze({
-    label: "Mixed",
-    tooltip: `Approvals required for: ${enabled.join(", ")}`,
-  });
-}
-
 /** Applies the current run, agent, and approval state to the status bar items. */
 export function updateWorkbenchChrome(
-  params: {} & WorkbenchChromeUpdateParams,
+  _params: {} & WorkbenchChromeUpdateParams,
 ): void {
-  const runIcon = params.isRunning ? "sync~spin" : "check";
-  params.chrome.runStatusItem.text = `$(${runIcon}) Galaxy ${params.statusText}`;
-  params.chrome.runStatusItem.tooltip = params.isRunning
-    ? `Galaxy Code is running.\n${params.statusText}\n\nClick to open runtime logs.`
-    : `Galaxy Code is idle.\n${params.statusText}\n\nClick to open runtime logs.`;
-
-  const agentLabel = getAgentLabel(params.selectedAgent);
-  const agentDetail = getSelectedAgentDetail(params.selectedAgent);
-  params.chrome.agentStatusItem.text = `$(hubot) ${agentLabel}`;
-  params.chrome.agentStatusItem.tooltip = `Current agent: ${agentLabel}\n${agentDetail}\n\nClick to switch agent.`;
-
-  const approval = getApprovalModeSummary({
-    pendingApprovalRequestId: params.pendingApprovalRequestId,
-    pendingApprovalTitle: params.pendingApprovalTitle,
-    qualityPreferences: params.qualityPreferences,
-  });
-  const approvalIcon = params.pendingApprovalRequestId ? "warning" : "shield";
-  params.chrome.approvalStatusItem.text = `$(${approvalIcon}) Approvals ${approval.label}`;
-  params.chrome.approvalStatusItem.tooltip = `${approval.tooltip}\n\nClick to open the Galaxy Code config folder.`;
+  // Status-bar chrome has been removed from the product surface.
 }
 
 /** Builds the full session-init payload sent to the webview on load or refresh. */

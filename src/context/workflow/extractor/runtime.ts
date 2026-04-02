@@ -7,74 +7,68 @@
  */
 
 import type {
-  ParsedFile,
-  SymbolUnit,
+  WorkflowExtractorAdapter,
+  WorkflowGraphSnapshotBuildOptions,
   WorkflowRefreshScheduleOptions,
   WorkflowRefreshState,
 } from '../entities/extractor';
-import type {
-  WorkflowEdgeRecord,
-  WorkflowGraphSnapshot,
-  WorkflowNodeRecord,
-} from '../entities/graph';
+import type { WorkflowGraphSnapshot } from '../entities/graph';
 import { primeWorkflowArtifactSemanticIndex } from '../artifact-semantic';
 import { syncWorkflowGraphSnapshot } from '../sync';
+import { electronWorkflowExtractorAdapter } from './adapters/electron';
+import { expressNodeWorkflowExtractorAdapter } from './adapters/express-node';
+import { flutterDartWorkflowExtractorAdapter } from './adapters/flutter-dart';
+import { goWorkflowExtractorAdapter } from './adapters/go';
+import { javaSpringWorkflowExtractorAdapter } from './adapters/java-spring';
+import { nestWorkflowExtractorAdapter } from './adapters/nest';
+import { phpLaravelWorkflowExtractorAdapter } from './adapters/php-laravel';
+import { pythonFastApiWorkflowExtractorAdapter } from './adapters/python-fastapi';
+import { reactTsxWorkflowExtractorAdapter } from './adapters/react-tsx';
+import { rustWebWorkflowExtractorAdapter } from './adapters/rust-web';
+import { tauriWorkflowExtractorAdapter } from './adapters/tauri';
+import { typeScriptWorkflowExtractorAdapter } from './adapters/typescript';
+import { vueSfcWorkflowExtractorAdapter } from './adapters/vue-sfc';
 import { buildWorkflowArtifacts } from './artifacts';
-import { extractRouteAndBoundarySeeds } from './boundaries';
-import { isSupportedSourceFile, loadTypeScriptProjectConfig, resolveWorkspaceRelativePath, scanWorkspaceSourceFiles } from './files';
-import { addNode, createGraphNodeFromUnit } from './nodes';
+import { isSupportedSourceFile, resolveWorkspaceRelativePath } from './files';
 import { DEFAULT_WORKFLOW_REFRESH_DELAY_MS } from '../entities/constants';
-import { parseWorkflowFile } from './units';
-import { visitExecutableUnit } from './execution';
 
 const workflowRefreshStates = new Map<string, WorkflowRefreshState>();
+const workflowExtractorAdapters: readonly WorkflowExtractorAdapter[] = Object.freeze([
+  typeScriptWorkflowExtractorAdapter,
+  reactTsxWorkflowExtractorAdapter,
+  vueSfcWorkflowExtractorAdapter,
+  electronWorkflowExtractorAdapter,
+  flutterDartWorkflowExtractorAdapter,
+  nestWorkflowExtractorAdapter,
+  expressNodeWorkflowExtractorAdapter,
+  goWorkflowExtractorAdapter,
+  javaSpringWorkflowExtractorAdapter,
+  phpLaravelWorkflowExtractorAdapter,
+  pythonFastApiWorkflowExtractorAdapter,
+  rustWebWorkflowExtractorAdapter,
+  tauriWorkflowExtractorAdapter,
+]);
 
 /**
  * Builds a full workflow graph snapshot for a workspace.
+ *
+ * @param opts Snapshot build options for the target workspace.
+ * @returns Immutable graph snapshot enriched with workflow artifacts.
  */
-export async function buildWorkflowGraphSnapshot(opts: {
-  workspacePath: string;
-}): Promise<WorkflowGraphSnapshot> {
-  const projectConfig = loadTypeScriptProjectConfig(opts.workspacePath);
-  const parsedFiles = scanWorkspaceSourceFiles(opts.workspacePath)
-    .map((relativePath) => parseWorkflowFile(opts.workspacePath, relativePath, projectConfig))
-    .filter((file): file is ParsedFile => Boolean(file));
-
-  const nodes = new Map<string, WorkflowNodeRecord>();
-  const edges = new Map<string, WorkflowEdgeRecord>();
-  const exportedSymbolsByFile = new Map<string, ReadonlyMap<string, string>>();
-
-  parsedFiles.forEach((parsedFile) => {
-    parsedFile.units.forEach((unit) => {
-      addNode(nodes, createGraphNodeFromUnit(unit));
-    });
-    exportedSymbolsByFile.set(
-      parsedFile.relativePath,
-      new Map(parsedFile.units.filter((unit) => unit.exported && unit.symbolName).map((unit) => [unit.symbolName!, unit.id] as const)),
-    );
-  });
-
-  const syntheticUnits: SymbolUnit[] = [];
-  parsedFiles.forEach((parsedFile) => {
-    syntheticUnits.push(...extractRouteAndBoundarySeeds(parsedFile, nodes, edges, exportedSymbolsByFile));
-  });
-
-  const syntheticUnitsByFile = new Map<string, SymbolUnit[]>();
-  syntheticUnits.forEach((unit) => {
-    const existing = syntheticUnitsByFile.get(unit.relativePath) ?? [];
-    existing.push(unit);
-    syntheticUnitsByFile.set(unit.relativePath, existing);
-  });
-
-  parsedFiles.forEach((parsedFile) => {
-    const combinedUnits = [...parsedFile.units, ...(syntheticUnitsByFile.get(parsedFile.relativePath) ?? [])];
-    combinedUnits.forEach((unit) => {
-      visitExecutableUnit(unit, parsedFile, nodes, edges, exportedSymbolsByFile);
-    });
-  });
-
-  const sortedNodes = Object.freeze([...nodes.values()].sort((a, b) => a.id.localeCompare(b.id)));
-  const sortedEdges = Object.freeze([...edges.values()].sort((a, b) => a.id.localeCompare(b.id)));
+export async function buildWorkflowGraphSnapshot(
+  opts: WorkflowGraphSnapshotBuildOptions,
+): Promise<WorkflowGraphSnapshot> {
+  const contributions = await Promise.all(workflowExtractorAdapters.map((adapter) => adapter.extract(opts.workspacePath)));
+  const sortedNodes = Object.freeze(
+    contributions
+      .flatMap((contribution) => contribution.nodes)
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  );
+  const sortedEdges = Object.freeze(
+    contributions
+      .flatMap((contribution) => contribution.edges)
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  );
   const artifacts = buildWorkflowArtifacts({
     nodes: sortedNodes,
     edges: sortedEdges,
@@ -91,6 +85,9 @@ export async function buildWorkflowGraphSnapshot(opts: {
 
 /**
  * Rebuilds and persists the workflow graph for a workspace.
+ *
+ * @param workspacePath Absolute workspace path whose graph should be rebuilt.
+ * @returns Freshly rebuilt immutable workflow graph snapshot.
  */
 export async function refreshWorkflowGraph(workspacePath: string): Promise<WorkflowGraphSnapshot> {
   const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
@@ -101,6 +98,9 @@ export async function refreshWorkflowGraph(workspacePath: string): Promise<Workf
 
 /**
  * Gets or creates mutable refresh scheduling state for a workspace.
+ *
+ * @param workspacePath Absolute workspace path that owns the scheduler state.
+ * @returns Mutable scheduler state reused across refresh requests.
  */
 function getWorkflowRefreshState(workspacePath: string): WorkflowRefreshState {
   let existing = workflowRefreshStates.get(workspacePath);
@@ -118,6 +118,10 @@ function getWorkflowRefreshState(workspacePath: string): WorkflowRefreshState {
 
 /**
  * Checks whether a set of touched files should trigger workflow refresh.
+ *
+ * @param workspacePath Absolute workspace path used for relative path resolution.
+ * @param filePaths Absolute or workspace-local file paths touched by the current change.
+ * @returns True when the change should refresh workflow graph artifacts.
  */
 function hasWorkflowRelevantFilePath(workspacePath: string, filePaths: readonly string[]): boolean {
   if (filePaths.length === 0) {
@@ -131,6 +135,9 @@ function hasWorkflowRelevantFilePath(workspacePath: string, filePaths: readonly 
 
 /**
  * Executes a debounced workflow graph refresh for a workspace.
+ *
+ * @param workspacePath Absolute workspace path whose refresh queue should run.
+ * @returns Latest in-flight or newly scheduled workflow graph snapshot.
  */
 async function runScheduledWorkflowGraphRefresh(workspacePath: string): Promise<WorkflowGraphSnapshot | null> {
   const state = getWorkflowRefreshState(workspacePath);
@@ -162,6 +169,10 @@ async function runScheduledWorkflowGraphRefresh(workspacePath: string): Promise<
 
 /**
  * Schedules a debounced workflow graph refresh if the touched files are relevant.
+ *
+ * @param workspacePath Absolute workspace path whose graph should be refreshed.
+ * @param opts Debounce and file-scope options for the refresh request.
+ * @returns True when a refresh was queued or updated.
  */
 export function scheduleWorkflowGraphRefresh(
   workspacePath: string,
@@ -182,6 +193,9 @@ export function scheduleWorkflowGraphRefresh(
 
 /**
  * Flushes any pending workflow refresh immediately.
+ *
+ * @param workspacePath Absolute workspace path whose pending refresh should run now.
+ * @returns Latest graph snapshot or null when refresh failed.
  */
 export async function flushScheduledWorkflowGraphRefresh(workspacePath: string): Promise<WorkflowGraphSnapshot | null> {
   return runScheduledWorkflowGraphRefresh(workspacePath);

@@ -275,6 +275,7 @@ export function buildProviderSessionActions(params: {
   buildChangeSummaryPayload: () => ChangeSummary;
   refreshNativeShellViews: (files?: readonly FileItem[], changeSummary?: ChangeSummary) => Promise<void>;
   getMessages: () => readonly ChatMessage[];
+  getHasOlderMessages: () => boolean;
   getSelectedAgent: () => AgentType;
   getIsRunning: () => boolean;
   getStatusText: () => string;
@@ -312,6 +313,7 @@ export function buildProviderSessionActions(params: {
     buildChangeSummaryPayload: params.buildChangeSummaryPayload,
     refreshNativeShellViews: params.refreshNativeShellViews,
     getMessages: params.getMessages,
+    getHasOlderMessages: params.getHasOlderMessages,
     getSelectedAgent: params.getSelectedAgent,
     getIsRunning: params.getIsRunning,
     getStatusText: params.getStatusText,

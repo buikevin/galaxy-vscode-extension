@@ -10,7 +10,7 @@ import path from 'node:path';
 import type { GalaxyDesignCanonicalFramework } from '../entities/galaxy-design';
 
 /** Pinned Galaxy Design package version used by local tooling. */
-export const GALAXY_DESIGN_VERSION = '0.2.71';
+export const GALAXY_DESIGN_VERSION = '0.2.74';
 /** UNPKG base URL for published Galaxy Design registry artifacts. */
 export const GALAXY_DESIGN_UNPKG_BASE = `https://unpkg.com/galaxy-design@${GALAXY_DESIGN_VERSION}/dist`;
 /** Package spec passed to bunx/pnpm dlx/yarn dlx/npx. */

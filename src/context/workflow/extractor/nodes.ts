@@ -9,6 +9,12 @@
 import * as ts from 'typescript';
 import type { ImportBinding, ParsedFile, SymbolUnit } from '../entities/extractor';
 import type { WorkflowEdgeRecord, WorkflowNodeRecord } from '../entities/graph';
+import type {
+  WorkflowDbQueryNodeOptions,
+  WorkflowEdgeOptions,
+  WorkflowRouteNodeOptions,
+  WorkflowSyntheticHandlerUnitOptions,
+} from '../entities/nodes';
 import { DB_QUERY_METHODS, HTTP_METHODS } from '../entities/constants';
 import { getLineNumber, getNodeEndLine, maybeGetStringLiteralValue, sanitizeIdentifier } from './files';
 
@@ -50,14 +56,7 @@ export function createGraphNodeFromUnit(unit: SymbolUnit): WorkflowNodeRecord {
 /**
  * Creates a workflow node for an HTTP route registration.
  */
-export function createRouteNode(opts: {
-  relativePath: string;
-  method: string;
-  routePath: string;
-  sourceFile: ts.SourceFile;
-  node: ts.Node;
-  sourceHash: string;
-}): WorkflowNodeRecord {
+export function createRouteNode(opts: WorkflowRouteNodeOptions): WorkflowNodeRecord {
   const label = `${opts.method} ${opts.routePath}`;
   const createdAt = Date.now();
   const nodeType = /webhook/i.test(opts.routePath) ? 'webhook_handler' : 'api_endpoint';
@@ -137,12 +136,7 @@ export function isLikelyDbReceiver(receiverText: string): boolean {
 /**
  * Creates a synthetic database-query workflow node.
  */
-export function createDbQueryNode(opts: {
-  receiverText: string;
-  methodName: string;
-  queryText?: string | null;
-  sourceHash: string;
-}): WorkflowNodeRecord {
+export function createDbQueryNode(opts: WorkflowDbQueryNodeOptions): WorkflowNodeRecord {
   const rawLabel = opts.queryText
     ? `${opts.receiverText}.${opts.methodName} ${opts.queryText.replace(/\s+/g, ' ').trim().slice(0, 80)}`
     : `${opts.receiverText}.${opts.methodName}`;
@@ -168,13 +162,7 @@ export function createDbQueryNode(opts: {
 /**
  * Creates a synthetic inline handler unit for route, queue, or scheduler callbacks.
  */
-export function createSyntheticHandlerUnit(opts: {
-  parsedFile: ParsedFile;
-  callableNode: ts.Node;
-  nodeType: string;
-  label: string;
-  description: string;
-}): SymbolUnit {
+export function createSyntheticHandlerUnit(opts: WorkflowSyntheticHandlerUnitOptions): SymbolUnit {
   const createdAt = Date.now();
   return Object.freeze({
     id: `workflow:inline:${opts.parsedFile.relativePath}:${opts.callableNode.getStart(opts.parsedFile.sourceFile)}`,
@@ -242,18 +230,7 @@ export function getHttpMethodFromFetch(callExpression: ts.CallExpression): strin
 /**
  * Creates a workflow edge with provenance and support metadata.
  */
-export function createEdge(opts: {
-  fromNodeId: string;
-  toNodeId: string;
-  edgeType: string;
-  label?: string | undefined;
-  filePath: string;
-  symbolName?: string | undefined;
-  line: number;
-  sourceHash: string;
-  confidence: number;
-  provenanceKind: string;
-}): WorkflowEdgeRecord {
+export function createEdge(opts: WorkflowEdgeOptions): WorkflowEdgeRecord {
   const createdAt = Date.now();
   return Object.freeze({
     id: `workflow:edge:${sanitizeIdentifier(`${opts.fromNodeId}:${opts.edgeType}:${opts.toNodeId}:${opts.line}`)}`,

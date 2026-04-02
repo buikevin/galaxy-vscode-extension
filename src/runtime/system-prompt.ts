@@ -85,7 +85,8 @@ ${promptHints.hasWorkflowContext
   if (capabilities.editFiles) {
     sections.push(`### Writing & Editing
 - Prefer targeted range edits for existing files after a recent read_file result.
-- Always pass fresh expected_total_lines plus exact expected_range_content or anchors so stale edits fail safely.
+- Pass exact expected_range_content or nearby anchors from a fresh read_file result. expected_total_lines is optional extra guard data.
+- If a prior edit shifted line numbers, reuse the same snapshot evidence and let the edit tools relocate the target block instead of rereading the whole file immediately.
 - Use write_file only for brand new files.
 `);
   }

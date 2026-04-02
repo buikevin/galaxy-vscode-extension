@@ -38,6 +38,138 @@ export function getRangeContent(lines: readonly string[], startLine: number, end
 }
 
 /**
+ * Finds all candidate line ranges whose content exactly matches one snapshot block.
+ *
+ * @param lines Current file lines on disk.
+ * @param expectedRangeContent Exact range content captured from the previous read.
+ * @returns Matching inclusive line ranges.
+ */
+function findMatchingRanges(
+  lines: readonly string[],
+  expectedRangeContent: string,
+): ReadonlyArray<Readonly<{ startLine: number; endLine: number }>> {
+  const expectedLines = expectedRangeContent.split('\n');
+  const rangeLength = expectedLines.length;
+  if (rangeLength === 0 || lines.length < rangeLength) {
+    return Object.freeze([]);
+  }
+
+  const matches: Array<Readonly<{ startLine: number; endLine: number }>> = [];
+  for (let startIndex = 0; startIndex <= lines.length - rangeLength; startIndex += 1) {
+    const candidate = lines.slice(startIndex, startIndex + rangeLength).join('\n');
+    if (candidate === expectedRangeContent) {
+      matches.push(Object.freeze({ startLine: startIndex + 1, endLine: startIndex + rangeLength }));
+    }
+  }
+
+  return Object.freeze(matches);
+}
+
+/**
+ * Returns true when the candidate range still satisfies the caller's nearby anchors.
+ *
+ * @param lines Current file lines on disk.
+ * @param candidate Candidate range located via exact content matching.
+ * @param options Snapshot evidence captured from a previous read.
+ * @returns Whether the anchors remain valid for the candidate range.
+ */
+function candidateMatchesAnchors(
+  lines: readonly string[],
+  candidate: Readonly<{ startLine: number; endLine: number }>,
+  options?: LineEditSnapshot,
+): boolean {
+  if (typeof options?.anchorBefore === 'string' && options.anchorBefore.length > 0) {
+    if (getLineAt(lines, candidate.startLine - 1) !== options.anchorBefore) {
+      return false;
+    }
+  }
+
+  if (typeof options?.anchorAfter === 'string' && options.anchorAfter.length > 0) {
+    if (getLineAt(lines, candidate.endLine + 1) !== options.anchorAfter) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Attempts to relocate a stale range edit by exact snapshot content and nearby anchors.
+ *
+ * @param lines Current file lines on disk.
+ * @param startLine Preferred 1-based inclusive start line from the caller.
+ * @param endLine Preferred 1-based inclusive end line from the caller.
+ * @param options Snapshot evidence captured from the previous read.
+ * @returns Resolved line range or null when relocation is impossible.
+ */
+export function resolveRangeEditLocation(
+  lines: readonly string[],
+  startLine: number,
+  endLine: number,
+  options?: LineEditSnapshot,
+): Readonly<{ startLine: number; endLine: number }> | null {
+  const currentRangeContent = getRangeContent(lines, startLine, endLine);
+  const expectedRangeContentProvided = Boolean(options?.expectedRangeContentProvided);
+  const expectedRangeContent = typeof options?.expectedRangeContent === 'string' ? options.expectedRangeContent : '';
+
+  const currentCandidate = Object.freeze({ startLine, endLine });
+  const currentMatchesContent = !expectedRangeContentProvided || currentRangeContent === expectedRangeContent;
+  if (currentMatchesContent && candidateMatchesAnchors(lines, currentCandidate, options)) {
+    return currentCandidate;
+  }
+
+  if (!expectedRangeContentProvided || expectedRangeContent.length === 0) {
+    return null;
+  }
+
+  const matchingRanges = findMatchingRanges(lines, expectedRangeContent)
+    .filter((candidate) => candidateMatchesAnchors(lines, candidate, options));
+  if (matchingRanges.length !== 1) {
+    return null;
+  }
+
+  return matchingRanges[0] ?? null;
+}
+
+/**
+ * Attempts to relocate a stale insertion point by nearby anchors.
+ *
+ * @param lines Current file lines on disk.
+ * @param preferredLine Preferred 1-based insertion line from the caller.
+ * @param options Snapshot evidence captured from the previous read.
+ * @returns Resolved insertion line or null when relocation is impossible.
+ */
+export function resolveInsertionLine(
+  lines: readonly string[],
+  preferredLine: number,
+  options?: LineEditSnapshot,
+): number | null {
+  const matchesCurrentPosition =
+    (typeof options?.anchorBefore !== 'string' || options.anchorBefore.length === 0 || getLineAt(lines, preferredLine - 1) === options.anchorBefore)
+    && (typeof options?.anchorAfter !== 'string' || options.anchorAfter.length === 0 || getLineAt(lines, preferredLine) === options.anchorAfter);
+  if (matchesCurrentPosition && preferredLine >= 1 && preferredLine <= lines.length + 1) {
+    return preferredLine;
+  }
+
+  const candidates: number[] = [];
+  for (let candidateLine = 1; candidateLine <= lines.length + 1; candidateLine += 1) {
+    const beforeMatches =
+      typeof options?.anchorBefore !== 'string'
+      || options.anchorBefore.length === 0
+      || getLineAt(lines, candidateLine - 1) === options.anchorBefore;
+    const afterMatches =
+      typeof options?.anchorAfter !== 'string'
+      || options.anchorAfter.length === 0
+      || getLineAt(lines, candidateLine) === options.anchorAfter;
+    if (beforeMatches && afterMatches) {
+      candidates.push(candidateLine);
+    }
+  }
+
+  return candidates.length === 1 ? candidates[0]! : null;
+}
+
+/**
  * Verifies that a targeted range edit still matches the caller's last read snapshot.
  *
  * @param rawPath User-visible path for error messages.
@@ -54,30 +186,9 @@ export function validateAnchoredRangeEdit(
   endLine: number,
   options?: LineEditSnapshot,
 ): string | null {
-  const expectedRangeContentProvided = Boolean(options?.expectedRangeContentProvided);
-  if (expectedRangeContentProvided) {
-    const expectedRangeContent = String(options?.expectedRangeContent ?? '');
-    const currentRangeContent = getRangeContent(originalLines, startLine, endLine);
-    if (currentRangeContent !== expectedRangeContent) {
-      return `Target range in ${rawPath} no longer matches the last read snapshot. Read the file again before editing.`;
-    }
-  }
-
-  if (typeof options?.anchorBefore === 'string' && options.anchorBefore.length > 0) {
-    const currentBefore = getLineAt(originalLines, startLine - 1);
-    if (currentBefore !== options.anchorBefore) {
-      return `anchor_before no longer matches ${rawPath} near line ${startLine}. Read the file again before editing.`;
-    }
-  }
-
-  if (typeof options?.anchorAfter === 'string' && options.anchorAfter.length > 0) {
-    const currentAfter = getLineAt(originalLines, endLine + 1);
-    if (currentAfter !== options.anchorAfter) {
-      return `anchor_after no longer matches ${rawPath} near line ${endLine}. Read the file again before editing.`;
-    }
-  }
-
-  return null;
+  return resolveRangeEditLocation(originalLines, startLine, endLine, options)
+    ? null
+    : `Target range in ${rawPath} no longer matches the last read snapshot. Read the file again before editing.`;
 }
 
 /**
@@ -109,11 +220,12 @@ export function validateTargetedEditPreconditions(
   expectedTotalLines?: number,
   snapshot?: LineEditSnapshot,
 ): string | null {
-  if (!Number.isFinite(expectedTotalLines) || Number(expectedTotalLines) <= 0) {
-    return `${operation} on ${rawPath} requires expected_total_lines from a fresh read_file result. Read the file again before editing.`;
-  }
   if (!hasLineEditSnapshot(snapshot)) {
-    return `${operation} on ${rawPath} requires exact snapshot evidence. Provide expected_range_content or nearby anchors from a fresh read_file result before editing.`;
+    const lineCountHint =
+      Number.isFinite(expectedTotalLines) && Number(expectedTotalLines) > 0
+        ? ' expected_total_lines alone is not enough.'
+        : '';
+    return `${operation} on ${rawPath} requires exact snapshot evidence.${lineCountHint} Provide expected_range_content or nearby anchors from a fresh read_file result before editing.`;
   }
   return null;
 }

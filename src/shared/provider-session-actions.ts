@@ -21,6 +21,7 @@ import type {
 import type { GalaxyConfig } from "./config";
 import type { ActiveShellSessionState } from "./extension-host";
 import type { ChangeSummary, FileItem } from "./protocol";
+import type { LoadedInitialMessagesResult } from "./session-lifecycle";
 
 /** Provider-owned callbacks and state accessors required to build session actions. */
 export type ProviderSessionActionBindings = Readonly<{
@@ -41,6 +42,8 @@ export type ProviderSessionActionBindings = Readonly<{
   ) => Promise<void>;
   /** Returns the latest transcript messages mirrored into the webview. */
   getMessages: () => readonly ChatMessage[];
+  /** Returns whether older transcript history exists beyond the loaded batch. */
+  getHasOlderMessages: () => boolean;
   /** Returns the current selected runtime agent. */
   getSelectedAgent: () => import("./protocol").AgentType;
   /** Returns whether the provider is actively running. */
@@ -101,5 +104,5 @@ export type ProviderSessionActions = Readonly<{
   /** Returns the latest effective runtime config snapshot. */
   getEffectiveConfig: () => GalaxyConfig;
   /** Loads initial transcript messages from persisted workspace storage. */
-  loadInitialMessages: () => ChatMessage[];
+  loadInitialMessages: () => LoadedInitialMessagesResult;
 }>;

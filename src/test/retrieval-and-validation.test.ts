@@ -6,8 +6,10 @@ import path from 'node:path';
 import { DEFAULT_CONFIG } from '../shared/constants';
 import type { GalaxyConfig } from '../shared/config';
 import { createDraftLocalAttachment } from '../attachments/attachment-store';
+import { detectActiveProjectPath, detectActiveProjectPathFromCommandContext, resolveEffectiveProjectPath } from '../context/active-project';
 import { extractCodeChunkUnits } from '../context/code-chunk-extractor';
 import { cosineSimilarityEmbedding, embedTexts } from '../context/gemini-embeddings';
+import { createToolDigest } from '../context/history/helpers';
 import { createHistoryManager } from '../context/history-manager';
 import { buildPromptContext } from '../context/prompt-builder';
 import { narrowManualPlanningScope, shouldEmitManualPlanningHints } from '../context/prompt/context-blocks';
@@ -16,7 +18,7 @@ import { withRagMetadataDatabase } from '../context/rag-metadata/database';
 import { getCachedReadResult } from '../context/rag-metadata/read-cache';
 import { loadTelemetrySummary } from '../context/telemetry';
 import { evaluateWorkflowRereadGuard } from '../context/workflow/reread-guard';
-import { buildAntiLoopGuardrails, buildEvidenceReuseBlock } from '../context/tool-evidence/selectors';
+import { buildAntiLoopGuardrails, buildEvidenceReuseBlock, deriveStaleEvidence } from '../context/tool-evidence/selectors';
 import { clearSession, captureOriginal, trackFileWrite } from '../runtime/session-tracker';
 import { flushBackgroundCommandCompletions } from '../extension-host/command-stream';
 import { createChatRuntimeCallbacks as createHostChatRuntimeCallbacks } from '../extension-host/chat-runtime-callbacks';
@@ -231,6 +233,79 @@ function cleanupTempWorkspace(workspacePath: string): void {
       '  return value;',
       '}',
     ].join('\n'));
+  });
+
+  test('createToolDigest does not mark failed edit attempts as filesWritten', () => {
+    const digest = createToolDigest(Object.freeze({
+      id: 'tool-failed-edit',
+      role: 'tool' as const,
+      content: 'Error: Target range no longer matches',
+      timestamp: Date.now(),
+      toolName: 'edit_file_range',
+      toolSuccess: false,
+      toolParams: Object.freeze({
+        path: 'src/pages/contract/ContractPage.tsx',
+        start_line: 10,
+        end_line: 20,
+      }),
+    }));
+
+    assert.strictEqual(digest.success, false);
+    assert.deepStrictEqual(digest.filesWritten, []);
+  });
+
+  test('deriveStaleEvidence does not invalidate prior reads after a failed edit attempt', () => {
+    const evidence = Object.freeze([
+      Object.freeze({
+        toolName: 'read_file',
+        success: true,
+        stale: false,
+        summary: 'Read ContractPage.tsx',
+        filePath: 'src/pages/contract/ContractPage.tsx',
+        readMode: 'full',
+        contentPreview: 'const value = formatDate(order.date);',
+      }),
+      Object.freeze({
+        toolName: 'edit_file_range',
+        success: false,
+        stale: false,
+        summary: 'Failed to edit ContractPage.tsx by line range',
+        filePath: 'src/pages/contract/ContractPage.tsx',
+        operation: 'edit',
+        changedLineRanges: Object.freeze([]),
+      }),
+    ]) as Parameters<typeof deriveStaleEvidence>[0];
+
+    const freshened = deriveStaleEvidence(evidence);
+    assert.strictEqual(freshened[0]?.stale ?? false, false);
+    assert.strictEqual(freshened[1]?.stale ?? false, false);
+  });
+
+  test('deriveStaleEvidence invalidates prior reads after a successful edit', () => {
+    const evidence = Object.freeze([
+      Object.freeze({
+        toolName: 'read_file',
+        success: true,
+        stale: false,
+        summary: 'Read ContractPage.tsx',
+        filePath: 'src/pages/contract/ContractPage.tsx',
+        readMode: 'full',
+        contentPreview: 'const value = formatDate(order.date);',
+      }),
+      Object.freeze({
+        toolName: 'edit_file_range',
+        success: true,
+        stale: false,
+        summary: 'Edited ContractPage.tsx by line range',
+        filePath: 'src/pages/contract/ContractPage.tsx',
+        operation: 'edit',
+        changedLineRanges: Object.freeze([{ startLine: 10, endLine: 18 }]),
+      }),
+    ]) as Parameters<typeof deriveStaleEvidence>[0];
+
+    const freshened = deriveStaleEvidence(evidence);
+    assert.strictEqual(freshened[0]?.stale ?? false, true);
+    assert.strictEqual(freshened[1]?.stale ?? false, false);
   });
 
   test('embedTexts falls back to deterministic local embeddings when remote embeddings fail', async () => {
@@ -496,7 +571,7 @@ function cleanupTempWorkspace(workspacePath: string): void {
       await callbacks.onEvidenceContext('turn', changedOnlyGuardrailsPayload);
 
       assert.strictEqual(postedMessages.filter((message) => message.type === 'evidence-context').length, 2);
-      assert.strictEqual(debugBlocks.filter((block) => block.scope === 'manual-read-plan').length, 2);
+      assert.strictEqual(debugBlocks.filter((block) => block.scope === 'manual-read-plan').length, 1);
       assert.strictEqual(logs.filter((text) => text.startsWith('Manual read plan:')).length, 1);
       assert.strictEqual(logs.filter((text) => text.startsWith('Read plan progress:')).length, 1);
     } finally {
@@ -840,7 +915,7 @@ function cleanupTempWorkspace(workspacePath: string): void {
         anchorAfter: 'const third = 3;',
       });
       assert.strictEqual(stale.success, false);
-      assert.match(stale.error ?? '', /anchor_before no longer matches/i);
+      assert.match(stale.error ?? '', /no longer matches the last read snapshot/i);
 
       const inserted = insertFileAtLineTool(workspacePath, 'src/insert.ts', {
         line: 2,
@@ -857,6 +932,139 @@ function cleanupTempWorkspace(workspacePath: string): void {
     } finally {
       cleanupTempWorkspace(workspacePath);
     }
+  });
+
+  test('editFileRangeTool relocates stale line numbers when exact snapshot content still matches uniquely', () => {
+    const workspacePath = createTempWorkspace();
+    const filePath = path.join(workspacePath, 'src/ContractPage.tsx');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+      fs.writeFileSync(
+        filePath,
+        [
+          '// prepended later',
+          "import { formatDate } from './date';",
+          '',
+          'export function ContractPage() {',
+        "  const display = formatDate('2026-03-22');",
+        '  return <span>{display}</span>;',
+        '}',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const result = editFileRangeTool(workspacePath, 'src/ContractPage.tsx', Object.freeze({
+      startLine: 3,
+      endLine: 5,
+      newContent: [
+        'export function ContractPage() {',
+        "  const display = formatDateUrD('2026-03-22');",
+        '  return <span>{display}</span>;',
+        '}',
+      ].join('\n'),
+      expectedTotalLines: 6,
+      expectedRangeContent: [
+        'export function ContractPage() {',
+        "  const display = formatDate('2026-03-22');",
+        '  return <span>{display}</span>;',
+      ].join('\n'),
+      anchorBefore: '',
+      anchorAfter: '}',
+    }));
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual((result.meta as { relocated?: boolean } | undefined)?.relocated, true);
+    const updated = fs.readFileSync(filePath, 'utf-8');
+    assert.strictEqual(updated.includes("formatDateUrD('2026-03-22')"), true);
+    assert.strictEqual(updated.includes("formatDate('2026-03-22')"), false);
+
+    cleanupTempWorkspace(workspacePath);
+  });
+
+  test('insertFileAtLineTool relocates insertion points when anchors still match after line shifts', () => {
+    const workspacePath = createTempWorkspace();
+    const filePath = path.join(workspacePath, 'src/ContractPage.tsx');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(
+      filePath,
+      [
+        '// prepended later',
+        "import { oldHelper } from './old-helper';",
+        '',
+        'export function ContractPage() {',
+        '  return null;',
+        '}',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const result = insertFileAtLineTool(workspacePath, 'src/ContractPage.tsx', Object.freeze({
+      line: 1,
+      contentToInsert: "import { formatDateUrD } from './date';",
+      expectedTotalLines: 5,
+      anchorBefore: '',
+      anchorAfter: "import { oldHelper } from './old-helper';",
+    }));
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual((result.meta as { relocated?: boolean } | undefined)?.relocated, true);
+    const updatedLines = fs.readFileSync(filePath, 'utf-8').split('\n');
+    assert.strictEqual(updatedLines[1], "import { formatDateUrD } from './date';");
+
+    cleanupTempWorkspace(workspacePath);
+  });
+
+  test('multiEditFileRangesTool relocates multiple stale ranges using exact snapshot evidence', () => {
+    const workspacePath = createTempWorkspace();
+    const filePath = path.join(workspacePath, 'src/ContractPage.tsx');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(
+      filePath,
+      [
+        '// prepended later',
+        "import { formatDate } from './date';",
+        '',
+        'function formatContractDate(value: string) {',
+        '  return formatDate(value);',
+        '}',
+        '',
+        'export function ContractPage() {',
+        "  const display = formatContractDate('2026-03-22');",
+        '  return <span>{display}</span>;',
+        '}',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const result = multiEditFileRangesTool(
+      workspacePath,
+      'src/ContractPage.tsx',
+      Object.freeze([
+        Object.freeze({
+          start_line: 1,
+          end_line: 1,
+          new_content: "import { formatDateUrD } from './date';",
+          expected_range_content: "import { formatDate } from './date';",
+          anchor_before: '// prepended later',
+          anchor_after: '',
+        }),
+        Object.freeze({
+          start_line: 7,
+          end_line: 7,
+          new_content: "  const display = formatDateUrD('2026-03-22');",
+          expected_range_content: "  const display = formatContractDate('2026-03-22');",
+          anchor_before: 'export function ContractPage() {',
+          anchor_after: '  return <span>{display}</span>;',
+        }),
+      ]),
+      10,
+    );
+
+    assert.strictEqual(result.success, true);
+    const updated = fs.readFileSync(filePath, 'utf-8');
+    assert.strictEqual(updated.includes("import { formatDateUrD } from './date';"), true);
+    assert.strictEqual(updated.includes("  const display = formatDateUrD('2026-03-22');"), true);
+
+    cleanupTempWorkspace(workspacePath);
   });
 
   test('multiEditFileRangesTool applies disjoint edits without overlap or duplicated remnants', () => {
@@ -1243,6 +1451,29 @@ function cleanupTempWorkspace(workspacePath: string): void {
       const completed = await awaitManagedProjectCommandTool(commandId, { timeoutMs: 4000, maxChars: 1000 });
       assert.strictEqual(completed.success, true);
       assert.match(String(completed.meta?.tailOutput ?? ''), /late-finish/);
+    } finally {
+      managedCommands.clear();
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('managed command helpers can resolve the sole running command even when the model passes an imprecise id', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const started = startManagedCommandTool(
+        workspacePath,
+        'node -e "setTimeout(() => console.log(\'fallback-finish\'), 200)"',
+        { toolCallId: 'tool-call-fallback' },
+      );
+      assert.strictEqual(started.success, true);
+
+      const pendingByToolCallId = await awaitManagedProjectCommandTool('tool-call-fallback', { timeoutMs: 10, maxChars: 1000 });
+      assert.strictEqual(pendingByToolCallId.success, true);
+      assert.strictEqual(pendingByToolCallId.meta?.running, true);
+
+      const completedByUnknownAlias = await awaitManagedProjectCommandTool('4', { timeoutMs: 4000, maxChars: 1000 });
+      assert.strictEqual(completedByUnknownAlias.success, true);
+      assert.match(String(completedByUnknownAlias.meta?.tailOutput ?? ''), /fallback-finish/);
     } finally {
       managedCommands.clear();
       cleanupTempWorkspace(workspacePath);
@@ -1680,7 +1911,7 @@ function cleanupTempWorkspace(workspacePath: string): void {
             anchorBefore: 'const first = 1;',
             anchorAfter: 'const wrong = 0;',
           }),
-          pattern: /anchor_after no longer matches/i,
+          pattern: /no longer matches the last read snapshot/i,
         },
         {
           label: 'insert with stale anchor_before',
@@ -1691,7 +1922,7 @@ function cleanupTempWorkspace(workspacePath: string): void {
             anchorBefore: 'const missing = 0;',
             anchorAfter: 'const second = 2;',
           }),
-          pattern: /anchor_before no longer matches/i,
+          pattern: /no longer matches the last read snapshot/i,
         },
       ];
 
@@ -2239,6 +2470,712 @@ function cleanupTempWorkspace(workspacePath: string): void {
     }
   });
 
+  test('workflow extractor builds component composition edges for frontend-only workspaces', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src', 'app'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, 'src', 'components', 'ui'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'tsconfig.json'),
+        JSON.stringify({
+          compilerOptions: {
+            target: 'ES2022',
+            module: 'ESNext',
+            jsx: 'preserve',
+            baseUrl: '.',
+            paths: {
+              '@/*': ['src/*'],
+            },
+          },
+        }, null, 2),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'components', 'ui', 'button.tsx'),
+        [
+          "export function Button() {",
+          "  return <button>Click</button>;",
+          "}",
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'app', 'page.tsx'),
+        [
+          "import { Button } from '@/components/ui/button';",
+          '',
+          'export default function HomePage() {',
+          '  return (',
+          '    <main>',
+          '      <Button />',
+          '    </main>',
+          '  );',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      const renderEdge = snapshot.edges.find((edge) => edge.edgeType === 'renders');
+      assert.ok(renderEdge);
+      assert.strictEqual(
+        snapshot.nodes.some((node) => node.nodeType === 'screen'),
+        true,
+      );
+      assert.strictEqual(
+        snapshot.nodes.some((node) => node.nodeType === 'component'),
+        true,
+      );
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor ignores generated frontend output directories like .next', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src', 'app'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, '.next', 'server', 'chunks'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'tsconfig.json'),
+        JSON.stringify({
+          compilerOptions: {
+            target: 'ES2022',
+            module: 'ESNext',
+            jsx: 'preserve',
+          },
+        }, null, 2),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'app', 'page.tsx'),
+        [
+          'export default function HomePage() {',
+          '  return <main>Hello</main>;',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, '.next', 'server', 'chunks', 'runtime.js'),
+        [
+          'export function generatedRuntimeHelper() {',
+          "  return 'generated';",
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.length > 0, true);
+      assert.strictEqual(snapshot.nodes.every((node) => !(node.filePath ?? '').includes('.next/')), true);
+      assert.strictEqual(
+        snapshot.edges.every((edge) => !edge.fromNodeId.includes('.next/') && !edge.toNodeId.includes('.next/')),
+        true,
+      );
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor builds Vue SFC composition edges for frontend-only workspaces', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src', 'views'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, 'src', 'components'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'components', 'BaseButton.vue'),
+        [
+          '<template>',
+          '  <button><slot /></button>',
+          '</template>',
+          '<script setup lang="ts">',
+          'defineOptions({ name: "BaseButton" });',
+          '</script>',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'views', 'HomeView.vue'),
+        [
+          '<template>',
+          '  <main>',
+          '    <BaseButton />',
+          '  </main>',
+          '</template>',
+          '<script setup lang="ts">',
+          'import BaseButton from "../components/BaseButton.vue";',
+          'defineOptions({ name: "HomeView" });',
+          '</script>',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'screen' && node.filePath === 'src/views/HomeView.vue'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'component' && node.filePath === 'src/components/BaseButton.vue'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'renders'), true);
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor builds Java Spring controller-service-repository flow graphs', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src', 'main', 'java', 'com', 'example'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'main', 'java', 'com', 'example', 'OrderRepository.java'),
+        [
+          'package com.example;',
+          '',
+          'import org.springframework.stereotype.Repository;',
+          '',
+          '@Repository',
+          'public class OrderRepository {',
+          '  public String findById(String id) {',
+          '    return id;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'main', 'java', 'com', 'example', 'OrderService.java'),
+        [
+          'package com.example;',
+          '',
+          'import org.springframework.stereotype.Service;',
+          '',
+          '@Service',
+          'public class OrderService {',
+          '  private final OrderRepository orderRepository;',
+          '',
+          '  public OrderService(OrderRepository orderRepository) {',
+          '    this.orderRepository = orderRepository;',
+          '  }',
+          '',
+          '  public String getOrder(String id) {',
+          '    return orderRepository.findById(id);',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'main', 'java', 'com', 'example', 'OrderController.java'),
+        [
+          'package com.example;',
+          '',
+          'import org.springframework.web.bind.annotation.GetMapping;',
+          'import org.springframework.web.bind.annotation.RequestMapping;',
+          'import org.springframework.web.bind.annotation.RestController;',
+          '',
+          '@RestController',
+          '@RequestMapping("/api/orders")',
+          'public class OrderController {',
+          '  private final OrderService orderService;',
+          '',
+          '  public OrderController(OrderService orderService) {',
+          '    this.orderService = orderService;',
+          '  }',
+          '',
+          '  @GetMapping("/{id}")',
+          '  public String getOrder() {',
+          '    return orderService.getOrder("1");',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'controller' && node.label === 'OrderController'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'backend_service' && node.label === 'OrderService'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'repository' && node.label === 'OrderRepository'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'api_endpoint' && node.routePath === '/api/orders/{id}'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'routes_to'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'calls'), true);
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor builds NestJS controller-service flow graphs', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src', 'orders'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'orders', 'orders.service.ts'),
+        [
+          'import { Injectable } from "@nestjs/common";',
+          '',
+          '@Injectable()',
+          'export class OrdersService {',
+          '  getOrder(id: string) {',
+          '    return id;',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'orders', 'orders.controller.ts'),
+        [
+          'import { Controller, Get } from "@nestjs/common";',
+          'import { OrdersService } from "./orders.service";',
+          '',
+          '@Controller("orders")',
+          'export class OrdersController {',
+          '  constructor(private readonly ordersService: OrdersService) {}',
+          '',
+          '  @Get(":id")',
+          '  getOrder() {',
+          '    return this.ordersService.getOrder("1");',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'controller' && node.label === 'OrdersController'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'backend_service' && node.label === 'OrdersService'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'api_endpoint' && node.routePath === '/orders/:id'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'routes_to'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'calls'), true);
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor builds Express route-to-handler flow graphs', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src', 'routes'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, 'src', 'controllers'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, 'src', 'services'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'services', 'orders-service.ts'),
+        [
+          'export async function loadOrderById(id: string) {',
+          '  return { id };',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'controllers', 'orders.ts'),
+        [
+          'import { loadOrderById } from "../services/orders-service";',
+          'export async function getOrderHandler() {',
+          '  return loadOrderById("1");',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'routes', 'orders.ts'),
+        [
+          'import { getOrderHandler } from "../controllers/orders";',
+          'declare const router: { get(path: string, handler: unknown): void };',
+          'router.get("/api/orders/:id", getOrderHandler);',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'api_endpoint' && node.routePath === '/api/orders/:id'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'routes_to' && /getOrderHandler/.test(edge.label ?? '')), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'calls' && edge.toNodeId.includes('loadOrderById')), true);
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor builds Python FastAPI route-to-function flow graphs', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'app'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'app', 'orders.py'),
+        [
+          'from fastapi import APIRouter',
+          '',
+          'router = APIRouter(prefix="/orders")',
+          '',
+          'def load_order(order_id: str):',
+          '    return {"id": order_id}',
+          '',
+          '@router.get("/{order_id}")',
+          'async def get_order(order_id: str):',
+          '    return load_order(order_id)',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'api_endpoint' && node.routePath === '/orders/{order_id}'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.symbolName === 'get_order' && node.nodeType === 'controller'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.symbolName === 'load_order'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'routes_to' && /get_order/.test(edge.label ?? '')), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'calls' && edge.toNodeId.includes('load_order')), true);
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor builds Go route-to-handler flow graphs', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'internal', 'service'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, 'internal', 'handler'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'internal', 'service', 'orders.go'),
+        [
+          'package service',
+          '',
+          'func LoadOrder(id string) string {',
+          '  return id',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'internal', 'handler', 'orders.go'),
+        [
+          'package handler',
+          '',
+          'func GetOrderHandler() string {',
+          '  return LoadOrder("1")',
+          '}',
+          '',
+          'func RegisterRoutes() {',
+          '  router.GET("/api/orders/:id", GetOrderHandler)',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'api_endpoint' && node.routePath === '/api/orders/:id'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.symbolName === 'GetOrderHandler' && node.nodeType === 'controller'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.symbolName === 'LoadOrder'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'routes_to' && /GetOrderHandler/.test(edge.label ?? '')), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'calls' && edge.toNodeId.includes('LoadOrder')), true);
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor builds Tauri frontend-to-command flow graphs', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, 'src-tauri', 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'tsconfig.json'),
+        JSON.stringify({
+          compilerOptions: {
+            target: 'ES2022',
+            module: 'ESNext',
+            jsx: 'preserve',
+          },
+        }, null, 2),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'commands.ts'),
+        [
+          'export async function loadSettings() {',
+          '  return invoke("load_settings");',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src-tauri', 'src', 'lib.rs'),
+        [
+          '#[tauri::command]',
+          'fn load_settings() -> String {',
+          '  "ok".to_string()',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'rpc_endpoint' && node.symbolName === 'load_settings'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'invokes_rpc' && /load_settings/.test(edge.label ?? '')), true);
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor builds Electron renderer-to-main IPC flow graphs', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src', 'renderer'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, 'src', 'main'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'tsconfig.json'),
+        JSON.stringify({
+          compilerOptions: {
+            target: 'ES2022',
+            module: 'ESNext',
+          },
+        }, null, 2),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'renderer', 'settings.ts'),
+        [
+          'export async function loadSettings() {',
+          '  return ipcRenderer.invoke("settings:load");',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'main', 'ipc.ts'),
+        [
+          'export function registerIpc() {',
+          '  ipcMain.handle("settings:load", async () => ({ theme: "dark" }));',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'rpc_endpoint' && node.symbolName === 'settings:load'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'invokes_rpc' && /settings:load/.test(edge.label ?? '')), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'routes_to' && /settings:load/.test(edge.label ?? '')), true);
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor builds Flutter widget composition and navigation graphs', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'lib', 'screens'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, 'lib', 'widgets'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'lib', 'widgets', 'order_card.dart'),
+        [
+          'import "package:flutter/widgets.dart";',
+          '',
+          'class OrderCard extends StatelessWidget {',
+          '  @override',
+          '  Widget build(BuildContext context) {',
+          '    return Text("order");',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'lib', 'screens', 'orders_page.dart'),
+        [
+          'import "package:flutter/widgets.dart";',
+          'import "../widgets/order_card.dart";',
+          '',
+          'class OrdersPage extends StatelessWidget {',
+          '  @override',
+          '  Widget build(BuildContext context) {',
+          '    Navigator.pushNamed(context, "/orders/detail");',
+          '    return Scaffold(',
+          '      body: Column(',
+          '        children: [OrderCard()],',
+          '      ),',
+          '    );',
+          '  }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'screen' && node.symbolName === 'OrdersPage'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'component' && node.symbolName === 'OrderCard'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'renders' && /OrderCard/.test(edge.label ?? '')), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'navigates_to' && /orders\/detail/.test(edge.label ?? '')), true);
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor builds Laravel route-controller-service graphs', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'routes'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, 'app', 'Http', 'Controllers'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, 'app', 'Services'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'app', 'Services', 'OrderService.php'),
+        [
+          '<?php',
+          'class OrderService {',
+          '    public function getOrder() {',
+          "        return ['id' => 1];",
+          '    }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'app', 'Http', 'Controllers', 'OrderController.php'),
+        [
+          '<?php',
+          'class OrderController {',
+          '    public function __construct(private OrderService $orderService) {}',
+          '',
+          '    public function show() {',
+          '        return $this->orderService->getOrder();',
+          '    }',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'routes', 'web.php'),
+        [
+          '<?php',
+          "Route::get('/orders/{id}', [OrderController::class, 'show']);",
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'api_endpoint' && node.routePath === '/orders/{id}'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'controller' && node.symbolName === 'OrderController'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'backend_service' && node.symbolName === 'OrderService'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'routes_to' && /OrderController@show/.test(edge.label ?? '')), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'calls' && edge.toNodeId.includes('OrderService')), true);
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('workflow extractor builds Rust web route-handler-service graphs', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      fs.mkdirSync(path.join(workspacePath, 'src', 'services'), { recursive: true });
+      fs.mkdirSync(path.join(workspacePath, 'src', 'handlers'), { recursive: true });
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'services', 'orders.rs'),
+        [
+          'pub async fn fetch_order() -> String {',
+          '    "ok".to_string()',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(workspacePath, 'src', 'handlers', 'orders.rs'),
+        [
+          'use crate::services::orders::fetch_order;',
+          '',
+          'async fn get_order() -> String {',
+          '    fetch_order().await',
+          '}',
+          '',
+          'fn app() {',
+          '    let _app = Router::new().route("/orders/:id", get(get_order));',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const snapshot = await buildWorkflowGraphSnapshot({ workspacePath });
+      assert.strictEqual(snapshot.nodes.some((node) => node.nodeType === 'api_endpoint' && node.routePath === '/orders/:id'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.symbolName === 'get_order'), true);
+      assert.strictEqual(snapshot.nodes.some((node) => node.symbolName === 'fetch_order'), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'routes_to' && /get_order/.test(edge.label ?? '')), true);
+      assert.strictEqual(snapshot.edges.some((edge) => edge.edgeType === 'calls' && edge.toNodeId.includes('fetch_order')), true);
+      assert.strictEqual((snapshot.maps?.length ?? 0) > 0, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('active project detection promotes nested generated projects from changed files and command context', () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const nestedProjectPath = path.join(workspacePath, 'nutrition-website');
+      fs.mkdirSync(path.join(nestedProjectPath, 'src', 'app'), { recursive: true });
+      fs.writeFileSync(path.join(nestedProjectPath, 'package.json'), '{"name":"nutrition-website"}', 'utf-8');
+      fs.writeFileSync(
+        path.join(nestedProjectPath, 'tsconfig.json'),
+        '{"compilerOptions":{"baseUrl":".","paths":{"@/*":["./src/*"]}}}',
+        'utf-8',
+      );
+      fs.writeFileSync(path.join(nestedProjectPath, 'src', 'app', 'page.tsx'), 'export default function Page() { return null; }\n', 'utf-8');
+
+      const detectedFromFiles = detectActiveProjectPath(workspacePath, Object.freeze([
+        'nutrition-website/src/app/page.tsx',
+      ]));
+      assert.strictEqual(detectedFromFiles, nestedProjectPath);
+
+      const commandContextPath = getProjectStorageInfo(workspacePath).commandContextPath;
+      fs.mkdirSync(path.dirname(commandContextPath), { recursive: true });
+      fs.writeFileSync(
+        commandContextPath,
+        JSON.stringify({
+          command: 'npx create-next-app nutrition-website',
+          cwd: workspacePath,
+          status: 'completed',
+          changedFiles: ['nutrition-website/package.json', 'nutrition-website/src/app/page.tsx'],
+        }, null, 2),
+        'utf-8',
+      );
+
+      assert.strictEqual(detectActiveProjectPathFromCommandContext(workspacePath), nestedProjectPath);
+      assert.strictEqual(resolveEffectiveProjectPath({ workspacePath }), nestedProjectPath);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
   test('buildPromptContext injects workflow graph retrieval for flow queries', async function () {
     this.timeout(10_000);
     const workspacePath = createTempWorkspace();
@@ -2380,6 +3317,125 @@ function cleanupTempWorkspace(workspacePath: string): void {
       assert.strictEqual(telemetrySummary.workflowQueries >= 1, true);
       assert.strictEqual(telemetrySummary.workflowHits >= 1, true);
       assert.strictEqual(telemetrySummary.workflowGuardActivations >= 1, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('buildPromptContext uses the nested active project root when command context points to a generated app', async function () {
+    this.timeout(10_000);
+    const workspacePath = createTempWorkspace();
+    try {
+      const nestedProjectPath = path.join(workspacePath, 'nutrition-website');
+      fs.mkdirSync(path.join(nestedProjectPath, 'src', 'app'), { recursive: true });
+      fs.mkdirSync(path.join(nestedProjectPath, 'src', 'components'), { recursive: true });
+      fs.writeFileSync(
+        path.join(nestedProjectPath, 'package.json'),
+        JSON.stringify({ name: 'nutrition-website' }, null, 2),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(nestedProjectPath, 'tsconfig.json'),
+        JSON.stringify({
+          compilerOptions: {
+            baseUrl: '.',
+            paths: {
+              '@/*': ['./src/*'],
+            },
+          },
+        }, null, 2),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(nestedProjectPath, 'src', 'app', 'page.tsx'),
+        [
+          'import { Header } from "@/components/header";',
+          'export default function Page() {',
+          '  return <Header />;',
+          '}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      );
+      fs.writeFileSync(
+        path.join(nestedProjectPath, 'src', 'components', 'header.tsx'),
+        'export function Header() { return <header>Hi</header>; }\n',
+        'utf-8',
+      );
+
+      const commandContextPath = getProjectStorageInfo(workspacePath).commandContextPath;
+      fs.mkdirSync(path.dirname(commandContextPath), { recursive: true });
+      fs.writeFileSync(
+        commandContextPath,
+        JSON.stringify({
+          command: 'npx create-next-app nutrition-website',
+          cwd: workspacePath,
+          status: 'completed',
+          changedFiles: [
+            'nutrition-website/package.json',
+            'nutrition-website/tsconfig.json',
+            'nutrition-website/src/app/page.tsx',
+            'nutrition-website/src/components/header.tsx',
+          ],
+        }, null, 2),
+        'utf-8',
+      );
+
+      const now = Date.now();
+      const result = await buildPromptContext({
+        agentType: 'manual',
+        notes: '',
+        sessionMemory: {
+          workspaceId: 'workspace-root',
+          workspacePath,
+          activeTaskMemory: {
+            taskId: null,
+            originalUserGoal: '',
+            currentObjective: '',
+            definitionOfDone: Object.freeze([]),
+            completedSteps: Object.freeze([]),
+            pendingSteps: Object.freeze([]),
+            blockers: Object.freeze([]),
+            filesTouched: Object.freeze([]),
+            keyFiles: Object.freeze([]),
+            attachments: Object.freeze([]),
+            deniedCommands: Object.freeze([]),
+            recentTurnSummaries: Object.freeze([]),
+            handoffSummary: '',
+            lastUpdatedAt: now,
+          },
+          projectMemory: {
+            summary: '',
+            conventions: Object.freeze([]),
+            recurringPitfalls: Object.freeze([]),
+            recentDecisions: Object.freeze([]),
+            keyFiles: Object.freeze([]),
+            lastUpdatedAt: now,
+          },
+          lastFinalAssistantConclusion: '',
+          keyFiles: Object.freeze([]),
+          lastUpdatedAt: now,
+        },
+        workingTurn: {
+          turnId: 'turn-nested',
+          userMessage: {
+            id: 'user-nested',
+            role: 'user',
+            content: 'Trace how the page renders the header component.',
+            timestamp: now,
+          },
+          assistantDraft: '',
+          contextMessages: Object.freeze([]),
+          toolDigests: Object.freeze([]),
+          roundCount: 1,
+          tokenEstimate: 0,
+          startedAt: now,
+          compacted: false,
+          droppedContextMessages: 0,
+        },
+      });
+
+      assert.strictEqual(result.effectiveWorkspacePath, nestedProjectPath);
     } finally {
       cleanupTempWorkspace(workspacePath);
     }

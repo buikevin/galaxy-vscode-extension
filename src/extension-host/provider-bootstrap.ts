@@ -40,6 +40,7 @@ import { buildPhasePlanItems as buildHostedPhasePlanItems } from "./workbench-st
 import { loadSelectedAgent as loadHostedSelectedAgent, persistSelectedAgent as persistHostedSelectedAgent } from "./workbench-runtime";
 import { asWorkspaceRelativePath as asHostedWorkspaceRelativePath, getWorkspaceName as getHostedWorkspaceName, resolveStorageWorkspacePath as resolveHostedStorageWorkspacePath } from "./session-sync";
 import { appendTranscriptMessage as appendHostedTranscriptMessage, persistProjectMetaPatch as persistHostedProjectMetaPatch } from "./session-lifecycle";
+import { loadOlderTranscriptMessages as loadHostedOlderTranscriptMessages } from "./session-lifecycle";
 import { refreshProviderExtensionToolGroups as refreshHostedProviderExtensionToolGroups } from "./workspace-actions";
 import { createProviderWebviewActionCallbacks as createHostedProviderWebviewActionCallbacks } from "./webview-actions";
 import {
@@ -82,6 +83,7 @@ export type GalaxyChatViewProviderBootstrapTarget = {
   isRunning: boolean;
   statusText: string;
   messages: ChatMessage[];
+  hasOlderTranscriptHistory: boolean;
   selectedAgent: AgentType;
   pendingApprovalRequestId: string | null;
   pendingApprovalResolver: ((decision: ToolApprovalDecision) => void) | null;
@@ -372,6 +374,7 @@ export function initializeGalaxyChatViewProvider(
     refreshNativeShellViews: async (files, changeSummary) =>
       provider.workspaceSyncActions.refreshNativeShellViews(files, changeSummary),
     getMessages: () => provider.messages,
+    getHasOlderMessages: () => provider.hasOlderTranscriptHistory,
     getSelectedAgent: () => provider.selectedAgent,
     getIsRunning: () => provider.isRunning,
     getStatusText: () => provider.statusText,
@@ -447,6 +450,24 @@ export function initializeGalaxyChatViewProvider(
     openTrackedDiff: provider.workspaceToolActions.openTrackedDiff,
     revealShellTerminal: (toolCallId) =>
       provider.commandActions.revealShellTerminal(toolCallId),
+    loadOlderTranscriptMessages: async (oldestMessageId, batchSize) => {
+      const transcript = loadHostedOlderTranscriptMessages(
+        provider.projectStorage,
+        {
+          oldestMessageId,
+          batchSize,
+        },
+      );
+      provider.hasOlderTranscriptHistory = transcript.hasOlderMessages;
+      return Object.freeze({
+        messages: Object.freeze(
+          transcript.messages.map((message) =>
+            sanitizeChatMessageForWebview(message),
+          ),
+        ),
+        hasOlderMessages: transcript.hasOlderMessages,
+      });
+    },
     appendLog: provider.runtimeActions.appendLog,
     clearPendingApprovalState: () => provider.clearPendingApprovalState(),
     applyQualityPreferences: provider.qualityActions.applyQualityPreferences,
@@ -515,6 +536,8 @@ export function initializeGalaxyChatViewProvider(
       onProjectCommandComplete: provider.commandActions.handleBackgroundCommandCompletion,
     },
   });
-  provider.messages = provider.sessionActions.loadInitialMessages();
+  const initialTranscript = provider.sessionActions.loadInitialMessages();
+  provider.messages = [...initialTranscript.messages];
+  provider.hasOlderTranscriptHistory = initialTranscript.hasOlderMessages;
   provider.workbenchActions.updateWorkbenchChrome();
 }

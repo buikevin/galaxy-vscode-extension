@@ -209,7 +209,10 @@ export function deriveStaleEvidence(evidence: readonly ToolEvidence[]): readonly
 
     derived[index] = stale ? Object.freeze({ ...item, stale: true }) : item;
 
-    if (item.toolName === 'write_file' || item.toolName === 'edit_file' || item.toolName === 'edit_file_range' || item.toolName === 'multi_edit_file_ranges') {
+    if (
+      item.success &&
+      (item.toolName === 'write_file' || item.toolName === 'edit_file' || item.toolName === 'edit_file_range' || item.toolName === 'multi_edit_file_ranges')
+    ) {
       markPathInvalidation(invalidatedFiles, invalidatedDirectories, item.filePath);
       continue;
     }
@@ -367,7 +370,10 @@ export function buildAntiLoopGuardrails(
       return;
     }
 
-    if (item.toolName === 'write_file' || item.toolName === 'edit_file' || item.toolName === 'edit_file_range' || item.toolName === 'multi_edit_file_ranges') {
+    if (
+      item.success &&
+      (item.toolName === 'write_file' || item.toolName === 'edit_file' || item.toolName === 'edit_file_range' || item.toolName === 'multi_edit_file_ranges')
+    ) {
       writeCounts.set(targetPath, (writeCounts.get(targetPath) ?? 0) + 1);
       if (isDocumentationPath(targetPath) && (readCounts.get(targetPath) ?? 0) > 0) {
         docEditContinuityPaths.add(targetPath);

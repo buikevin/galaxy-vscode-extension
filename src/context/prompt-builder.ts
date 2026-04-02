@@ -7,6 +7,7 @@
  */
 
 import type { AgentType, ChatMessage } from '../shared/protocol';
+import { mapPathsToProjectScope, resolveEffectiveProjectPath } from './active-project';
 import { countContextTokens, estimateTokens } from './compaction';
 import type { PromptBuildResult, SessionMemory, WorkingTurn } from './entities/history';
 import { buildActiveTaskMemoryContent, buildProjectMemoryContent } from './memory-format';
@@ -72,51 +73,63 @@ export async function buildPromptContext(opts: {
   workingTurn: WorkingTurn | null;
 }): Promise<PromptBuildResult> {
   const messages: ChatMessage[] = [];
+  const rootWorkspacePath = opts.sessionMemory.workspacePath;
   const workingTurnFiles =
     opts.workingTurn?.toolDigests.flatMap((digest) => [
       ...digest.filesRead,
       ...digest.filesWritten,
       ...digest.filesReverted,
     ]) ?? [];
-  const mentionedPaths = extractMentionedPaths(opts.workingTurn?.userMessage.content ?? '');
+  const rawMentionedPaths = extractMentionedPaths(opts.workingTurn?.userMessage.content ?? '');
   const queryText = opts.workingTurn?.userMessage.content ?? '';
-  const activeTaskRetrievalPaths = uniquePaths([
+  const retrievalWorkspacePath = resolveEffectiveProjectPath({
+    workspacePath: rootWorkspacePath,
+    activeProjectPath: opts.sessionMemory.activeProjectPath,
+    candidateFilePaths: uniquePaths([
+      ...workingTurnFiles,
+      ...rawMentionedPaths,
+    ]),
+  });
+  const mentionedPaths = mapPathsToProjectScope(rootWorkspacePath, retrievalWorkspacePath, rawMentionedPaths);
+  const scopedWorkingTurnFiles = mapPathsToProjectScope(rootWorkspacePath, retrievalWorkspacePath, workingTurnFiles);
+  const activeTaskRetrievalPaths = mapPathsToProjectScope(rootWorkspacePath, retrievalWorkspacePath, uniquePaths([
     ...opts.sessionMemory.activeTaskMemory.filesTouched,
     ...opts.sessionMemory.activeTaskMemory.keyFiles,
-  ]);
+  ]));
   const projectHintPaths = selectProjectHintPaths(
     queryText,
     opts.sessionMemory.projectMemory.keyFiles,
   );
+  const scopedProjectHintPaths = mapPathsToProjectScope(rootWorkspacePath, retrievalWorkspacePath, projectHintPaths);
   const sqliteHintPaths = queryRagHintPaths(
-    opts.sessionMemory.workspacePath,
+    retrievalWorkspacePath,
     queryText,
     4,
   );
   const workflowRetrievalBlock = await buildWorkflowRetrievalBlock({
-    workspacePath: opts.sessionMemory.workspacePath,
+    workspacePath: retrievalWorkspacePath,
     queryText,
-    workingTurnFiles,
+    workingTurnFiles: scopedWorkingTurnFiles,
     mentionedPaths,
   });
   const retrievalSeedPaths = uniquePaths([
     ...mentionedPaths,
-    ...workingTurnFiles,
+    ...scopedWorkingTurnFiles,
     ...takeRecentPaths(activeTaskRetrievalPaths, 6),
-    ...projectHintPaths,
+    ...scopedProjectHintPaths,
     ...sqliteHintPaths,
     ...workflowRetrievalBlock.candidatePaths,
   ]);
   const retrievalKeyFiles = uniquePaths([
     ...takeRecentPaths(activeTaskRetrievalPaths, 6),
-    ...projectHintPaths,
+    ...scopedProjectHintPaths,
     ...sqliteHintPaths,
     ...workflowRetrievalBlock.candidatePaths,
   ]);
-  const retrievalRecentPaths = uniquePaths([
+  const retrievalRecentPaths = mapPathsToProjectScope(rootWorkspacePath, retrievalWorkspacePath, uniquePaths([
     ...takeRecentPaths(opts.sessionMemory.activeTaskMemory.filesTouched, 8),
     ...takeRecentPaths(opts.sessionMemory.projectMemory.keyFiles, 4),
-  ]);
+  ]));
   const workflowRereadGuard = Object.freeze({
     enabled: shouldEnableWorkflowRereadGuard(
       queryText,
@@ -129,13 +142,13 @@ export async function buildPromptContext(opts: {
   });
   const manualPlanningScopePaths = uniquePaths([
     ...mentionedPaths,
-    ...takeRecentPaths(workingTurnFiles, 4),
+    ...takeRecentPaths(scopedWorkingTurnFiles, 4),
   ], 4);
 
   const notesContent = opts.notes.trim() ? `[NOTES]\n${opts.notes.trim()}` : '';
   const systemPlatformContent = buildSystemPlatformContent();
   const taskMemory = await queryRelevantTaskMemory(
-    opts.sessionMemory.workspacePath,
+    retrievalWorkspacePath,
     queryText,
     3,
   );
@@ -148,12 +161,12 @@ export async function buildPromptContext(opts: {
       'Treat this as the most recent authoritative conclusion from the previous completed turn. Prefer continuing from it instead of restarting the analysis from scratch. If you need to reopen the analysis, explain what current evidence contradicts it or what new information is missing.'
     : '';
   const syntaxIndexBlock = await buildSyntaxIndexContext({
-    workspacePath: opts.sessionMemory.workspacePath,
+    workspacePath: retrievalWorkspacePath,
     candidateFiles: retrievalSeedPaths,
     queryText,
   });
   const semanticRetrievalBlock = await buildSemanticRetrievalContext({
-    workspacePath: opts.sessionMemory.workspacePath,
+    workspacePath: retrievalWorkspacePath,
     queryText,
     candidateFiles: [
       ...retrievalSeedPaths,
@@ -169,7 +182,7 @@ export async function buildPromptContext(opts: {
     queryText,
     records: syntaxIndexBlock.records,
     mentionedPaths,
-    workingTurnFiles,
+    workingTurnFiles: scopedWorkingTurnFiles,
     keyFiles: retrievalKeyFiles,
     recentPaths: retrievalRecentPaths,
     primaryPaths: syntaxIndexBlock.primaryPaths,
@@ -254,7 +267,7 @@ export async function buildPromptContext(opts: {
     queryText,
     records: syntaxIndexBlock.records,
     mentionedPaths,
-    workingTurnFiles,
+    workingTurnFiles: scopedWorkingTurnFiles,
     keyFiles: retrievalKeyFiles,
     recentPaths: retrievalRecentPaths,
     primaryPaths: syntaxIndexBlock.primaryPaths,
@@ -412,6 +425,7 @@ export async function buildPromptContext(opts: {
 
   const result = Object.freeze({
     messages: Object.freeze(messages),
+    effectiveWorkspacePath: retrievalWorkspacePath,
     notesTokens: estimateTokens(notesContent) + estimateTokens(systemPlatformContent),
     taskMemoryTokens: estimateTokens(taskMemoryContent),
     activeTaskMemoryTokens: estimateTokens(activeTaskMemoryContent),
@@ -448,7 +462,7 @@ export async function buildPromptContext(opts: {
     workflowRereadGuard,
   });
 
-  appendTelemetryEvent(opts.sessionMemory.workspacePath, {
+  appendTelemetryEvent(retrievalWorkspacePath, {
     kind: 'prompt_build',
     promptTokensEstimate: result.finalPromptTokens,
     evidenceEntryCount: result.evidenceEntryCount,
@@ -459,7 +473,7 @@ export async function buildPromptContext(opts: {
     hybridCandidateCount: hybridRetrievalBlock.candidatePaths.length,
     semanticCandidateCount: semanticRetrievalBlock.candidatePaths.length,
   });
-  appendTelemetryEvent(opts.sessionMemory.workspacePath, {
+  appendTelemetryEvent(retrievalWorkspacePath, {
     kind: 'workflow_retrieval',
     flowQuery: workflowRetrievalBlock.flowQuery,
     hadHits: workflowRetrievalBlock.entryCount > 0,

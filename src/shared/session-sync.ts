@@ -25,5 +25,10 @@ export type PostProviderSessionInitParams = Readonly<{
     changeSummary: SessionInitPayload["changeSummary"],
   ) => Promise<void>;
   /** Base session-init parameters, excluding fields rebuilt by the helper itself. */
-  postSessionInitParams: Omit<PostSessionInitParams, "files" | "changeSummary">;
+  postSessionInitParams: Omit<
+    PostSessionInitParams,
+    "files" | "changeSummary" | "hasOlderMessages"
+  >;
+  /** Whether older transcript history exists beyond the loaded batch. */
+  hasOlderMessages: boolean;
 }>;

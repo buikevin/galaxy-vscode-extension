@@ -98,6 +98,7 @@ export function createToolDigest(message: ChatMessage): ToolDigest {
             ? Object.freeze([pathParam])
             : Object.freeze([]);
   const filesWritten =
+    success &&
     ['write_file', 'edit_file', 'edit_file_range', 'multi_edit_file_ranges', 'galaxy_design_init', 'galaxy_design_add'].includes(toolName) && pathParam
       ? Object.freeze([pathParam])
       : Object.freeze([]);

@@ -11,12 +11,12 @@ import type { ToolDefinition } from '../../entities/file-tools';
 export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
   Object.freeze({
     name: 'read_file',
-    description: 'Read file content, optionally with maxLines and offset to avoid loading the whole file.',
+    description: 'Read file content, optionally with maxLines and offset to avoid loading the whole file. Default reads are intentionally larger for big source files so follow-up edits can batch more safely.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
         path: Object.freeze({ type: 'string', description: 'File or directory path inside the workspace' }),
-        maxLines: Object.freeze({ type: 'number', description: 'Maximum number of lines to read (default 200)' }),
+        maxLines: Object.freeze({ type: 'number', description: 'Maximum number of lines to read (default 400)' }),
         offset: Object.freeze({ type: 'number', description: 'Start line offset, 0-based' }),
       }),
       required: Object.freeze(['path']),
@@ -73,23 +73,23 @@ export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
   }),
   Object.freeze({
     name: 'insert_file_at_line',
-    description: 'Insert content before a specific line in an existing file. Prefer this for adding imports, props, or small blocks without rewriting a whole range. This now requires expected_total_lines plus anchor_before and/or anchor_after from a recent read_file result.',
+    description: 'Insert content before a specific line in an existing file. Prefer this for adding imports, props, or small blocks without rewriting a whole range. Provide anchor_before and/or anchor_after from a recent read_file result so the tool can relocate the insertion point safely if line numbers shift.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
         path: Object.freeze({ type: 'string', description: 'File path inside the workspace' }),
         line: Object.freeze({ type: 'number', description: '1-based line number before which the new content will be inserted' }),
         content: Object.freeze({ type: 'string', description: 'Content to insert' }),
-        expected_total_lines: Object.freeze({ type: 'number', description: 'Total line count from the most recent read_file result for this file. Use it to avoid inserting into a stale snapshot.' }),
+        expected_total_lines: Object.freeze({ type: 'number', description: 'Optional total line count from the most recent read_file result for this file. This is an extra guard, not the main relocation signal.' }),
         anchor_before: Object.freeze({ type: 'string', description: 'Exact content of the line immediately before the insertion point from a recent read_file result.' }),
         anchor_after: Object.freeze({ type: 'string', description: 'Exact content of the line currently at the insertion point from a recent read_file result.' }),
       }),
-      required: Object.freeze(['path', 'line', 'content', 'expected_total_lines']),
+      required: Object.freeze(['path', 'line', 'content']),
     }),
   }),
   Object.freeze({
     name: 'edit_file_range',
-    description: 'Edit a specific line range in a file by replacing lines start_line through end_line with new_content. This now requires expected_total_lines plus exact expected_range_content or nearby anchors from a recent read_file result.',
+    description: 'Edit a specific line range in a file by replacing lines start_line through end_line with new_content. Provide exact expected_range_content or nearby anchors from a recent read_file result so the tool can relocate the target block safely if line numbers shift.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
@@ -97,22 +97,22 @@ export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
         start_line: Object.freeze({ type: 'number', description: '1-based start line, inclusive' }),
         end_line: Object.freeze({ type: 'number', description: '1-based end line, inclusive' }),
         new_content: Object.freeze({ type: 'string', description: 'Replacement content for the target line range' }),
-        expected_total_lines: Object.freeze({ type: 'number', description: 'Total line count from the most recent read_file result for this file. Use it to avoid editing stale line ranges.' }),
+        expected_total_lines: Object.freeze({ type: 'number', description: 'Optional total line count from the most recent read_file result for this file. This is an extra guard, not the main relocation signal.' }),
         expected_range_content: Object.freeze({ type: 'string', description: 'Exact existing content currently in lines start_line through end_line from a recent read_file result.' }),
         anchor_before: Object.freeze({ type: 'string', description: 'Exact content of the line immediately before start_line from a recent read_file result.' }),
         anchor_after: Object.freeze({ type: 'string', description: 'Exact content of the line immediately after end_line from a recent read_file result.' }),
       }),
-      required: Object.freeze(['path', 'start_line', 'end_line', 'new_content', 'expected_total_lines']),
+      required: Object.freeze(['path', 'start_line', 'end_line', 'new_content']),
     }),
   }),
   Object.freeze({
     name: 'multi_edit_file_ranges',
-    description: 'Apply multiple targeted line-range edits to one existing file in a single call. This now requires expected_total_lines, and each edit should include exact expected content or anchors from a recent read_file result.',
+    description: 'Apply multiple targeted line-range edits to one existing file in a single call. Each edit should include exact expected content or anchors from a recent read_file result so the tool can relocate stale line numbers safely.',
     parameters: Object.freeze({
       type: 'object',
       properties: Object.freeze({
         path: Object.freeze({ type: 'string', description: 'File path inside the workspace' }),
-        expected_total_lines: Object.freeze({ type: 'number', description: 'Total line count from the most recent read_file result for this file. Use it to avoid editing stale line ranges.' }),
+        expected_total_lines: Object.freeze({ type: 'number', description: 'Optional total line count from the most recent read_file result for this file. This is an extra guard, not the main relocation signal.' }),
         edits: Object.freeze({
           type: 'array',
           description: 'Non-overlapping range edits, based on the current file line numbers.',
@@ -130,7 +130,7 @@ export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
           }),
         }),
       }),
-      required: Object.freeze(['path', 'edits', 'expected_total_lines']),
+      required: Object.freeze(['path', 'edits']),
     }),
   }),
   Object.freeze({

@@ -146,6 +146,7 @@ export async function postSessionInit(
     extensionToolGroups: params.extensionToolGroups,
     extensionToolToggles: params.extensionToolToggles,
     changeSummary: params.changeSummary,
+    hasOlderMessages: params.hasOlderMessages,
     streamingAssistant: params.streamingAssistant,
     streamingThinking: params.streamingThinking,
     activeShellSessions: params.activeShellSessions,
@@ -173,5 +174,6 @@ export async function postProviderSessionInit(
     ...params.postSessionInitParams,
     files,
     changeSummary,
+    hasOlderMessages: params.hasOlderMessages,
   });
 }

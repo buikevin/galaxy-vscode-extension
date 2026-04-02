@@ -33,6 +33,10 @@ export type TranscriptContextValue = Readonly<{
   renderItems: readonly RenderItem[];
   /** Pending user message id while a request is in flight. */
   pendingMessageId: string | null;
+  /** Whether older transcript history can still be loaded. */
+  hasOlderMessages: boolean;
+  /** Whether the transcript is currently loading one older batch. */
+  isLoadingOlderMessages: boolean;
   /** Streaming assistant content accumulated so far. */
   streamingAssistant: string;
   /** Streaming thinking content accumulated so far. */
@@ -49,6 +53,8 @@ export type TranscriptContextValue = Readonly<{
   isMessageExpanded: (id: string) => boolean;
   /** Toggle one message card expansion state. */
   toggleMessageExpanded: (id: string) => void;
+  /** Load one older transcript batch before the current first visible message. */
+  loadOlderMessages: () => void;
   /** Render one active shell session block. */
   renderShellSession: (session: ActiveShellSession) => ReactNode;
   /** Render one grouped action body. */

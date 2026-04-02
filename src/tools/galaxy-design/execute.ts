@@ -6,11 +6,11 @@
  * @desc Galaxy Design tool execution wrappers for info, init, and add actions.
  */
 
-import { spawnSync } from 'node:child_process';
-import type { ToolResult } from '../entities/file-tools';
-import type { GalaxyDesignActionPlan } from '../entities/galaxy-design';
-import { buildShellEnvironment } from '../../runtime/shell-resolver';
-import { getGalaxyDesignProjectInfo, prepareGalaxyDesignAction } from './core';
+import { spawnSync } from "node:child_process";
+import type { ToolResult } from "../entities/file-tools";
+import type { GalaxyDesignActionPlan } from "../entities/galaxy-design";
+import { buildShellEnvironment } from "../../runtime/shell-resolver";
+import { getGalaxyDesignProjectInfo, prepareGalaxyDesignAction } from "./core";
 
 /**
  * Builds a user-facing summary for the current project's Galaxy Design status.
@@ -24,32 +24,43 @@ export async function galaxyDesignProjectInfoTool(
   pathInput?: string,
 ): Promise<ToolResult> {
   const info = getGalaxyDesignProjectInfo(workspaceRoot, pathInput);
-  if ('error' in info) {
-    return Object.freeze({ success: false, content: '', error: info.error });
+  if ("error" in info) {
+    return Object.freeze({ success: false, content: "", error: info.error });
   }
   const lines = [
-    'Galaxy Design project info',
+    "Galaxy Design project info",
     `Path: ${info.targetPath}`,
     `Framework: ${info.framework}`,
+    ...(info.framework !== "unknown"
+      ? [
+          `Registry framework: ${info.registryFramework}${info.framework !== info.registryFramework ? ` (source package used for ${info.framework})` : ""}`,
+        ]
+      : []),
     `Package manager: ${info.packageManager} (${info.packageManagerSource})`,
-    `Galaxy Design initialized: ${info.galaxyDesignInitialized ? 'yes' : 'no'}`,
-    info.componentsConfigPath ? `components.json: ${info.componentsConfigPath}` : 'components.json: not found',
+    `Galaxy Design initialized: ${info.galaxyDesignInitialized ? "yes" : "no"}`,
+    info.componentsConfigPath
+      ? `components.json: ${info.componentsConfigPath}`
+      : "components.json: not found",
   ];
-  if (!info.galaxyDesignInitialized && info.framework !== 'unknown') {
-    lines.push('Suggested next step: run galaxy_design_init.');
+  if (!info.galaxyDesignInitialized && info.framework !== "unknown") {
+    lines.push("Suggested next step: run galaxy_design_init.");
   } else if (info.galaxyDesignInitialized) {
-    lines.push('Suggested next step: use galaxy_design_add or galaxy_design_registry.');
+    lines.push(
+      "Suggested next step: use galaxy_design_add or galaxy_design_registry.",
+    );
   }
   return Object.freeze({
     success: true,
-    content: lines.join('\n'),
+    content: lines.join("\n"),
     meta: Object.freeze({
       targetPath: info.targetPath,
       framework: info.framework,
       packageManager: info.packageManager,
       packageManagerSource: info.packageManagerSource,
       initialized: info.galaxyDesignInitialized,
-      ...(info.componentsConfigPath ? { componentsConfigPath: info.componentsConfigPath } : {}),
+      ...(info.componentsConfigPath
+        ? { componentsConfigPath: info.componentsConfigPath }
+        : {}),
     }),
   });
 }
@@ -64,14 +75,15 @@ function runGalaxyDesignAction(plan: GalaxyDesignActionPlan): ToolResult {
   try {
     const result = spawnSync(plan.executable, [...plan.args], {
       cwd: plan.targetPath,
-      encoding: 'utf-8',
+      encoding: "utf-8",
       maxBuffer: 1024 * 1024 * 8,
       env: buildShellEnvironment(),
     });
-    const stdout = String(result.stdout ?? '').trim();
-    const stderr = String(result.stderr ?? '').trim();
-    const combined = [stdout, stderr].filter(Boolean).join('\n').trim();
-    const exitCode = typeof result.status === 'number' ? result.status : result.error ? 1 : 0;
+    const stdout = String(result.stdout ?? "").trim();
+    const stderr = String(result.stderr ?? "").trim();
+    const combined = [stdout, stderr].filter(Boolean).join("\n").trim();
+    const exitCode =
+      typeof result.status === "number" ? result.status : result.error ? 1 : 0;
     const outputSignalsFailure =
       /failed to install dependencies/i.test(combined) ||
       /✖\s+failed/i.test(combined) ||
@@ -83,7 +95,11 @@ function runGalaxyDesignAction(plan: GalaxyDesignActionPlan): ToolResult {
         content: combined,
         error:
           `Galaxy Design ${plan.action} failed` +
-          (result.error ? `: ${result.error.message}` : outputSignalsFailure ? ' due to CLI-reported install/setup errors' : ` with exit code ${exitCode}`),
+          (result.error
+            ? `: ${result.error.message}`
+            : outputSignalsFailure
+              ? " due to CLI-reported install/setup errors"
+              : ` with exit code ${exitCode}`),
         meta: Object.freeze({
           action: plan.action,
           framework: plan.framework,
@@ -98,7 +114,8 @@ function runGalaxyDesignAction(plan: GalaxyDesignActionPlan): ToolResult {
     }
     return Object.freeze({
       success: true,
-      content: combined || `Galaxy Design ${plan.action} completed successfully.`,
+      content:
+        combined || `Galaxy Design ${plan.action} completed successfully.`,
       meta: Object.freeze({
         action: plan.action,
         framework: plan.framework,
@@ -113,7 +130,7 @@ function runGalaxyDesignAction(plan: GalaxyDesignActionPlan): ToolResult {
   } catch (error) {
     return Object.freeze({
       success: false,
-      content: '',
+      content: "",
       error: `Galaxy Design ${plan.action} failed: ${error instanceof Error ? error.message : String(error)}`,
       meta: Object.freeze({
         action: plan.action,
@@ -140,11 +157,11 @@ export async function galaxyDesignInitTool(
   workspaceRoot: string,
   pathInput?: string,
 ): Promise<ToolResult> {
-  const plan = prepareGalaxyDesignAction(workspaceRoot, 'init', {
+  const plan = prepareGalaxyDesignAction(workspaceRoot, "init", {
     ...(pathInput !== undefined ? { path: pathInput } : {}),
   });
-  if ('error' in plan) {
-    return Object.freeze({ success: false, content: '', error: plan.error });
+  if ("error" in plan) {
+    return Object.freeze({ success: false, content: "", error: plan.error });
   }
   return runGalaxyDesignAction(plan);
 }
@@ -162,12 +179,12 @@ export async function galaxyDesignAddTool(
   componentsInput: readonly string[] | string,
   pathInput?: string,
 ): Promise<ToolResult> {
-  const plan = prepareGalaxyDesignAction(workspaceRoot, 'add', {
+  const plan = prepareGalaxyDesignAction(workspaceRoot, "add", {
     components: componentsInput,
     ...(pathInput !== undefined ? { path: pathInput } : {}),
   });
-  if ('error' in plan) {
-    return Object.freeze({ success: false, content: '', error: plan.error });
+  if ("error" in plan) {
+    return Object.freeze({ success: false, content: "", error: plan.error });
   }
   return runGalaxyDesignAction(plan);
 }

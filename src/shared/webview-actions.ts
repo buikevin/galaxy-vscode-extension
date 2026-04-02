@@ -42,6 +42,14 @@ export type WebviewActionCallbacks = Readonly<{
   runTerminalSnippet: (payload: { code: string; language?: string }) => void;
   /** Reveals the VS Code terminal associated with one tool call id. */
   revealShellTerminal: (toolCallId: string) => Promise<void>;
+  /** Loads one older transcript batch before the oldest message currently shown in the webview. */
+  loadOlderTranscriptMessages: (
+    oldestMessageId?: string,
+    batchSize?: number,
+  ) => Promise<Readonly<{
+    messages: readonly import("./protocol").ChatMessage[];
+    hasOlderMessages: boolean;
+  }>>;
   /** Resolves a pending approval response coming back from the webview. */
   handleApprovalResponse: (
     requestId: string,
@@ -112,6 +120,8 @@ export type CreateWebviewActionCallbacksParams = Readonly<{
   openTrackedDiff: WebviewActionCallbacks["openTrackedDiff"];
   /** Reveals one terminal associated with a tool call id. */
   revealShellTerminal: WebviewActionCallbacks["revealShellTerminal"];
+  /** Loads one older transcript batch before the oldest message currently shown in the webview. */
+  loadOlderTranscriptMessages: WebviewActionCallbacks["loadOlderTranscriptMessages"];
   /** Writes one approval log entry when the user answers an approval prompt. */
   appendApprovalLog: (decision: ToolApprovalDecision) => void;
   /** Returns whether the given request id matches the current pending approval. */
@@ -162,6 +172,8 @@ export type ProviderWebviewActionBindings = Readonly<{
   openTrackedDiff: WebviewActionCallbacks["openTrackedDiff"];
   /** Reveals one terminal associated with a tool call id. */
   revealShellTerminal: WebviewActionCallbacks["revealShellTerminal"];
+  /** Loads one older transcript batch before the oldest message currently shown in the webview. */
+  loadOlderTranscriptMessages: WebviewActionCallbacks["loadOlderTranscriptMessages"];
   /** Appends one approval log line to the hosted runtime log. */
   appendLog: (kind: LogEntry["kind"], text: string) => void;
   /** Clears the pending approval state after resolution. */

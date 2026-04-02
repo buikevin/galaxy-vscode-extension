@@ -7,7 +7,7 @@
  */
 
 import * as ts from 'typescript';
-import type { WorkflowGraphSnapshot } from './graph';
+import type { WorkflowEdgeRecord, WorkflowGraphSnapshot, WorkflowNodeRecord } from './graph';
 
 /**
  * Parsed tsconfig options used when resolving imports.
@@ -114,3 +114,63 @@ export type WorkflowRefreshState = {
   /** Indicates another refresh should run after the current one completes. */
   rerunRequested: boolean;
 };
+
+/**
+ * Shared graph contribution returned by a workflow extractor adapter before artifact synthesis.
+ */
+export type WorkflowGraphContribution = Readonly<{
+  /** Nodes discovered by the adapter for the current workspace. */
+  nodes: readonly WorkflowNodeRecord[];
+  /** Edges discovered by the adapter for the current workspace. */
+  edges: readonly WorkflowEdgeRecord[];
+}>;
+
+/**
+ * Contract implemented by language or framework-specific workflow extraction adapters.
+ */
+export type WorkflowExtractorAdapter = Readonly<{
+  /** Stable adapter identifier for telemetry and debugging. */
+  id: string;
+  /** Human-readable adapter label. */
+  label: string;
+  /** Extracts workflow graph contributions for a workspace. */
+  extract: (workspacePath: string) => Promise<WorkflowGraphContribution>;
+}>;
+
+/**
+ * Shared parsed TypeScript workflow context reused by multiple adapters before graph synthesis.
+ */
+export type TypeScriptWorkflowExtractionContext = Readonly<{
+  /** Parsed files participating in extraction. */
+  parsedFiles: readonly ParsedFile[];
+  /** Seed nodes built directly from parsed symbol units. */
+  baseNodes: ReadonlyMap<string, WorkflowNodeRecord>;
+  /** Exported symbol lookup used for cross-file edge resolution. */
+  exportedSymbolsByFile: ReadonlyMap<string, ReadonlyMap<string, string>>;
+}>;
+
+/**
+ * Shared symbol-resolution lookup reused while traversing executable units.
+ */
+export type WorkflowSymbolResolutionContext = Readonly<{
+  /** Exported symbol lookup used for cross-file edge resolution. */
+  exportedSymbolsByFile: ReadonlyMap<string, ReadonlyMap<string, string>>;
+}>;
+
+/**
+ * Mutable graph collections updated while extracting executable edges.
+ */
+export type WorkflowExecutionGraphState = Readonly<{
+  /** Mutable workflow nodes indexed by id. */
+  nodes: Map<string, WorkflowNodeRecord>;
+  /** Mutable workflow edges indexed by id. */
+  edges: Map<string, WorkflowEdgeRecord>;
+}>;
+
+/**
+ * Input used to build a workflow graph snapshot for a workspace.
+ */
+export type WorkflowGraphSnapshotBuildOptions = Readonly<{
+  /** Absolute workspace path whose source files should be extracted. */
+  workspacePath: string;
+}>;

@@ -9,12 +9,14 @@
 import {
   appendUiTranscriptMessage,
   clearUiTranscript,
-  loadUiTranscript,
+  loadInitialUiTranscriptBatch,
+  loadOlderUiTranscriptBatch,
 } from "../context/ui-transcript-store";
 import { loadProjectMeta, saveProjectMeta } from "../context/project-store";
 import type { ChatMessage } from "../shared/protocol";
 import type {
   LoadInitialMessagesParams,
+  LoadedInitialMessagesResult,
   PersistProjectMetaPatchParams,
   ProviderWorkspaceResetBindings,
   ResetProviderWorkspaceSessionParams,
@@ -30,21 +32,40 @@ import { resetWorkspaceSession } from "./workspace-reset";
  */
 export function loadInitialMessages(
   params: LoadInitialMessagesParams,
-): ChatMessage[] {
-  const transcript = loadUiTranscript(params.projectStorage.uiTranscriptPath, {
+): LoadedInitialMessagesResult {
+  const transcript = loadInitialUiTranscriptBatch(params.projectStorage.uiTranscriptPath, {
     maxMessages: 200,
   });
-  if (transcript.length > 0) {
-    params.setStatusText(`Resumed ${transcript.length} messages`);
+  if (transcript.messages.length > 0) {
+    params.setStatusText(`Resumed ${transcript.messages.length} messages`);
     params.appendLog(
       "info",
-      `Resumed ${transcript.length} transcript messages for this workspace.`,
+      `Resumed ${transcript.messages.length} transcript messages for this workspace.`,
     );
-    return [...transcript];
+    return Object.freeze({
+      messages: Object.freeze([...transcript.messages]),
+      hasOlderMessages: transcript.hasOlderMessages,
+    });
   }
 
   params.appendLog("info", "Started a fresh Galaxy Code VS Code session.");
-  return [];
+  return Object.freeze({
+    messages: Object.freeze([]),
+    hasOlderMessages: false,
+  });
+}
+
+export function loadOlderTranscriptMessages(
+  projectStorage: PersistProjectMetaPatchParams["projectStorage"],
+  opts?: Readonly<{
+    oldestMessageId?: string;
+    batchSize?: number;
+  }>,
+): Readonly<{
+  messages: readonly ChatMessage[];
+  hasOlderMessages: boolean;
+}> {
+  return loadOlderUiTranscriptBatch(projectStorage.uiTranscriptPath, opts);
 }
 
 /**

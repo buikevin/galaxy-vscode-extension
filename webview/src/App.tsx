@@ -32,7 +32,7 @@ import { TranscriptViewProvider } from "@webview/context/TranscriptViewContext";
 import { useChatViewModel } from "@webview/hooks/useChatViewModel";
 import { useComposerActions } from "@webview/hooks/useComposerActions";
 import { useHostMessages } from "@webview/hooks/useHostMessages";
-import { persistState, readPersistedState } from "./vscode";
+import { persistState, readPersistedState, postHostMessage } from "./vscode";
 import type { LocalAttachment, PreviewAsset } from "./entities/attachments";
 import type {
   ActiveShellSession,
@@ -132,6 +132,8 @@ export function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [statusText, setStatusText] = useState("Ready");
   const [errorText, setErrorText] = useState("");
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
   const [streamingAssistant, setStreamingAssistant] = useState("");
   const [streamingThinking, setStreamingThinking] = useState("");
   const [approvalRequest, setApprovalRequest] =
@@ -206,6 +208,10 @@ export function App() {
   const scrollAreaRef = useRef<HTMLDivElement | null>(null);
   const plusMenuAnchorRef = useRef<HTMLDivElement | null>(null);
   const shellOutputRefs = useRef(new Map<string, HTMLDivElement>());
+  const prependHistoryScrollRef = useRef<{
+    previousHeight: number;
+    previousTop: number;
+  } | null>(null);
 
   /**
    * Revoke blob URLs created for local previews when attachments are replaced or the app unmounts.
@@ -293,12 +299,47 @@ export function App() {
       return;
     }
 
+    if (prependHistoryScrollRef.current) {
+      return;
+    }
+
     const frame = window.requestAnimationFrame(() => {
       viewport.scrollTop = viewport.scrollHeight;
     });
 
     return () => window.cancelAnimationFrame(frame);
   }, [messages, streamingAssistant, streamingThinking, activeShellSessions, approvalRequest, errorText]);
+
+  function requestOlderMessages(): void {
+    if (isLoadingOlderMessages || !hasOlderMessages || messages.length === 0) {
+      return;
+    }
+
+    const root = scrollAreaRef.current;
+    const viewport = root?.querySelector(
+      "[data-radix-scroll-area-viewport]"
+    ) as HTMLElement | null;
+    if (!viewport) {
+      return;
+    }
+
+    prependHistoryScrollRef.current = {
+      previousHeight: viewport.scrollHeight,
+      previousTop: viewport.scrollTop,
+    };
+    setIsLoadingOlderMessages(true);
+    void window.requestAnimationFrame(() => {
+      // keep the current viewport stable until older messages are prepended
+      viewport.scrollTop = prependHistoryScrollRef.current?.previousTop ?? viewport.scrollTop;
+    });
+    postHostMessage({
+      type: "transcript-load-older",
+      payload: {
+        oldestMessageId: messages[0]?.id,
+        batchSize: 60,
+      },
+    });
+  }
 
   /**
    * Refresh live shell durations once per second while background commands are active.
@@ -356,6 +397,8 @@ export function App() {
     inflightRequest,
     setWorkspaceName,
     setMessages,
+    setHasOlderMessages,
+    setIsLoadingOlderMessages,
     setSelectedAgent,
     setIsRunning,
     setStatusText,
@@ -382,6 +425,8 @@ export function App() {
     setChangeSummary,
     setKeptChangeSummaryKey,
     setPendingPreviewImportId,
+    scrollAreaRef,
+    prependHistoryScrollRef,
   });
 
   /**
@@ -473,6 +518,8 @@ export function App() {
     keptChangeSummaryKey,
     isPlusMenuOpen,
     pendingMessageId,
+    hasOlderMessages,
+    isLoadingOlderMessages,
     messages,
     scrollAreaRef,
     textareaRef,
@@ -488,6 +535,7 @@ export function App() {
     setIsPlusMenuOpen,
     setInput,
     setSelectedAgent,
+    loadOlderMessages: requestOlderMessages,
     sendMessage,
     retryLastRequest,
     openFigmaPreview,

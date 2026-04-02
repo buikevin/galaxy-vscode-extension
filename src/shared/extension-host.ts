@@ -375,6 +375,8 @@ export type BuildSessionInitPayloadParams = Readonly<{
   extensionToolToggles: Readonly<Record<string, boolean>>;
   /** Current workspace diff/change summary. */
   changeSummary: ChangeSummary;
+  /** Whether older transcript history exists beyond the currently loaded batch. */
+  hasOlderMessages: boolean;
   /** Optional in-flight assistant stream text. */
   streamingAssistant?: string;
   /** Optional in-flight thinking stream text. */
@@ -417,6 +419,8 @@ export type PostSessionInitParams = Readonly<{
   extensionToolToggles: Readonly<Record<string, boolean>>;
   /** Current workspace diff/change summary. */
   changeSummary: ChangeSummary;
+  /** Whether older transcript history exists beyond the currently loaded batch. */
+  hasOlderMessages: boolean;
   /** Optional in-flight assistant stream text. */
   streamingAssistant?: string;
   /** Optional in-flight thinking stream text. */

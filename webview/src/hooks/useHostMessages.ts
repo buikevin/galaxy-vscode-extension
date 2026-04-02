@@ -7,7 +7,7 @@
  */
 
 import { useEffect } from "react";
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from "react";
 import type {
   CommandStreamChunkPayload,
   CommandStreamEndPayload,
@@ -44,6 +44,10 @@ type UseHostMessagesOptions = Readonly<{
   setMessages: Dispatch<SetStateAction<import("@shared/protocol").ChatMessage[]>>;
   /** Update selected agent in the composer. */
   setSelectedAgent: Dispatch<SetStateAction<import("@shared/protocol").AgentType>>;
+  /** Track whether older transcript history is available. */
+  setHasOlderMessages: Dispatch<SetStateAction<boolean>>;
+  /** Track whether an older-history batch is currently loading. */
+  setIsLoadingOlderMessages: Dispatch<SetStateAction<boolean>>;
   /** Update current run-state flag. */
   setIsRunning: Dispatch<SetStateAction<boolean>>;
   /** Update run status text. */
@@ -98,6 +102,13 @@ type UseHostMessagesOptions = Readonly<{
   setKeptChangeSummaryKey: Dispatch<SetStateAction<string>>;
   /** Track preview import id waiting on host resolution. */
   setPendingPreviewImportId: Dispatch<SetStateAction<string | null>>;
+  /** Scroll-area ref used to preserve viewport position when prepending history. */
+  scrollAreaRef: RefObject<HTMLDivElement | null>;
+  /** Cached viewport metrics captured before older messages are prepended. */
+  prependHistoryScrollRef: MutableRefObject<{
+    previousHeight: number;
+    previousTop: number;
+  } | null>;
 }>;
 
 /**
@@ -168,6 +179,8 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
       case "session-init":
         options.setWorkspaceName(message.payload.workspaceName);
         options.setMessages(message.payload.messages as import("@shared/protocol").ChatMessage[]);
+        options.setHasOlderMessages(Boolean(message.payload.hasOlderMessages));
+        options.setIsLoadingOlderMessages(false);
         options.setSelectedAgent(message.payload.selectedAgent);
         options.setIsRunning(message.payload.isRunning);
         options.setStatusText(message.payload.statusText);
@@ -205,6 +218,32 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
       case "selected-agent-updated":
         options.setSelectedAgent(message.payload.selectedAgent);
         return;
+      case "transcript-older-loaded": {
+        options.setMessages((current) => {
+          const existingIds = new Set(current.map((item) => item.id));
+          const olderMessages = message.payload.messages.filter(
+            (item) => !existingIds.has(item.id),
+          );
+          return [...olderMessages, ...current];
+        });
+        options.setHasOlderMessages(message.payload.hasOlderMessages);
+        options.setIsLoadingOlderMessages(false);
+
+        window.requestAnimationFrame(() => {
+          const preserved = options.prependHistoryScrollRef.current;
+          const root = options.scrollAreaRef.current;
+          const viewport = root?.querySelector(
+            "[data-radix-scroll-area-viewport]"
+          ) as HTMLElement | null;
+          if (preserved && viewport) {
+            const nextTop =
+              viewport.scrollHeight - preserved.previousHeight + preserved.previousTop;
+            viewport.scrollTop = Math.max(nextTop, 0);
+          }
+          options.prependHistoryScrollRef.current = null;
+        });
+        return;
+      }
       case "assistant-stream":
         markServerResponseReceived();
         options.setStreamingAssistant((current) => current + message.payload.delta);
@@ -351,6 +390,8 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
           options.setRetryRequest(options.inflightRequest);
           options.setPendingMessageId(null);
         }
+        options.setIsLoadingOlderMessages(false);
+        options.prependHistoryScrollRef.current = null;
         options.setErrorText(message.payload.message);
         options.setIsRunning(false);
         options.setStatusText("Run failed");

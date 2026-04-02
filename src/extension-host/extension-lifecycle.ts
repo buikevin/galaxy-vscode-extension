@@ -49,7 +49,6 @@ export function activateExtension(params: ActivateExtensionParams): void {
   );
   runStatusItem.name = "Galaxy Code Run Status";
   runStatusItem.command = "galaxy-code.openLogs";
-  runStatusItem.show();
 
   const agentStatusItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Left,
@@ -57,7 +56,6 @@ export function activateExtension(params: ActivateExtensionParams): void {
   );
   agentStatusItem.name = "Galaxy Code Agent";
   agentStatusItem.command = "galaxy-code.switchAgent";
-  agentStatusItem.show();
 
   const approvalStatusItem = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Left,
@@ -65,7 +63,6 @@ export function activateExtension(params: ActivateExtensionParams): void {
   );
   approvalStatusItem.name = "Galaxy Code Approval Mode";
   approvalStatusItem.command = "galaxy-code.openConfig";
-  approvalStatusItem.show();
 
   const sidebarProvider = params.createSidebarProvider({
     outputChannel,

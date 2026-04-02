@@ -140,6 +140,8 @@ export type SessionMemory = Readonly<{
   workspaceId: string;
   /** Absolute workspace path this memory belongs to. */
   workspacePath: string;
+  /** Absolute nested project root currently considered the main task scope, when different from the workspace root. */
+  activeProjectPath?: string;
   /** Active task memory carried across turns. */
   activeTaskMemory: ActiveTaskMemory;
   /** Longer-lived project memory shared across tasks. */
@@ -192,6 +194,8 @@ export type WorkflowRereadGuard = Readonly<{
 export type PromptBuildResult = Readonly<{
   /** Final prompt message list sent to the driver. */
   messages: readonly ChatMessage[];
+  /** Absolute project root actually used for retrieval and workflow context in this prompt. */
+  effectiveWorkspacePath: string;
   /** Token estimate for static notes content. */
   notesTokens: number;
   /** Token estimate for task-memory retrieval snippets. */

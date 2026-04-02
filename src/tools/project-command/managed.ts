@@ -15,6 +15,31 @@ import { buildManagedMeta, buildTailOutput, createCommandId, pruneManagedCommand
 import { managedCommands } from './state';
 
 /**
+ * Resolves one managed command record by exact id, originating tool call id, or the sole running command.
+ *
+ * @param commandId Requested command identifier from the model.
+ * @returns Matching managed command record or null when the reference is ambiguous.
+ */
+function resolveManagedCommandRecord(commandId: string): ManagedCommandRecord | null {
+  const exact = managedCommands.get(commandId);
+  if (exact) {
+    return exact;
+  }
+
+  const byToolCallId = [...managedCommands.values()].filter((record) => record.toolCallId === commandId);
+  if (byToolCallId.length === 1) {
+    return byToolCallId[0] ?? null;
+  }
+
+  const running = [...managedCommands.values()].filter((record) => !record.completed);
+  if (running.length === 1) {
+    return running[0] ?? null;
+  }
+
+  return null;
+}
+
+/**
  * Starts one command under managed background tracking.
  *
  * @param workspacePath Absolute workspace root.
@@ -143,7 +168,7 @@ export function startManagedCommandTool(
  * @returns Tool result with either running state or final status.
  */
 export async function awaitManagedProjectCommandTool(commandId: string, options?: { timeoutMs?: number; maxChars?: number }): Promise<ToolResult> {
-  const record = managedCommands.get(commandId);
+  const record = resolveManagedCommandRecord(commandId);
   if (!record) {
     return Object.freeze({ success: false, content: '', error: `Unknown command id: ${commandId}` });
   }
@@ -190,7 +215,7 @@ export async function awaitManagedProjectCommandTool(commandId: string, options?
  * @returns Tool result containing tail output and current status.
  */
 export function getManagedProjectCommandOutputTool(commandId: string, options?: { maxChars?: number }): ToolResult {
-  const record = managedCommands.get(commandId);
+  const record = resolveManagedCommandRecord(commandId);
   if (!record) {
     return Object.freeze({ success: false, content: '', error: `Unknown command id: ${commandId}` });
   }
@@ -223,7 +248,7 @@ export function getManagedProjectCommandOutputTool(commandId: string, options?: 
  * @returns Tool result describing the kill request.
  */
 export function killManagedProjectCommandTool(commandId: string): ToolResult {
-  const record = managedCommands.get(commandId);
+  const record = resolveManagedCommandRecord(commandId);
   if (!record) {
     return Object.freeze({ success: false, content: '', error: `Unknown command id: ${commandId}` });
   }

@@ -335,6 +335,8 @@ export type SessionInitPayload = Readonly<{
   extensionToolToggles: Readonly<Record<string, boolean>>;
   /** Current workspace change summary. */
   changeSummary: ChangeSummary;
+  /** Whether older transcript history exists beyond the currently loaded batch. */
+  hasOlderMessages?: boolean;
   /** Optional in-flight assistant text stream restored into the composer. */
   streamingAssistant?: string;
   /** Optional in-flight thinking stream restored into the composer. */
@@ -519,6 +521,12 @@ export type HostMessage =
       [key: string]: boolean;
     } }>
   | Readonly<{ type: 'change-summary-updated'; payload: ChangeSummary }>
+  | Readonly<{ type: 'transcript-older-loaded'; payload: {
+      /** Older transcript batch prepended ahead of the current oldest visible message. */
+      messages: readonly ChatMessage[];
+      /** Whether even older transcript history is still available after this batch. */
+      hasOlderMessages: boolean;
+    } }>
   | Readonly<{ type: 'figma-attachment-resolved'; payload: {
       /** Resolved Figma attachment metadata. */
       attachment: FigmaAttachment;
@@ -608,6 +616,12 @@ export type WebviewMessage =
   | Readonly<{ type: 'file-diff'; payload: {
       /** File path whose diff should be opened. */
       filePath: string;
+    } }>
+  | Readonly<{ type: 'transcript-load-older'; payload: {
+      /** Current oldest loaded transcript message id. */
+      oldestMessageId?: string;
+      /** Number of older messages requested from storage. */
+      batchSize?: number;
     } }>
   | Readonly<{ type: 'link-open'; payload: {
       /** URL or href that should be opened externally. */
