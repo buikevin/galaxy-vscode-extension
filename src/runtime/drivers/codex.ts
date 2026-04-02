@@ -25,7 +25,7 @@ function buildMessages(messages: readonly RuntimeMessage[], config: GalaxyConfig
   return [
     {
       role: 'system' as const,
-      content: buildDriverSystemPrompt('codex', config),
+      content: buildDriverSystemPrompt('codex', config, messages),
     },
     ...messages.flatMap((message) => {
       if (message.role === 'assistant' && message.toolCalls?.length) {

@@ -107,7 +107,7 @@ export function createGeminiDriver(apiKey: string | undefined, model: string | u
           model: selectedModel,
           contents: buildContents(messages) as never,
           config: {
-            systemInstruction: buildDriverSystemPrompt('gemini', config),
+            systemInstruction: buildDriverSystemPrompt('gemini', config, messages),
             ...(tools ? { tools } : {}),
             maxOutputTokens: 4096,
           },

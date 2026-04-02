@@ -80,10 +80,16 @@ export function debugChatMessage(
   }
 
   if (message.role === "tool") {
+    const commandState =
+      typeof message.toolMeta?.commandState === "string"
+        ? String(message.toolMeta.commandState)
+        : message.toolMeta?.background === true
+          ? "running"
+          : "completed";
     writeDebug(
       debugLogPath,
       "tool-message",
-      `name=${message.toolName ?? "(unknown)"} success=${String(message.toolSuccess ?? false)} call_id=${message.toolCallId ?? "(none)"}`,
+      `name=${message.toolName ?? "(unknown)"} success=${String(message.toolSuccess ?? false)} state=${commandState} call_id=${message.toolCallId ?? "(none)"}`,
     );
     if (message.toolParams) {
       writeDebugBlock(

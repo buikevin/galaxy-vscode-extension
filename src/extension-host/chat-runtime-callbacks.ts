@@ -83,6 +83,54 @@ function formatEvidenceContext(payload: EvidenceContextPayload): string {
 }
 
 /**
+ * Builds a stable comparison key for evidence-context updates so unchanged planning blocks can be suppressed.
+ *
+ * @param payload Evidence context emitted by the runtime.
+ * @returns Stable string key representing the visible evidence-context payload.
+ */
+export function buildEvidenceContextFingerprint(
+  payload: EvidenceContextPayload,
+): string {
+  return JSON.stringify({
+    focusSymbols: payload.focusSymbols ?? [],
+    manualPlanningContent: payload.manualPlanningContent ?? "",
+    manualReadBatchItems: payload.manualReadBatchItems ?? [],
+    readPlanProgressItems: payload.readPlanProgressItems ?? [],
+    confirmedReadCount: payload.confirmedReadCount ?? 0,
+    retrievalLifecycleContent: payload.retrievalLifecycleContent ?? "",
+    antiLoopGuardrailsContent: payload.antiLoopGuardrailsContent ?? "",
+    evidenceReuseContent: payload.evidenceReuseContent ?? "",
+    workflowRereadGuard: payload.workflowRereadGuard ?? null,
+  });
+}
+
+/**
+ * Builds a stable comparison key for the visible manual-read-plan summary line.
+ *
+ * @param payload Evidence context emitted by the runtime.
+ * @returns Stable key for the manual-read-plan log line.
+ */
+function buildManualReadPlanFingerprint(payload: EvidenceContextPayload): string {
+  return JSON.stringify({
+    manualPlanningContent: payload.manualPlanningContent ?? "",
+    manualReadBatchItems: payload.manualReadBatchItems ?? [],
+  });
+}
+
+/**
+ * Builds a stable comparison key for the read-plan progress summary line.
+ *
+ * @param payload Evidence context emitted by the runtime.
+ * @returns Stable key for the read-plan progress log line.
+ */
+function buildReadPlanProgressFingerprint(payload: EvidenceContextPayload): string {
+  return JSON.stringify({
+    confirmedReadCount: payload.confirmedReadCount ?? 0,
+    readPlanProgressItems: payload.readPlanProgressItems ?? [],
+  });
+}
+
+/**
  * Builds the chat runtime callback bundle used by the extracted runtime helpers.
  *
  * @param params Provider-bound callbacks, runtime state accessors, and tool bindings.
@@ -91,6 +139,11 @@ function formatEvidenceContext(payload: EvidenceContextPayload): string {
 export function createChatRuntimeCallbacks(
   params: CreateChatRuntimeCallbacksParams,
 ): ChatRuntimeCallbacks {
+  const lastEvidenceContextByScope = new Map<"turn" | "repair-turn", string>();
+  const lastManualReadPlanByScope = new Map<"turn" | "repair-turn", string>();
+  const lastReadPlanProgressByScope = new Map<"turn" | "repair-turn", string>();
+  const lastDebugEvidenceContentByScope = new Map<"turn" | "repair-turn", string>();
+
   return {
     workspacePath: params.workspacePath,
     historyManager: params.historyManager,
@@ -139,14 +192,27 @@ export function createChatRuntimeCallbacks(
       );
     },
     onEvidenceContext: async (scope, payload) => {
+      const fingerprint = buildEvidenceContextFingerprint(payload);
+      const manualReadPlanFingerprint = buildManualReadPlanFingerprint(payload);
+      const readPlanProgressFingerprint = buildReadPlanProgressFingerprint(payload);
+      const debugContent = formatEvidenceContext(payload);
+
       if (scope === "turn") {
-        if (payload.manualReadBatchItems?.length) {
+        if (
+          payload.manualReadBatchItems?.length &&
+          lastManualReadPlanByScope.get(scope) !== manualReadPlanFingerprint
+        ) {
+          lastManualReadPlanByScope.set(scope, manualReadPlanFingerprint);
           params.appendLog(
             "info",
             `Manual read plan: ${payload.manualReadBatchItems[0]}`,
           );
         }
-        if (payload.readPlanProgressItems?.length) {
+        if (
+          payload.readPlanProgressItems?.length &&
+          lastReadPlanProgressByScope.get(scope) !== readPlanProgressFingerprint
+        ) {
+          lastReadPlanProgressByScope.set(scope, readPlanProgressFingerprint);
           params.appendLog(
             "info",
             `Read plan progress: ${payload.confirmedReadCount ?? 0}/${payload.readPlanProgressItems.length} confirmed`,
@@ -154,16 +220,23 @@ export function createChatRuntimeCallbacks(
         }
       }
 
-      params.writeDebugBlock(
-        scope === "repair-turn"
-          ? "repair-manual-read-plan"
-          : "manual-read-plan",
-        formatEvidenceContext(payload),
-      );
-      await params.postMessage({
-        type: "evidence-context",
-        payload,
-      });
+      if (lastDebugEvidenceContentByScope.get(scope) !== debugContent) {
+        lastDebugEvidenceContentByScope.set(scope, debugContent);
+        params.writeDebugBlock(
+          scope === "repair-turn"
+            ? "repair-manual-read-plan"
+            : "manual-read-plan",
+          debugContent,
+        );
+      }
+
+      if (lastEvidenceContextByScope.get(scope) !== fingerprint) {
+        lastEvidenceContextByScope.set(scope, fingerprint);
+        await params.postMessage({
+          type: "evidence-context",
+          payload,
+        });
+      }
     },
     requestToolApproval: params.requestToolApproval,
     showWorkbenchError: params.showWorkbenchError,

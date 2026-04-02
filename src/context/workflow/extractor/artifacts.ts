@@ -2,7 +2,7 @@
  * @author Bùi Trọng Hiếu
  * @email kevinbui210191@gmail.com
  * @create date 2026-03-31
- * @modify date 2026-03-31
+ * @modify date 2026-04-02
  * @desc Workflow artifact and summary builders derived from static graph snapshots.
  */
 
@@ -73,6 +73,46 @@ export function classifyWorkflowMapType(nodeType: string): string {
     default:
       return 'workflow_flow';
   }
+}
+
+/**
+ * Assigns a source-path priority so generated artifacts prefer real application code over temp outputs.
+ */
+function getWorkflowSourcePathPriority(filePath: string | undefined): number {
+  if (!filePath) {
+    return 5;
+  }
+
+  if (
+    filePath.includes('/src/') ||
+    filePath.includes('/app/') ||
+    filePath.includes('/pages/') ||
+    filePath.includes('/api/') ||
+    filePath.includes('/routes/') ||
+    filePath.includes('/controllers/') ||
+    filePath.includes('/services/') ||
+    filePath.includes('/workers/') ||
+    filePath.includes('/jobs/')
+  ) {
+    return 0;
+  }
+  if (filePath.includes('/scripts/')) {
+    return 1;
+  }
+  if (filePath.includes('/docs/') || filePath.includes('.vitepress')) {
+    return 3;
+  }
+  if (filePath.includes('/dist/') || filePath.includes('/build/') || filePath.includes('/out/') || filePath.includes('/.temp/')) {
+    return 4;
+  }
+  return 2;
+}
+
+/**
+ * Counts how many edges touch the provided workflow node.
+ */
+function countConnectedEdges(nodeId: string, edges: readonly WorkflowEdgeRecord[]): number {
+  return edges.reduce((count, edge) => count + (edge.fromNodeId === nodeId || edge.toNodeId === nodeId ? 1 : 0), 0);
 }
 
 /**
@@ -202,6 +242,8 @@ export function buildWorkflowArtifacts(snapshot: Readonly<{
     .filter((node) => WORKFLOW_MAP_ENTRY_TYPES.has(node.nodeType))
     .sort((a, b) =>
       (getWorkflowEntryPriority(a.nodeType) - getWorkflowEntryPriority(b.nodeType)) ||
+      (getWorkflowSourcePathPriority(a.filePath) - getWorkflowSourcePathPriority(b.filePath)) ||
+      (countConnectedEdges(b.id, snapshot.edges) - countConnectedEdges(a.id, snapshot.edges)) ||
       (b.confidence ?? 0) - (a.confidence ?? 0) ||
       a.id.localeCompare(b.id),
     )

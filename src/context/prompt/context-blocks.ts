@@ -8,6 +8,7 @@
 
 import type { ReadPlanProgressItem } from '../entities/history';
 import { resolveShellProfile } from '../../runtime/shell-resolver';
+import type { ManualReadPlanStep, SyntaxSymbolCandidate } from '../entities/syntax-index';
 
 /**
  * Builds high-priority task memory continuation content.
@@ -182,6 +183,95 @@ export function buildManualPlanningContent(opts: {
   lines.push('Prefer grep for the focus symbols, then read_file with a narrow maxLines/offset window before expanding to wider scans.');
   lines.push('Avoid broad list_dir or rereading full files unless these targeted reads fail to answer the task.');
   return lines.join('\n').trim();
+}
+
+/**
+ * Determines whether manual planning hints should be emitted again for the current round.
+ *
+ * @param opts Current read-plan progress and working-turn scope signals.
+ * @returns `true` when the runtime still needs to actively steer the next discovery step.
+ */
+export function shouldEmitManualPlanningHints(opts: {
+  confirmedReadCount: number;
+  pendingReadPlanCount: number;
+  refreshReadPathCount: number;
+  workingTurnFileCount: number;
+}): boolean {
+  if (opts.refreshReadPathCount > 0) {
+    return true;
+  }
+
+  if (opts.confirmedReadCount <= 0) {
+    return true;
+  }
+
+  if (opts.workingTurnFileCount <= 0 && opts.pendingReadPlanCount > 0) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Narrows manual-planning candidates to the current task/file scope when strong path signals exist.
+ */
+export function narrowManualPlanningScope(opts: {
+  scopedPaths: readonly string[];
+  primaryPaths: readonly string[];
+  definitionPaths: readonly string[];
+  referencePaths: readonly string[];
+  primaryCandidates: readonly SyntaxSymbolCandidate[];
+  definitionCandidates: readonly SyntaxSymbolCandidate[];
+  referenceCandidates: readonly SyntaxSymbolCandidate[];
+  manualReadPlan: readonly ManualReadPlanStep[];
+}): Readonly<{
+  primaryPaths: readonly string[];
+  definitionPaths: readonly string[];
+  referencePaths: readonly string[];
+  primaryCandidates: readonly SyntaxSymbolCandidate[];
+  definitionCandidates: readonly SyntaxSymbolCandidate[];
+  referenceCandidates: readonly SyntaxSymbolCandidate[];
+  manualReadPlan: readonly ManualReadPlanStep[];
+}> {
+  const scopedPaths = opts.scopedPaths.filter((candidate) => candidate.trim().length > 0);
+  if (scopedPaths.length === 0) {
+    return Object.freeze({
+      primaryPaths: Object.freeze([...opts.primaryPaths]),
+      definitionPaths: Object.freeze([...opts.definitionPaths]),
+      referencePaths: Object.freeze([...opts.referencePaths]),
+      primaryCandidates: Object.freeze([...opts.primaryCandidates]),
+      definitionCandidates: Object.freeze([...opts.definitionCandidates]),
+      referenceCandidates: Object.freeze([...opts.referenceCandidates]),
+      manualReadPlan: Object.freeze([...opts.manualReadPlan]),
+    });
+  }
+
+  const scopedSet = new Set(scopedPaths);
+  const matchesScope = (candidatePath: string): boolean =>
+    scopedSet.has(candidatePath) ||
+    scopedPaths.some((scopedPath) => candidatePath.endsWith(scopedPath) || scopedPath.endsWith(candidatePath));
+  const filterPaths = (paths: readonly string[]): readonly string[] => {
+    const filtered = paths.filter(matchesScope);
+    return Object.freeze(filtered.length > 0 ? filtered : [...paths]);
+  };
+  const filterCandidates = <T extends Readonly<{ filePath: string }>>(candidates: readonly T[]): readonly T[] => {
+    const filtered = candidates.filter((candidate) => matchesScope(candidate.filePath));
+    return Object.freeze(filtered.length > 0 ? filtered : [...candidates]);
+  };
+  const filterReadPlan = (steps: readonly ManualReadPlanStep[]): readonly ManualReadPlanStep[] => {
+    const filtered = steps.filter((step) => matchesScope(step.targetPath));
+    return Object.freeze(filtered.length > 0 ? filtered : [...steps]);
+  };
+
+  return Object.freeze({
+    primaryPaths: filterPaths(opts.primaryPaths),
+    definitionPaths: filterPaths(opts.definitionPaths),
+    referencePaths: filterPaths(opts.referencePaths),
+    primaryCandidates: filterCandidates(opts.primaryCandidates),
+    definitionCandidates: filterCandidates(opts.definitionCandidates),
+    referenceCandidates: filterCandidates(opts.referenceCandidates),
+    manualReadPlan: filterReadPlan(opts.manualReadPlan),
+  });
 }
 
 /**

@@ -2,13 +2,23 @@
  * @author Bùi Trọng Hiếu
  * @email kevinbui210191@gmail.com
  * @create date 2026-04-01
- * @modify date 2026-04-01
+ * @modify date 2026-04-02
  * @desc Evidence formatting, stale detection, and retrieval guardrail helpers for the extension runtime.
  */
 
 import path from 'node:path';
 import type { ReadPlanProgressItem } from '../entities/history';
 import type { ToolEvidence } from '../entities/tool-evidence';
+
+/**
+ * Returns true when a path looks like a documentation or prose file.
+ *
+ * @param targetPath File path associated with the current evidence item.
+ * @returns Whether the path is likely a long-form document rather than source code.
+ */
+function isDocumentationPath(targetPath: string): boolean {
+  return /\.(md|mdx|txt|rst|adoc)$/i.test(targetPath);
+}
 
 /**
  * Returns the primary path associated with one evidence item.
@@ -349,6 +359,7 @@ export function buildAntiLoopGuardrails(
   const recentEvidence = evidence.slice(-18);
   const writeCounts = new Map<string, number>();
   const readCounts = new Map<string, number>();
+  const docEditContinuityPaths = new Set<string>();
 
   recentEvidence.forEach((item) => {
     const targetPath = getEvidenceTargetPath(item);
@@ -358,19 +369,26 @@ export function buildAntiLoopGuardrails(
 
     if (item.toolName === 'write_file' || item.toolName === 'edit_file' || item.toolName === 'edit_file_range' || item.toolName === 'multi_edit_file_ranges') {
       writeCounts.set(targetPath, (writeCounts.get(targetPath) ?? 0) + 1);
+      if (isDocumentationPath(targetPath) && (readCounts.get(targetPath) ?? 0) > 0) {
+        docEditContinuityPaths.add(targetPath);
+      }
       return;
     }
 
     if (item.toolName === 'read_file' || item.toolName === 'head' || item.toolName === 'tail' || item.toolName === 'read_document' || item.toolName === 'grep') {
       readCounts.set(targetPath, (readCounts.get(targetPath) ?? 0) + 1);
+      if (isDocumentationPath(targetPath) && (writeCounts.get(targetPath) ?? 0) > 0) {
+        docEditContinuityPaths.add(targetPath);
+      }
     }
   });
 
   const repeatedWrites = [...writeCounts.entries()].filter(([, count]) => count >= 3);
   const repeatedReads = [...readCounts.entries()].filter(([, count]) => count >= 3);
   const refreshSteps = readPlanProgress.filter((item) => item.status === 'needs_refresh');
+  const docEditContinuity = [...docEditContinuityPaths];
 
-  if (repeatedWrites.length === 0 && repeatedReads.length === 0 && refreshSteps.length === 0) {
+  if (repeatedWrites.length === 0 && repeatedReads.length === 0 && refreshSteps.length === 0 && docEditContinuity.length === 0) {
     return '';
   }
 
@@ -383,6 +401,9 @@ export function buildAntiLoopGuardrails(
   }
   if (refreshSteps.length > 0) {
     lines.push('If a step only needs refresh, reread the narrow affected region instead of restarting the whole plan.');
+  }
+  if (docEditContinuity.length > 0) {
+    lines.push(`For documentation files already read and edited in this turn, batch the remaining edits and avoid rereading the whole file: ${docEditContinuity.join(', ')}`);
   }
   lines.push('Prefer the next pending step or a user-facing summary when the current file has already been inspected and edited multiple times.');
   return lines.join('\n').trim();
@@ -397,6 +418,11 @@ export function buildAntiLoopGuardrails(
 export function buildEvidenceReuseBlock(readPlanProgress: readonly ReadPlanProgressItem[]): string {
   const confirmed = readPlanProgress.filter((item) => item.status === 'confirmed');
   const refresh = readPlanProgress.filter((item) => item.status === 'needs_refresh');
+  const confirmedDocumentationPaths = [...new Set(
+    confirmed
+      .map((item) => item.targetPath)
+      .filter((targetPath) => isDocumentationPath(targetPath)),
+  )];
   if (confirmed.length === 0 && refresh.length === 0) {
     return '';
   }
@@ -408,6 +434,9 @@ export function buildEvidenceReuseBlock(readPlanProgress: readonly ReadPlanProgr
   }
   if (refresh.length > 0) {
     lines.push(`Refresh only these steps narrowly: ${refresh.map((item) => item.label).join('; ')}`);
+  }
+  if (confirmedDocumentationPaths.length > 0) {
+    lines.push(`When editing documentation, reuse the confirmed document context first and batch remaining edits on: ${confirmedDocumentationPaths.join(', ')}`);
   }
   lines.push('When reopening analysis, prefer narrow line windows or targeted grep instead of restarting from the top of the file.');
   return lines.join('\n').trim();

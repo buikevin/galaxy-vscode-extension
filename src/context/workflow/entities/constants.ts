@@ -2,7 +2,7 @@
  * @author Bùi Trọng Hiếu
  * @email kevinbui210191@gmail.com
  * @create date 2026-03-31
- * @modify date 2026-03-31
+ * @modify date 2026-04-02
  * @desc Centralized workflow constants and runtime thresholds.
  */
 
@@ -87,6 +87,7 @@ export const SCHEDULE_METHODS = new Set(['schedule', 'cron', 'addCronJob', 'regi
 export const WORKFLOW_MAP_ENTRY_TYPES = new Set([
   'screen',
   'component',
+  'entrypoint',
   'api_endpoint',
   'webhook_handler',
   'controller',

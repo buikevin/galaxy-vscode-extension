@@ -31,6 +31,7 @@ import type { FileToolContext, ToolCall } from '../tools/entities/file-tools';
 import { runCodeReviewTool } from './code-reviewer';
 import { buildApprovalRequest, getBlockedCapability } from './chat-approvals';
 import { createDriver } from './driver-factory';
+import { derivePromptContextHints } from './drivers/message-builders';
 import { captureWorkspaceSnapshot, getSessionFiles, trackWorkspaceChanges } from './session-tracker';
 import { buildSystemPrompt } from './system-prompt';
 import type { StreamChunk } from '../shared/runtime';
@@ -42,6 +43,38 @@ import type { StreamChunk } from '../shared/runtime';
  */
 function createMessageId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Formats tool output for transcript display while preserving async/background command semantics.
+ *
+ * @param toolName Tool runtime name associated with the result.
+ * @param result Raw tool result returned by dispatch.
+ * @returns Transcript-safe tool message content.
+ */
+function formatToolResultContent(toolName: string, result: Readonly<{
+  success: boolean;
+  content: string;
+  error?: string;
+  meta?: Readonly<Record<string, unknown>>;
+}>): string {
+  if (!result.success) {
+    return `Error: ${result.error ?? (result.content || 'Unknown error')}`;
+  }
+
+  const commandState = typeof result.meta?.commandState === 'string' ? String(result.meta.commandState) : '';
+  const isBackgroundRunning =
+    result.meta?.background === true &&
+    (result.meta?.running === true || commandState === 'running');
+  if (isBackgroundRunning) {
+    const commandLabel =
+      typeof result.meta?.commandLabel === 'string' && result.meta.commandLabel.trim()
+        ? result.meta.commandLabel
+        : toolName;
+    return `Command started and is still running in the background: ${commandLabel}\nUse View terminal to inspect live output while Galaxy continues working.`;
+  }
+
+  return result.content || '(no output)';
 }
 
 /**
@@ -97,9 +130,6 @@ export async function runExtensionChat(opts: {
     typeof opts.config.maxToolRounds === 'number' && Number.isFinite(opts.config.maxToolRounds)
       ? Math.max(1, Math.floor(opts.config.maxToolRounds))
       : null;
-  const systemPromptTokens = estimateTokens(
-    buildSystemPrompt(opts.agentType, opts.config),
-  );
   const toolSchemaTokens = estimateTokens(
     JSON.stringify(getEnabledToolDefinitions(opts.config)),
   );
@@ -112,6 +142,13 @@ export async function runExtensionChat(opts: {
         sessionMemory: opts.historyManager.getSessionMemory(),
         workingTurn: opts.historyManager.getWorkingTurn(),
       });
+      const systemPromptTokens = estimateTokens(
+        buildSystemPrompt(
+          opts.agentType,
+          opts.config,
+          derivePromptContextHints(promptBuild.messages),
+        ),
+      );
       const permissionsBlock = buildPermissionContextBlock(workspacePath);
       const permissionTokens = permissionsBlock ? estimateTokens(permissionsBlock) : 0;
       const promptTokensEstimate =
@@ -439,9 +476,7 @@ export async function runExtensionChat(opts: {
       const toolMessage: ChatMessage = Object.freeze({
         id: createMessageId(),
         role: 'tool',
-        content: result.success
-          ? result.content || '(no output)'
-          : `Error: ${result.error ?? (result.content || 'Unknown error')}`,
+        content: formatToolResultContent(toolName, result),
         timestamp: Date.now(),
         toolName,
         toolParams: Object.freeze(call.params),

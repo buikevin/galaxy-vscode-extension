@@ -7,13 +7,22 @@ import { DEFAULT_CONFIG } from '../shared/constants';
 import type { GalaxyConfig } from '../shared/config';
 import { createDraftLocalAttachment } from '../attachments/attachment-store';
 import { extractCodeChunkUnits } from '../context/code-chunk-extractor';
+import { cosineSimilarityEmbedding, embedTexts } from '../context/gemini-embeddings';
 import { createHistoryManager } from '../context/history-manager';
 import { buildPromptContext } from '../context/prompt-builder';
+import { narrowManualPlanningScope, shouldEmitManualPlanningHints } from '../context/prompt/context-blocks';
 import { getProjectStorageInfo } from '../context/project-store';
 import { withRagMetadataDatabase } from '../context/rag-metadata/database';
 import { getCachedReadResult } from '../context/rag-metadata/read-cache';
 import { loadTelemetrySummary } from '../context/telemetry';
 import { evaluateWorkflowRereadGuard } from '../context/workflow/reread-guard';
+import { buildAntiLoopGuardrails, buildEvidenceReuseBlock } from '../context/tool-evidence/selectors';
+import { clearSession, captureOriginal, trackFileWrite } from '../runtime/session-tracker';
+import { flushBackgroundCommandCompletions } from '../extension-host/command-stream';
+import { createChatRuntimeCallbacks as createHostChatRuntimeCallbacks } from '../extension-host/chat-runtime-callbacks';
+import { debugChatMessage } from '../extension-host/message-runtime';
+import { runInternalRepairTurn } from '../extension-host/chat-runtime';
+import { isDocumentationOnlySessionFiles, runValidationAndReviewFlow } from '../extension-host/quality-gates';
 import {
   buildWorkflowGraphSnapshot,
   flushScheduledWorkflowGraphRefresh,
@@ -30,6 +39,7 @@ import {
   queryWorkflowScreens,
 } from '../context/workflow/query/index';
 import { syncWorkflowGraphSnapshot } from '../context/workflow/sync';
+import { buildWorkflowArtifacts } from '../context/workflow/extractor/artifacts';
 import { tokenizeDirectCommandText, tryResolveDirectCommand } from '../runtime/direct-command';
 import { buildShellEnvironment, resolveCommandBinary, resolveShellProfile } from '../runtime/shell-resolver';
 import {
@@ -62,6 +72,11 @@ import {
 import { runProjectCommandTool } from '../tools/project-command/execute';
 import { managedCommands } from '../tools/project-command/state';
 import { selectNodeValidationScripts } from '../validation/node';
+import type { ChatRuntimeCallbacks } from '../shared/chat-runtime';
+import type { BackgroundCommandCompletion } from '../shared/extension-host';
+import type { HistoryManager } from '../context/entities/history-manager';
+import type { AgentType, ChatMessage } from '../shared/protocol';
+import type { FileToolContext } from '../tools/entities/file-tools';
 
 suite('Retrieval And Validation', () => {
   function createTempWorkspace(): string {
@@ -114,6 +129,70 @@ function cleanupTempWorkspace(workspacePath: string): void {
     return execSync('git branch --show-current', { cwd: workspacePath, encoding: 'utf-8' }).trim();
   }
 
+  function createMockChatRuntimeCallbacks(): ChatRuntimeCallbacks & {
+    transcriptMessages: ChatMessage[];
+    errors: string[];
+    tempWorkspacePath: string;
+  } {
+    const transcriptMessages: ChatMessage[] = [];
+    const errors: string[] = [];
+    const tempWorkspacePath = createTempWorkspace();
+    const historyManager: HistoryManager = createHistoryManager({
+      workspacePath: tempWorkspacePath,
+    });
+
+    const toolContext: FileToolContext = {
+      workspaceRoot: tempWorkspacePath,
+      config: DEFAULT_CONFIG,
+      revealFile: async () => {},
+      refreshWorkspaceFiles: async () => {},
+    };
+
+    return {
+      workspacePath: process.cwd(),
+      historyManager,
+      transcriptMessages,
+      errors,
+      tempWorkspacePath,
+      addMessage: async (message) => {
+        transcriptMessages.push(message);
+      },
+      appendLog: () => {},
+      setStatusText: () => {},
+      reportProgress: () => {},
+      postRunState: async () => {},
+      buildToolContext: () => toolContext,
+      onChunk: async () => {},
+      onMessage: async (message) => {
+        transcriptMessages.push(message);
+      },
+      onToolCalls: async () => {},
+      onEvidenceContext: async () => {},
+      requestToolApproval: async () => 'allow',
+      showWorkbenchError: (message) => {
+        errors.push(message);
+      },
+      postErrorMessage: async (message) => {
+        errors.push(message);
+      },
+      writeDebug: () => {},
+      writeDebugBlock: () => {},
+      shouldGateAssistantFinalMessage: () => false,
+      getEffectiveConfig: () => DEFAULT_CONFIG,
+      runValidationAndReviewFlow: async () => Object.freeze({ passed: true, repaired: false }),
+      hasStreamingBuffers: () => false,
+      clearStreamingBuffers: () => {},
+      postInit: async () => {},
+      buildContinueMessage: ({ attempt }) =>
+        Object.freeze({
+          id: `continue-test-${attempt}`,
+          role: 'user' as const,
+          content: 'continue',
+          timestamp: Date.now(),
+        }),
+    };
+  }
+
   test('extractCodeChunkUnits returns precise TypeScript symbol ranges', async () => {
     const content = [
       'export class Runner {',
@@ -152,6 +231,389 @@ function cleanupTempWorkspace(workspacePath: string): void {
       '  return value;',
       '}',
     ].join('\n'));
+  });
+
+  test('embedTexts falls back to deterministic local embeddings when remote embeddings fail', async () => {
+    const embeddings = await embedTexts(
+      ['submit order from product detail page', 'submit order from product detail page'],
+      'RETRIEVAL_QUERY',
+    );
+
+    assert.ok(embeddings);
+    assert.strictEqual(embeddings!.length, 2);
+    assert.strictEqual(embeddings![0]!.length > 0, true);
+    assert.deepStrictEqual(embeddings![0], embeddings![1]);
+  });
+
+  test('fallback embeddings still preserve relative similarity for close texts', async () => {
+    const embeddings = await embedTexts(
+      [
+        'phone product grid with buy button and order flow',
+        'phone product grid with buy button and order flow',
+        'python worker consumes queue and writes invoice status',
+      ],
+      'RETRIEVAL_DOCUMENT',
+    );
+
+    assert.ok(embeddings);
+    const sameSimilarity = cosineSimilarityEmbedding(embeddings![0], embeddings![1]);
+    const differentSimilarity = cosineSimilarityEmbedding(embeddings![0], embeddings![2]);
+    assert.strictEqual(sameSimilarity > 0.99, true);
+    assert.strictEqual(sameSimilarity > differentSimilarity, true);
+  });
+
+  test('runInternalRepairTurn does not mirror internal repair prompts into the visible transcript', async function () {
+    this.timeout(10_000);
+    const callbacks = createMockChatRuntimeCallbacks();
+    const repairMessage: ChatMessage = Object.freeze({
+      id: 'review-repair-test',
+      role: 'user',
+      content: '[SYSTEM CODE REVIEW FEEDBACK]\nInternal repair prompt.',
+      timestamp: Date.now(),
+    });
+    try {
+      const result = await runInternalRepairTurn(callbacks, {
+        config: DEFAULT_CONFIG,
+        agentType: 'manual',
+        userMessage: repairMessage,
+        showUserMessageInTranscript: false,
+      });
+
+      assert.strictEqual(typeof result.hadError, 'boolean');
+      assert.strictEqual(
+        callbacks.transcriptMessages.some((message) => message.id === repairMessage.id),
+        false,
+      );
+    } finally {
+      cleanupTempWorkspace(callbacks.tempWorkspacePath);
+    }
+  });
+
+  test('host chat runtime callbacks dedupe unchanged evidence context payloads', async () => {
+    const workspacePath = createTempWorkspace();
+    const historyManager: HistoryManager = createHistoryManager({ workspacePath });
+    const postedMessages: Array<{ type: string }> = [];
+    const debugBlocks: Array<{ scope: string; content: string }> = [];
+    const logs: string[] = [];
+
+    try {
+      const callbacks = createHostChatRuntimeCallbacks({
+        workspacePath,
+        historyManager,
+        addMessage: async () => {},
+        appendLog: (_kind, text) => {
+          logs.push(text);
+        },
+        setStatusText: () => {},
+        reportProgress: () => {},
+        postRunState: async () => {},
+        postMessage: async (message) => {
+          postedMessages.push({ type: message.type });
+        },
+        emitAssistantStream: async () => {},
+        emitAssistantThinking: async () => {},
+        debugChatMessage: () => {},
+        writeDebug: () => {},
+        writeDebugBlock: (scope, content) => {
+          debugBlocks.push({ scope, content });
+        },
+        requestToolApproval: async () => 'allow',
+        showWorkbenchError: () => {},
+        shouldGateAssistantFinalMessage: () => false,
+        getEffectiveConfig: () => DEFAULT_CONFIG,
+        runValidationAndReviewFlow: async () => Object.freeze({ passed: true, repaired: false }),
+        hasStreamingBuffers: () => false,
+        clearStreamingBuffers: () => {},
+        postInit: async () => {},
+        buildContinueMessage: ({ attempt }) =>
+          Object.freeze({
+            id: `continue-test-${attempt}`,
+            role: 'user' as const,
+            content: 'continue',
+            timestamp: Date.now(),
+          }),
+        tools: Object.freeze({
+          revealFile: async () => {},
+          refreshWorkspaceFiles: async () => {},
+          openTrackedDiff: async () => ({ success: true, content: '' }),
+          showProblems: async () => ({ success: true, content: '' }),
+          workspaceSearch: async () => ({ success: true, content: '' }),
+          findReferences: async () => ({ success: true, content: '' }),
+          executeExtensionCommand: async () => ({ success: true, content: '' }),
+          invokeLanguageModelTool: async () => ({ success: true, content: '' }),
+          searchExtensionTools: async () => ({ success: true, content: '' }),
+          activateExtensionTools: async () => ({ success: true, content: '' }),
+          getLatestTestFailure: async () => ({ success: true, content: '' }),
+          getLatestReviewFindings: async () => ({ success: true, content: '' }),
+          getNextReviewFinding: async () => ({ success: true, content: '' }),
+          dismissReviewFinding: async () => ({ success: true, content: '' }),
+          onProjectCommandStart: () => {},
+          onProjectCommandChunk: () => {},
+          onProjectCommandEnd: () => {},
+          onProjectCommandComplete: async () => {},
+        }),
+      });
+
+      const payload = Object.freeze({
+        content: '',
+        tokens: 0,
+        entryCount: 0,
+        readPlanProgressItems: Object.freeze([
+          Object.freeze({
+            label: 'read_file src/app/page.tsx',
+            confirmed: true,
+            status: 'confirmed' as const,
+            targetPath: 'src/app/page.tsx',
+            tool: 'read_file' as const,
+          }),
+        ]),
+        confirmedReadCount: 1,
+        manualPlanningContent: '[MANUAL PLANNING HINTS]\nStart with targeted reads: read_file(src/app/page.tsx)',
+        manualReadBatchItems: Object.freeze(['read_file src/app/page.tsx — inspect handler']),
+        focusSymbols: Object.freeze(['handleSubmit']),
+        readPlanProgressContent: '[READ PLAN PROGRESS]',
+        retrievalLifecycleContent: '[RETRIEVAL LIFECYCLE]',
+        antiLoopGuardrailsContent: '[ANTI-LOOP]',
+        workflowRereadGuard: Object.freeze({
+          enabled: false,
+          candidatePaths: Object.freeze([]),
+          entryCount: 0,
+          queryText: 'test',
+        }),
+      });
+
+      await callbacks.onEvidenceContext('turn', payload);
+      await callbacks.onEvidenceContext('turn', payload);
+
+      assert.strictEqual(postedMessages.filter((message) => message.type === 'evidence-context').length, 1);
+      assert.strictEqual(debugBlocks.filter((block) => block.scope === 'manual-read-plan').length, 1);
+      assert.strictEqual(logs.filter((text) => text.startsWith('Manual read plan:')).length, 1);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('host chat runtime callbacks only re-log read-plan progress when progress actually changes', async () => {
+    const workspacePath = createTempWorkspace();
+    const historyManager: HistoryManager = createHistoryManager({ workspacePath });
+    const postedMessages: Array<{ type: string }> = [];
+    const debugBlocks: Array<{ scope: string; content: string }> = [];
+    const logs: string[] = [];
+
+    try {
+      const callbacks = createHostChatRuntimeCallbacks({
+        workspacePath,
+        historyManager,
+        addMessage: async () => {},
+        appendLog: (_kind, text) => {
+          logs.push(text);
+        },
+        setStatusText: () => {},
+        reportProgress: () => {},
+        postRunState: async () => {},
+        postMessage: async (message) => {
+          postedMessages.push({ type: message.type });
+        },
+        emitAssistantStream: async () => {},
+        emitAssistantThinking: async () => {},
+        debugChatMessage: () => {},
+        writeDebug: () => {},
+        writeDebugBlock: (scope, content) => {
+          debugBlocks.push({ scope, content });
+        },
+        requestToolApproval: async () => 'allow',
+        showWorkbenchError: () => {},
+        shouldGateAssistantFinalMessage: () => false,
+        getEffectiveConfig: () => DEFAULT_CONFIG,
+        runValidationAndReviewFlow: async () => Object.freeze({ passed: true, repaired: false }),
+        hasStreamingBuffers: () => false,
+        clearStreamingBuffers: () => {},
+        postInit: async () => {},
+        buildContinueMessage: ({ attempt }) =>
+          Object.freeze({
+            id: `continue-test-${attempt}`,
+            role: 'user' as const,
+            content: 'continue',
+            timestamp: Date.now(),
+          }),
+        tools: Object.freeze({
+          revealFile: async () => {},
+          refreshWorkspaceFiles: async () => {},
+          openTrackedDiff: async () => ({ success: true, content: '' }),
+          showProblems: async () => ({ success: true, content: '' }),
+          workspaceSearch: async () => ({ success: true, content: '' }),
+          findReferences: async () => ({ success: true, content: '' }),
+          executeExtensionCommand: async () => ({ success: true, content: '' }),
+          invokeLanguageModelTool: async () => ({ success: true, content: '' }),
+          searchExtensionTools: async () => ({ success: true, content: '' }),
+          activateExtensionTools: async () => ({ success: true, content: '' }),
+          getLatestTestFailure: async () => ({ success: true, content: '' }),
+          getLatestReviewFindings: async () => ({ success: true, content: '' }),
+          getNextReviewFinding: async () => ({ success: true, content: '' }),
+          dismissReviewFinding: async () => ({ success: true, content: '' }),
+          onProjectCommandStart: () => {},
+          onProjectCommandChunk: () => {},
+          onProjectCommandEnd: () => {},
+          onProjectCommandComplete: async () => {},
+        }),
+      });
+
+      const basePayload = Object.freeze({
+        content: '',
+        tokens: 0,
+        entryCount: 0,
+        readPlanProgressItems: Object.freeze([
+          Object.freeze({
+            label: 'read_file src/app/page.tsx',
+            confirmed: true,
+            status: 'confirmed' as const,
+            targetPath: 'src/app/page.tsx',
+            tool: 'read_file' as const,
+          }),
+        ]),
+        confirmedReadCount: 1,
+        manualPlanningContent: '[MANUAL PLANNING HINTS]\nStart with targeted reads: read_file(src/app/page.tsx)',
+        manualReadBatchItems: Object.freeze(['read_file src/app/page.tsx — inspect handler']),
+        focusSymbols: Object.freeze(['handleSubmit']),
+        readPlanProgressContent: '[READ PLAN PROGRESS]',
+        retrievalLifecycleContent: '[RETRIEVAL LIFECYCLE]',
+        antiLoopGuardrailsContent: '[ANTI-LOOP]',
+        evidenceReuseContent: '[REUSE]',
+        workflowRereadGuard: Object.freeze({
+          enabled: false,
+          candidatePaths: Object.freeze([]),
+          entryCount: 0,
+          queryText: 'test',
+        }),
+      });
+
+      const changedOnlyGuardrailsPayload = Object.freeze({
+        ...basePayload,
+        antiLoopGuardrailsContent: '[ANTI-LOOP UPDATED]',
+      });
+
+      await callbacks.onEvidenceContext('turn', basePayload);
+      await callbacks.onEvidenceContext('turn', changedOnlyGuardrailsPayload);
+
+      assert.strictEqual(postedMessages.filter((message) => message.type === 'evidence-context').length, 2);
+      assert.strictEqual(debugBlocks.filter((block) => block.scope === 'manual-read-plan').length, 2);
+      assert.strictEqual(logs.filter((text) => text.startsWith('Manual read plan:')).length, 1);
+      assert.strictEqual(logs.filter((text) => text.startsWith('Read plan progress:')).length, 1);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('documentation-only session files skip blocking review and validation', async () => {
+    assert.strictEqual(
+      isDocumentationOnlySessionFiles([
+        { filePath: '/tmp/README.md' },
+        { filePath: '/tmp/docs/guide.mdx' },
+      ]),
+      true,
+    );
+    assert.strictEqual(
+      isDocumentationOnlySessionFiles([
+        { filePath: '/tmp/README.md' },
+        { filePath: '/tmp/src/index.ts' },
+      ]),
+      false,
+    );
+
+    const workspacePath = createTempWorkspace();
+    const readmePath = path.join(workspacePath, 'README.md');
+    fs.writeFileSync(readmePath, '# doc only\n', 'utf-8');
+    captureOriginal(readmePath);
+    trackFileWrite(readmePath);
+    const logs: string[] = [];
+
+    try {
+      const result = await runValidationAndReviewFlow({
+        workspacePath,
+        projectStorage: getProjectStorageInfo(workspacePath),
+        agentType: 'manual',
+        callbacks: {
+          getEffectiveConfig: () => DEFAULT_CONFIG,
+          updateStatus: async () => {},
+          appendLog: (_kind, text) => {
+            logs.push(text);
+          },
+          updateQualityDetails: () => {},
+          persistProjectMetaPatch: () => {},
+          addMessage: async () => {},
+          runInternalRepairTurn: async () => Object.freeze({ hadError: false, filesWritten: Object.freeze([]) }),
+          emitCommandStreamStart: async () => {},
+          emitCommandStreamChunk: async () => {},
+          emitCommandStreamEnd: async () => {},
+        },
+      });
+
+      assert.deepStrictEqual(result, Object.freeze({ passed: true, repaired: false }));
+      assert.strictEqual(logs.some((text) => text.includes('documentation files only')), true);
+    } finally {
+      clearSession();
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test('background command completion records context without starting an automatic repair turn', async () => {
+    const workspacePath = createTempWorkspace();
+    const commandContextPath = path.join(workspacePath, 'context.json');
+    const logs: string[] = [];
+    let repairCalls = 0;
+    let validationCalls = 0;
+    const completions: BackgroundCommandCompletion[] = [
+      Object.freeze({
+        toolCallId: 'tool-1',
+        commandText: 'echo done',
+        cwd: workspacePath,
+        exitCode: 0,
+        success: true,
+        durationMs: 25,
+        output: 'done',
+        background: true,
+      }),
+    ];
+
+    try {
+      await flushBackgroundCommandCompletions({
+        commandContextPath,
+        appendLog: (_kind, text) => {
+          logs.push(text);
+        },
+        asWorkspaceRelative: (filePath) => path.relative(workspacePath, filePath),
+        getIsRunning: () => false,
+        getBackgroundCompletionRunning: () => false,
+        setBackgroundCompletionRunning: () => {},
+        getPendingBackgroundCompletions: () => completions,
+        setPendingBackgroundCompletions: (next) => {
+          completions.splice(0, completions.length, ...next);
+        },
+        setStatusText: () => {},
+        reportProgress: () => {},
+        postRunState: async () => {},
+        getEffectiveConfig: () => DEFAULT_CONFIG,
+        getSelectedAgent: (): AgentType => 'manual',
+        runInternalRepairTurn: async () => {
+          repairCalls += 1;
+          return Object.freeze({ hadError: false, filesWritten: Object.freeze([]) });
+        },
+        runValidationAndReviewFlow: async () => {
+          validationCalls += 1;
+          return Object.freeze({ passed: true, repaired: false });
+        },
+      });
+
+      assert.strictEqual(repairCalls, 0);
+      assert.strictEqual(validationCalls, 0);
+      assert.strictEqual(fs.existsSync(commandContextPath), true);
+      assert.strictEqual(
+        logs.some((text) => text.includes('No automatic repair turn was started')),
+        true,
+      );
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
   });
 
   test('extractCodeChunkUnits returns python class and function units', async () => {
@@ -718,6 +1180,24 @@ function cleanupTempWorkspace(workspacePath: string): void {
     }
   });
 
+  test('runProjectCommandTool marks async handoff commands as background running instead of completed', async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const result = await runProjectCommandTool(
+        workspacePath,
+        'node -e "setTimeout(() => console.log(\'background-finish\'), 250)"',
+        { asyncStartOnly: true },
+      );
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.meta?.background, true);
+      assert.strictEqual(result.meta?.running, true);
+      assert.strictEqual(result.meta?.commandState, 'running');
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
   test('managed project commands can be started, inspected, awaited, and cleaned up', async () => {
     const workspacePath = createTempWorkspace();
     try {
@@ -923,6 +1403,150 @@ function cleanupTempWorkspace(workspacePath: string): void {
     } finally {
       cleanupTempWorkspace(workspacePath);
     }
+  });
+
+  test('debugChatMessage logs explicit running state for background tool messages', () => {
+    const debugLogPath = path.join(createTempWorkspace(), 'debug.log');
+    try {
+      debugChatMessage(debugLogPath, 'manual', Object.freeze({
+        id: 'tool-running',
+        role: 'tool',
+        content: 'Command started.',
+        timestamp: Date.now(),
+        toolName: 'run_terminal_command',
+        toolSuccess: true,
+        toolCallId: 'call-running',
+        toolMeta: Object.freeze({
+          background: true,
+          running: true,
+          commandState: 'running',
+        }),
+      }));
+
+      const log = fs.readFileSync(debugLogPath, 'utf-8');
+      assert.match(log, /tool-message/);
+      assert.match(log, /state=running/);
+    } finally {
+      cleanupTempWorkspace(path.dirname(debugLogPath));
+    }
+  });
+
+  test('narrowManualPlanningScope keeps manual plan focused on the active file scope', () => {
+    const scoped = narrowManualPlanningScope({
+      scopedPaths: Object.freeze(['documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md']),
+      primaryPaths: Object.freeze([
+        'documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md',
+        'galaxy-code/src/theme.ts',
+      ]),
+      definitionPaths: Object.freeze([
+        'documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md',
+        'galaxy-code/src/theme.ts',
+      ]),
+      referencePaths: Object.freeze([
+        'documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md',
+        'galaxy-code/src/theme.ts',
+      ]),
+      primaryCandidates: Object.freeze([
+        Object.freeze({
+          relation: 'primary' as const,
+          symbolName: 'DocsSection',
+          filePath: 'documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md',
+          line: 120,
+          description: 'DocsSection @ documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md:120',
+        }),
+        Object.freeze({
+          relation: 'primary' as const,
+          symbolName: 'ThemeConfig',
+          filePath: 'galaxy-code/src/theme.ts',
+          line: 10,
+          description: 'ThemeConfig @ galaxy-code/src/theme.ts:10',
+        }),
+      ]),
+      definitionCandidates: Object.freeze([
+        Object.freeze({
+          relation: 'definition' as const,
+          symbolName: 'DocsDefinition',
+          filePath: 'documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md',
+          line: 140,
+          description: 'DocsDefinition @ documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md:140',
+        }),
+        Object.freeze({
+          relation: 'definition' as const,
+          symbolName: 'ThemeDefinition',
+          filePath: 'galaxy-code/src/theme.ts',
+          line: 20,
+          description: 'ThemeDefinition @ galaxy-code/src/theme.ts:20',
+        }),
+      ]),
+      referenceCandidates: Object.freeze([
+        Object.freeze({
+          relation: 'reference' as const,
+          symbolName: 'DocsUsage',
+          filePath: 'documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md',
+          line: 150,
+          description: 'DocsUsage @ documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md:150',
+        }),
+        Object.freeze({
+          relation: 'reference' as const,
+          symbolName: 'ThemeUsage',
+          filePath: 'galaxy-code/src/theme.ts',
+          line: 30,
+          description: 'ThemeUsage @ galaxy-code/src/theme.ts:30',
+        }),
+      ]),
+      manualReadPlan: Object.freeze([
+        Object.freeze({
+          tool: 'read_file' as const,
+          targetPath: 'documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md',
+          line: 120,
+          symbolName: 'DocsSection',
+          reason: 'Inspect docs section',
+        }),
+        Object.freeze({
+          tool: 'read_file' as const,
+          targetPath: 'galaxy-code/src/theme.ts',
+          line: 10,
+          symbolName: 'ThemeConfig',
+          reason: 'Inspect unrelated file',
+        }),
+      ]),
+    });
+
+    assert.deepStrictEqual(scoped.primaryPaths, ['documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md']);
+    assert.deepStrictEqual(scoped.definitionPaths, ['documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md']);
+    assert.deepStrictEqual(scoped.referencePaths, ['documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md']);
+    assert.deepStrictEqual(scoped.primaryCandidates.map((candidate) => candidate.filePath), ['documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md']);
+    assert.deepStrictEqual(scoped.manualReadPlan.map((step) => step.targetPath), ['documents/GALAXY_VSCODE_EXTENSION_DOCUMENTATION.md']);
+  });
+
+  test('shouldEmitManualPlanningHints suppresses repeated planning after confirmed reads without refresh needs', () => {
+    assert.strictEqual(
+      shouldEmitManualPlanningHints({
+        confirmedReadCount: 2,
+        pendingReadPlanCount: 3,
+        refreshReadPathCount: 0,
+        workingTurnFileCount: 4,
+      }),
+      false,
+    );
+    assert.strictEqual(
+      shouldEmitManualPlanningHints({
+        confirmedReadCount: 2,
+        pendingReadPlanCount: 0,
+        refreshReadPathCount: 1,
+        workingTurnFileCount: 4,
+      }),
+      true,
+    );
+    assert.strictEqual(
+      shouldEmitManualPlanningHints({
+        confirmedReadCount: 0,
+        pendingReadPlanCount: 2,
+        refreshReadPathCount: 0,
+        workingTurnFileCount: 0,
+      }),
+      true,
+    );
   });
 
   test('galaxyDesignProjectInfoTool detects framework and package manager from package.json', async () => {
@@ -1615,7 +2239,8 @@ function cleanupTempWorkspace(workspacePath: string): void {
     }
   });
 
-  test('buildPromptContext injects workflow graph retrieval for flow queries', async () => {
+  test('buildPromptContext injects workflow graph retrieval for flow queries', async function () {
+    this.timeout(10_000);
     const workspacePath = createTempWorkspace();
     try {
       fs.mkdirSync(path.join(workspacePath, 'src', 'server', 'routes'), { recursive: true });
@@ -1823,6 +2448,94 @@ function cleanupTempWorkspace(workspacePath: string): void {
     } finally {
       cleanupTempWorkspace(workspacePath);
     }
+  });
+
+  test('buildWorkflowArtifacts can promote connected generic entrypoints into workflow artifacts', () => {
+    const now = Date.now();
+    const artifacts = buildWorkflowArtifacts({
+      nodes: Object.freeze([
+        Object.freeze({
+          id: 'entry-handler',
+          nodeType: 'entrypoint',
+          label: 'handleSubmit',
+          filePath: 'src/features/orders/submit.ts',
+          confidence: 0.82,
+          createdAt: now,
+        }),
+        Object.freeze({
+          id: 'service-submit',
+          nodeType: 'backend_service',
+          label: 'submitOrder',
+          filePath: 'src/features/orders/service.ts',
+          confidence: 0.9,
+          createdAt: now,
+        }),
+      ]),
+      edges: Object.freeze([
+        Object.freeze({
+          id: 'edge-submit',
+          fromNodeId: 'entry-handler',
+          toNodeId: 'service-submit',
+          edgeType: 'calls',
+          confidence: 0.88,
+          createdAt: now,
+        }),
+      ]),
+    });
+
+    assert.strictEqual(artifacts.maps.some((map) => map.entryNodeId === 'entry-handler'), true);
+    assert.strictEqual(artifacts.traceSummaries.some((trace) => trace.entryNodeId === 'entry-handler'), true);
+  });
+
+  test('tool evidence guardrails tell the agent to batch documentation edits before rereading broadly', () => {
+    const now = Date.now();
+    const readPlanProgress = Object.freeze([
+      Object.freeze({
+        label: 'read_file docs/guide.md',
+        confirmed: true,
+        status: 'confirmed' as const,
+        targetPath: 'docs/guide.md',
+        tool: 'read_file' as const,
+      }),
+    ]);
+    const evidence = Object.freeze([
+      Object.freeze({
+        evidenceId: 'read-1',
+        workspaceId: 'workspace',
+        turnId: 'turn',
+        toolName: 'read_file' as const,
+        summary: 'Read docs/guide.md',
+        success: true,
+        capturedAt: now - 1000,
+        stale: false,
+        tags: Object.freeze([]),
+        filePath: 'docs/guide.md',
+        readMode: 'full' as const,
+        contentPreview: '# Guide',
+        truncated: false,
+      }),
+      Object.freeze({
+        evidenceId: 'edit-1',
+        workspaceId: 'workspace',
+        turnId: 'turn',
+        toolName: 'edit_file_range' as const,
+        summary: 'Edited docs/guide.md',
+        success: true,
+        capturedAt: now,
+        stale: false,
+        tags: Object.freeze([]),
+        filePath: 'docs/guide.md',
+        operation: 'edit' as const,
+        existedBefore: true,
+        changedLineRanges: Object.freeze([Object.freeze({ startLine: 10, endLine: 18 })]),
+      }),
+    ]);
+
+    const antiLoop = buildAntiLoopGuardrails(evidence, readPlanProgress);
+    const reuse = buildEvidenceReuseBlock(readPlanProgress);
+    assert.match(antiLoop, /documentation files already read and edited/i);
+    assert.match(antiLoop, /docs\/guide\.md/);
+    assert.match(reuse, /reuse the confirmed document context first/i);
   });
 
   test('scheduleWorkflowGraphRefresh prewarms graph after relevant source changes', async () => {

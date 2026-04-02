@@ -115,6 +115,8 @@ export async function runProjectCommandTool(
           truncated,
           totalChars,
           background: true,
+          running: true,
+          commandState: 'running',
           tailOutput,
         }),
       }));
@@ -148,6 +150,7 @@ export async function runProjectCommandTool(
           exitCode: 1,
           durationMs,
           truncated: false,
+          commandState: 'failed',
         }),
       });
       if (releasedToBackground) {
@@ -180,6 +183,7 @@ export async function runProjectCommandTool(
           truncated,
           totalChars,
           tailOutput,
+          commandState: success ? 'completed' : 'failed',
           ...(releasedToBackground ? { background: true } : {}),
         }),
       });

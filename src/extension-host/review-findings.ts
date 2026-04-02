@@ -239,6 +239,7 @@ export async function applyReviewFinding(
     config: callbacks.getEffectiveConfig(),
     agentType,
     userMessage: repairMessage,
+    showUserMessageInTranscript: false,
   });
 
   callbacks.setRunningState(

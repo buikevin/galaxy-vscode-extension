@@ -399,6 +399,23 @@ export type EvidenceContextPayload = Readonly<{
   }>[];
   /** Number of read plan items already confirmed. */
   confirmedReadCount?: number;
+  /** Optional retrieval lifecycle summary derived from read-plan status. */
+  retrievalLifecycleContent?: string;
+  /** Optional anti-loop guidance emitted for the current prompt. */
+  antiLoopGuardrailsContent?: string;
+  /** Optional evidence-reuse guidance emitted for the current prompt. */
+  evidenceReuseContent?: string;
+  /** Optional workflow reread guard metadata for flow-oriented turns. */
+  workflowRereadGuard?: Readonly<{
+    /** Whether broad rereads should be blocked for the current turn. */
+    enabled: boolean;
+    /** Candidate files protected by the guard. */
+    candidatePaths: readonly string[];
+    /** Number of workflow retrieval entries behind the guard. */
+    entryCount: number;
+    /** Original user query text that triggered the workflow retrieval. */
+    queryText: string;
+  }>;
 }>;
 
 /** Host payload emitted when a command starts streaming output. */

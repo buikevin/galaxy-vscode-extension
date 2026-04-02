@@ -288,7 +288,7 @@ export async function flushBackgroundCommandCompletions(
   callbacks.reportProgress("Processing completed background command");
   await callbacks.postRunState();
 
-  const contextRecord = writeCommandContextFile(callbacks.commandContextPath, {
+  writeCommandContextFile(callbacks.commandContextPath, {
     commandText: next.commandText,
     cwd: next.cwd,
     success: next.success,
@@ -299,32 +299,11 @@ export async function flushBackgroundCommandCompletions(
       callbacks.asWorkspaceRelative(file.filePath),
     ),
   });
-
-  const agentType = callbacks.getSelectedAgent();
-  const result = await callbacks.runInternalRepairTurn({
-    config: callbacks.getEffectiveConfig(),
-    agentType,
-    userMessage: Object.freeze({
-      id: `background-complete-${Date.now()}`,
-      role: "user",
-      content:
-        `Background command completed.\n` +
-        `Command: ${next.commandText}\n` +
-        `cwd: ${next.cwd}\n` +
-        `Exit code: ${next.exitCode}\n` +
-        `Success: ${String(next.success)}\n` +
-        `Context file: context.json\n` +
-        `Summary: ${contextRecord.summary}\n` +
-        `Tail output:\n${contextRecord.tailOutput || "(no output)"}\n\n` +
-        "Continue from the updated workspace state. If you need the full command context, read context.json. Do not rerun the same command unless the context above proves it is necessary.",
-      timestamp: Date.now(),
-    }),
-  });
-
   callbacks.setBackgroundCompletionRunning(false);
-  if (result.filesWritten.length > 0 && !result.hadError) {
-    await callbacks.runValidationAndReviewFlow(agentType);
-  }
+  callbacks.appendLog(
+    "info",
+    "Background command context recorded for later use. No automatic repair turn was started.",
+  );
   await flushBackgroundCommandCompletions(callbacks);
 }
 

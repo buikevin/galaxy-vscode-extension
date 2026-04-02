@@ -222,6 +222,26 @@ export type ReviewMessage = Readonly<{
   content: string;
 }>;
 
+/** Turn-specific prompt hints extracted from current runtime messages. */
+export type PromptContextHints = Readonly<{
+  /** Whether the current turn includes one or more attached images. */
+  hasImages: boolean;
+  /** Whether the prompt context already contains workflow graph retrieval evidence. */
+  hasWorkflowContext: boolean;
+  /** Whether the prompt context includes explicit platform/shell information. */
+  hasPlatformContext: boolean;
+  /** Whether the prompt context includes a base component profile. */
+  hasBaseComponentProfile: boolean;
+  /** Whether the turn appears related to Galaxy Design. */
+  mentionsGalaxyDesign: boolean;
+  /** Whether the turn appears related to VS Code native or extension tool activation flows. */
+  mentionsExtensionTools: boolean;
+  /** Whether the prompt context includes review findings or review feedback. */
+  hasReviewContext: boolean;
+  /** Whether the turn already shows a same-document read/edit loop pattern. */
+  hasDocumentEditLoop: boolean;
+}>;
+
 /** One review batch request derived from recently changed files. */
 export type ReviewBatchRequest = Readonly<{
   /** Full user prompt sent to the reviewer for this batch. */

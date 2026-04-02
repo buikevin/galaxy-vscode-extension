@@ -584,10 +584,10 @@ Payload Figma không được bơm thành tool công khai cho model, mà đi qua
 ## Phát triển
 
 ```bash
-yarn install
-yarn run check-types
-yarn run lint
-yarn run watch
+bun install
+bun run check-types
+bun run lint
+bun run watch
 ```
 
 Sau đó bấm `F5` trong VS Code để mở `Extension Development Host`.

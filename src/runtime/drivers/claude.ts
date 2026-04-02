@@ -112,7 +112,7 @@ export function createClaudeDriver(apiKey: string | undefined, model: string | u
         const stream = client.messages.stream({
           model: selectedModel,
           max_tokens: 4096,
-          system: buildDriverSystemPrompt('claude', config),
+          system: buildDriverSystemPrompt('claude', config, messages),
           messages: buildMessages(messages) as never,
           ...(tools ? { tools } : {}),
         } as never);

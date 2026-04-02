@@ -162,18 +162,6 @@ export async function runMainChatTurn(
       await callbacks.postRunState();
     },
     onEvidenceContext: async (payload) => {
-      if (payload.manualReadBatchItems?.length) {
-        callbacks.appendLog(
-          "info",
-          `Manual read plan: ${payload.manualReadBatchItems[0]}`,
-        );
-      }
-      if (payload.readPlanProgressItems?.length) {
-        callbacks.appendLog(
-          "info",
-          `Read plan progress: ${payload.confirmedReadCount ?? 0}/${payload.readPlanProgressItems.length} confirmed`,
-        );
-      }
       await callbacks.onEvidenceContext("turn", payload);
     },
     requestToolApproval: async (approval) =>
@@ -318,7 +306,9 @@ export async function runInternalRepairTurn(
   let hadError = false;
   let thinkingLogged = false;
   callbacks.historyManager.startTurn(opts.userMessage, opts.contextNote);
-  await callbacks.onMessage(opts.userMessage);
+  if (opts.showUserMessageInTranscript) {
+    await callbacks.onMessage(opts.userMessage);
+  }
 
   const result = await runExtensionChat({
     config: opts.config,
@@ -443,6 +433,7 @@ export async function runInternalRepairTurn(
           recentToolSummaries:
             previousTurn?.toolDigests.map((digest) => digest.summary) ?? [],
         }),
+        showUserMessageInTranscript: false,
         emptyContinueAttempt: nextAttempt,
       });
 

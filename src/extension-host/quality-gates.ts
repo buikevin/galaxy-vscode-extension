@@ -6,6 +6,8 @@
  * @desc Validation and review quality-gate orchestration extracted from the extension host entrypoint.
  */
 
+import path from "node:path";
+
 import {
   appendTaskMemoryEntry,
   replaceTaskMemoryFindings,
@@ -37,6 +39,30 @@ import type {
 } from "../shared/extension-host";
 import { runFinalValidation } from "../validation/project-validator";
 import { formatValidationSummary } from "../validation/summary";
+
+const DOC_ONLY_EXTENSIONS = new Set([
+  ".md",
+  ".mdx",
+  ".txt",
+  ".rst",
+  ".adoc",
+]);
+
+/** Returns whether one tracked file should be treated as documentation-only for quality gating. */
+export function isDocumentationOnlyTrackedFile(filePath: string): boolean {
+  return DOC_ONLY_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+/** Returns whether the whole session changed only documentation files. */
+export function isDocumentationOnlySessionFiles(
+  sessionFiles: readonly { filePath: string }[],
+): boolean {
+  return (
+    sessionFiles.length > 0 &&
+    sessionFiles.every((file) => isDocumentationOnlyTrackedFile(file.filePath))
+  );
+}
+
 /** Build the structured validation feedback prompt for an auto-repair turn. */
 export function buildStructuredValidationRepairPrompt(
   result: FinalValidationResult,
@@ -194,6 +220,14 @@ export async function runValidationAndReviewFlow(
       return Object.freeze({ passed: true, repaired });
     }
 
+    if (isDocumentationOnlySessionFiles(sessionFiles)) {
+      params.callbacks.appendLog(
+        "info",
+        "Skipping blocking review and validation because the current turn changed documentation files only.",
+      );
+      return Object.freeze({ passed: true, repaired });
+    }
+
     if (shouldRunReview) {
       await params.callbacks.updateStatus("Running review quality gate");
       params.callbacks.appendLog(
@@ -289,6 +323,7 @@ export async function runValidationAndReviewFlow(
               reviewResult,
               reviewRepairAttempt,
             ),
+            showUserMessageInTranscript: false,
           });
 
           if (repairResult.hadError || repairResult.filesWritten.length === 0) {
@@ -393,6 +428,7 @@ export async function runValidationAndReviewFlow(
         validationResult,
         validationRepairAttempt,
       ),
+      showUserMessageInTranscript: false,
     });
 
     if (repairResult.hadError || repairResult.filesWritten.length === 0) {

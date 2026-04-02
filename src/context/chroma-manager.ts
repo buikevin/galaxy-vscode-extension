@@ -2,7 +2,7 @@
  * @author Bùi Trọng Hiếu
  * @email kevinbui210191@gmail.com
  * @create date 2026-03-31
- * @modify date 2026-03-31
+ * @modify date 2026-04-01
  * @desc Local Chroma runtime manager for per-workspace vector storage.
  */
 
@@ -60,12 +60,26 @@ export function createChromaClient(url: string): ChromaClient {
       : parsedUrl.protocol === 'https:'
         ? 443
         : 80;
-
-  return new ChromaClient({
-    host: parsedUrl.hostname,
-    port,
-    ssl: parsedUrl.protocol === 'https:',
-  });
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    const [firstArg] = args;
+    if (
+      typeof firstArg === 'string' &&
+      firstArg.includes("The 'path' argument is deprecated. Please use 'ssl', 'host', and 'port' instead")
+    ) {
+      return;
+    }
+    originalWarn(...args);
+  };
+  try {
+    return new ChromaClient({
+      host: parsedUrl.hostname,
+      port,
+      ssl: parsedUrl.protocol === 'https:',
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
 }
 
 /**
@@ -216,12 +230,17 @@ async function startManagedChroma(storage: ProjectStorageInfo): Promise<string |
     );
     child.unref();
     fs.closeSync(logFd);
+    const startupResult = await Promise.race([
+      new Promise<'spawn_error'>((resolve) => {
+        child.once('error', () => resolve('spawn_error'));
+      }),
+      waitForHealthy(getChromaUrl(port)).then((healthy) => (healthy ? 'healthy' : 'timeout')),
+    ]);
+    if (startupResult !== 'healthy') {
+      return null;
+    }
   } catch {
     fs.closeSync(logFd);
-    return null;
-  }
-
-  if (!(await waitForHealthy(getChromaUrl(port)))) {
     return null;
   }
 

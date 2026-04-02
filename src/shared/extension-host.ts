@@ -155,8 +155,10 @@ export type RepairTurnRequest = Readonly<{
   config: GalaxyConfig;
   /** Agent selected to execute the repair turn. */
   agentType: AgentType;
-  /** User-facing message injected as the repair request. */
+  /** Internal control message injected as the repair request. */
   userMessage: ChatMessage;
+  /** Whether the internal repair prompt should also be mirrored into the visible transcript. */
+  showUserMessageInTranscript?: boolean;
   /** Optional prompt context note appended ahead of the repair turn. */
   contextNote?: string;
   /** Optional empty-result retry counter carried across auto-continue attempts. */

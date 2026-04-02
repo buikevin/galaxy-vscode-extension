@@ -14,6 +14,8 @@ import {
   buildCodeMapCandidatesContent,
   buildManualPlanningContent,
   buildManualReadBatchesBlock,
+  narrowManualPlanningScope,
+  shouldEmitManualPlanningHints,
   buildSymbolMapCandidatesContent,
   buildSystemPlatformContent,
   buildTaskMemoryContent,
@@ -125,6 +127,10 @@ export async function buildPromptContext(opts: {
     entryCount: workflowRetrievalBlock.entryCount,
     queryText,
   });
+  const manualPlanningScopePaths = uniquePaths([
+    ...mentionedPaths,
+    ...takeRecentPaths(workingTurnFiles, 4),
+  ], 4);
 
   const notesContent = opts.notes.trim() ? `[NOTES]\n${opts.notes.trim()}` : '';
   const systemPlatformContent = buildSystemPlatformContent();
@@ -184,17 +190,19 @@ export async function buildPromptContext(opts: {
     definitionCandidates: syntaxIndexBlock.definitionSymbolCandidates,
     referenceCandidates: syntaxIndexBlock.referenceSymbolCandidates,
   });
-  const manualPlanningContent =
-    opts.agentType === 'manual'
-      ? buildManualPlanningContent({
-          focusSymbols: syntaxIndexBlock.focusSymbols,
-          primaryPaths: syntaxIndexBlock.primaryPaths,
-          definitionPaths: syntaxIndexBlock.definitionPaths,
-          referencePaths: syntaxIndexBlock.referencePaths,
-          primaryCandidates: syntaxIndexBlock.primarySymbolCandidates,
-          definitionCandidates: syntaxIndexBlock.definitionSymbolCandidates,
-        })
-      : '';
+  const scopedManualPlanning = narrowManualPlanningScope({
+    scopedPaths:
+      manualPlanningScopePaths.length > 0 && !workflowRetrievalBlock.flowQuery
+        ? manualPlanningScopePaths
+        : Object.freeze([]),
+    primaryPaths: syntaxIndexBlock.primaryPaths,
+    definitionPaths: syntaxIndexBlock.definitionPaths,
+    referencePaths: syntaxIndexBlock.referencePaths,
+    primaryCandidates: syntaxIndexBlock.primarySymbolCandidates,
+    definitionCandidates: syntaxIndexBlock.definitionSymbolCandidates,
+    referenceCandidates: syntaxIndexBlock.referenceSymbolCandidates,
+    manualReadPlan: syntaxIndexBlock.manualReadPlan,
+  });
   const evidenceBlock = buildRelevantToolEvidenceBlock({
     sessionMemory: opts.sessionMemory,
     workingTurn: opts.workingTurn,
@@ -210,12 +218,31 @@ export async function buildPromptContext(opts: {
   const pendingReadPlan =
     opts.agentType === 'manual'
       ? prioritizeRefreshReadPlan(
-          filterPendingReadPlan(syntaxIndexBlock.manualReadPlan, evidenceBlock.readPlanProgress),
+          filterPendingReadPlan(scopedManualPlanning.manualReadPlan, evidenceBlock.readPlanProgress),
           evidenceBlock.readPlanProgress,
         )
       : Object.freeze([]);
+  const emitManualPlanningHints =
+    opts.agentType === 'manual' &&
+    shouldEmitManualPlanningHints({
+      confirmedReadCount: evidenceBlock.confirmedReadCount,
+      pendingReadPlanCount: pendingReadPlan.length,
+      refreshReadPathCount: evidenceBlock.refreshReadPaths.length,
+      workingTurnFileCount: workingTurnFiles.length,
+    });
+  const manualPlanningContent =
+    opts.agentType === 'manual' && emitManualPlanningHints
+      ? buildManualPlanningContent({
+          focusSymbols: syntaxIndexBlock.focusSymbols,
+          primaryPaths: scopedManualPlanning.primaryPaths,
+          definitionPaths: scopedManualPlanning.definitionPaths,
+          referencePaths: scopedManualPlanning.referencePaths,
+          primaryCandidates: scopedManualPlanning.primaryCandidates,
+          definitionCandidates: scopedManualPlanning.definitionCandidates,
+        })
+      : '';
   const manualReadBatchesBlock =
-    opts.agentType === 'manual'
+    opts.agentType === 'manual' && emitManualPlanningHints
       ? buildManualReadBatchesBlock({
           readPlan: pendingReadPlan,
         })

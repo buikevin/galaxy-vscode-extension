@@ -30,6 +30,10 @@ export type ProjectCommandMeta = Readonly<{
   totalChars: number;
   /** Tail output retained for display and follow-up analysis. */
   tailOutput: string;
+  /** High-level lifecycle state for transcript and debug rendering. */
+  commandState?: 'running' | 'completed' | 'failed';
+  /** Whether the command is still actively running. */
+  running?: boolean;
   /** Whether the command was released to background handling. */
   background?: boolean;
 }>;
