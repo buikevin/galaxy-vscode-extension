@@ -148,6 +148,7 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
     description: "Dùng diff, search, problems và các khả năng native khác.",
     tools: [
       { key: "vscode_open_diff", label: "Mở diff", description: "Mở diff editor native." },
+      { key: "vscode_start_frontend_preview", label: "Khởi động frontend preview", description: "Tự dò app frontend, chạy dev server và mở localhost preview." },
       { key: "vscode_show_problems", label: "Mở Problems", description: "Mở Problems panel." },
       { key: "vscode_workspace_search", label: "Tìm trong workspace", description: "Tìm bằng native search của VS Code." },
       { key: "vscode_find_references", label: "Tìm references", description: "Tìm references native của VS Code." },

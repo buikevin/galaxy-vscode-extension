@@ -171,8 +171,16 @@ export type ProviderWorkspaceToolActions = Readonly<{
   openTrackedDiff: (filePath: string) => Promise<void>;
   /** Wraps tracked diff opening in the normalized tool-result contract. */
   openTrackedDiffTool: (filePath: string) => Promise<ToolResult>;
+  /** Starts one frontend preview session using discovered workspace apps. */
+  startFrontendPreviewTool: (
+    options?: Readonly<{
+      query?: string;
+    }>,
+  ) => Promise<ToolResult>;
   /** Returns current diagnostics in the Problems panel. */
   showProblemsTool: (filePath?: string) => Promise<ToolResult>;
+  /** Opens one Draw.io diagram in a supported custom editor or falls back to text. */
+  openDrawioDiagramTool: (filePath: string) => Promise<ToolResult>;
   /** Runs one workspace search through the native VS Code search UI. */
   workspaceSearchTool: (
     query: string,

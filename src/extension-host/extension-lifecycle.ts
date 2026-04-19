@@ -30,6 +30,12 @@ import type {
 } from "../shared/extension-lifecycle";
 import type { FigmaBridgeServer, FigmaImportRecord } from "../shared/figma";
 import { openGalaxyConfigDir } from "./utils";
+import {
+  captureLocalPreviewScreenshot as captureFrontendPreviewScreenshot,
+  startFrontendPreviewSession,
+} from "./frontend-preview";
+import { getWorkspaceRoot, resolveStorageWorkspacePath } from "./session-sync";
+import { openLocalhostPreviewPanel } from "./vscode-tooling";
 
 let figmaBridge: FigmaBridgeServer | null = null;
 
@@ -85,10 +91,16 @@ export function activateExtension(params: ActivateExtensionParams): void {
       void sidebarProvider.reveal();
     },
   );
-  const openChatRight = vscode.commands.registerCommand(
+  const openChatTab = vscode.commands.registerCommand(
+    "galaxy-code.openChatTab",
+    () => {
+      void sidebarProvider.openChatTab();
+    },
+  );
+  const openChatRightAlias = vscode.commands.registerCommand(
     "galaxy-code.openChatRight",
     () => {
-      void sidebarProvider.openChatRight();
+      void vscode.commands.executeCommand("galaxy-code.openChatTab");
     },
   );
   const clearHistory = vscode.commands.registerCommand(
@@ -126,6 +138,68 @@ export function activateExtension(params: ActivateExtensionParams): void {
     "galaxy-code.openTelemetrySummary",
     async () => {
       await sidebarProvider.openTelemetrySummary();
+    },
+  );
+  const openLocalPreview = vscode.commands.registerCommand(
+    "galaxy-code.openLocalPreview",
+    async (input?: string) => {
+      try {
+        await openLocalhostPreviewPanel(input);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(
+          `Failed to open frontend preview: ${message}`,
+        );
+      }
+    },
+  );
+  const startLocalPreviewSession = vscode.commands.registerCommand(
+    "galaxy-code.startLocalPreviewSession",
+    async () => {
+      try {
+        const workspaceRoot = getWorkspaceRoot();
+        if (!workspaceRoot) {
+          throw new Error(
+            "Open a workspace folder before starting a frontend preview session.",
+          );
+        }
+        const candidate = await startFrontendPreviewSession(workspaceRoot);
+        if (!candidate) {
+          return;
+        }
+        vscode.window.showInformationMessage(
+          `Started ${candidate.label} preview at ${candidate.previewUrl}.`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(
+          `Failed to start frontend preview session: ${message}`,
+        );
+      }
+    },
+  );
+  const capturePreviewScreenshot = vscode.commands.registerCommand(
+    "galaxy-code.capturePreviewScreenshot",
+    async () => {
+      try {
+        const attachments = await captureFrontendPreviewScreenshot(
+          resolveStorageWorkspacePath(),
+        );
+        if (attachments.length === 0) {
+          return;
+        }
+        for (const attachment of attachments) {
+          await sidebarProvider.surfaceDraftLocalAttachment(attachment);
+        }
+        vscode.window.showInformationMessage(
+          `Captured ${attachments.length} frontend screenshots and added them to the Galaxy composer.`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(
+          `Failed to capture frontend screenshot: ${message}`,
+        );
+      }
     },
   );
   const toggleReview = vscode.commands.registerCommand(
@@ -168,12 +242,16 @@ export function activateExtension(params: ActivateExtensionParams): void {
     approvalStatusItem,
     sidebarRegistration,
     openChat,
-    openChatRight,
+    openChatTab,
+    openChatRightAlias,
     clearHistory,
     openConfig,
     switchAgent,
     openLogs,
     openTelemetrySummary,
+    openLocalPreview,
+    startLocalPreviewSession,
+    capturePreviewScreenshot,
     toggleReview,
     toggleValidation,
     qualitySettingsSync,

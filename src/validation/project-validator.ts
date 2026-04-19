@@ -6,25 +6,30 @@
  * @desc Validation command selection and execution for VS Code workspace quality gates.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { spawn } from 'node:child_process';
-import type { GalaxyConfig } from '../shared/config';
-import type { TrackedFile } from '../shared/runtime';
-import { tryResolveDirectCommand } from '../runtime/direct-command';
-import { buildShellEnvironment, checkCommandAvailability, resolveShellProfile } from '../runtime/shell-resolver';
-import { validateCodeTool } from '../tools/file/diff-validate';
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+import type { GalaxyConfig } from "../shared/config";
+import type { TrackedFile } from "../shared/runtime";
+import { tryResolveDirectCommand } from "../runtime/direct-command";
+import {
+  buildShellEnvironment,
+  checkCommandAvailability,
+  resolveShellProfile,
+  shouldUseWindowsCommandShell,
+} from "../runtime/shell-resolver";
+import { validateCodeTool } from "../tools/file/diff-validate";
 import type {
   FinalValidationResult,
   ValidationCommand,
   ValidationCommandStreamCallbacks,
   ValidationRunResult,
-} from '../shared/validation';
-import { detectProjectCommands } from './command-detection';
-import { parseIssuesWithCwd } from './issues';
-import { detectValidationProfiles } from './profiles';
-import { buildValidationSelectionSummary } from './summary';
-import { MAX_VALIDATION_CAPTURE_CHARS } from '../shared/constants';
+} from "../shared/validation";
+import { detectProjectCommands } from "./command-detection";
+import { parseIssuesWithCwd } from "./issues";
+import { detectValidationProfiles } from "./profiles";
+import { buildValidationSelectionSummary } from "./summary";
+import { MAX_VALIDATION_CAPTURE_CHARS } from "../shared/constants";
 
 /**
  * Checks whether a required binary is available from the command runtime environment.
@@ -38,78 +43,124 @@ function commandExists(binary: string, cwd: string): boolean {
 }
 
 /**
+ * Normalizes command text so Windows and POSIX relative paths can be matched consistently.
+ *
+ * @param commandText Raw command text from validation detection.
+ * @returns Command text using forward slashes for path comparisons.
+ */
+function normalizeCommandText(commandText: string): string {
+  return commandText.replace(/\\/g, "/").trim();
+}
+
+/**
+ * Checks whether a Composer bin proxy exists for the workspace on either POSIX or Windows layouts.
+ *
+ * @param cwd Workspace root.
+ * @param binaryName Composer binary name without path or extension.
+ * @returns `true` when a supported proxy exists.
+ */
+function composerBinaryExists(cwd: string, binaryName: string): boolean {
+  const binPath = path.join(cwd, "vendor", "bin", binaryName);
+  return fs.existsSync(binPath) || fs.existsSync(`${binPath}.bat`);
+}
+
+/**
  * Filters out validation commands whose required tooling is not currently available.
  *
  * @param command Candidate validation command.
  * @returns `true` when the runtime can execute the command safely.
  */
 function isCommandAvailable(command: ValidationCommand): boolean {
-  if (command.command.startsWith('bun run ')) {
-    return commandExists('bun', command.cwd);
+  const normalizedCommand = normalizeCommandText(command.command);
+
+  if (command.command.startsWith("bun run ")) {
+    return commandExists("bun", command.cwd);
   }
-  if (command.command.startsWith('bunx ')) {
-    return commandExists('bunx', command.cwd);
+  if (command.command.startsWith("bunx ")) {
+    return commandExists("bunx", command.cwd);
   }
-  if (command.command.startsWith('pnpm run ') || command.command.startsWith('pnpm exec ')) {
-    return commandExists('pnpm', command.cwd);
+  if (
+    command.command.startsWith("pnpm run ") ||
+    command.command.startsWith("pnpm exec ")
+  ) {
+    return commandExists("pnpm", command.cwd);
   }
-  if (command.command.startsWith('yarn run ') || command.command.startsWith('yarn ')) {
-    return commandExists('yarn', command.cwd);
+  if (
+    command.command.startsWith("yarn run ") ||
+    command.command.startsWith("yarn ")
+  ) {
+    return commandExists("yarn", command.cwd);
   }
-  if (command.command.startsWith('npm run ')) {
-    return commandExists('npm', command.cwd);
+  if (command.command.startsWith("npm run ")) {
+    return commandExists("npm", command.cwd);
   }
-  if (command.command.startsWith('npx ')) {
-    return commandExists('npx', command.cwd);
+  if (command.command.startsWith("npx ")) {
+    return commandExists("npx", command.cwd);
   }
-  if (command.command.startsWith('cargo ')) {
-    return commandExists('cargo', command.cwd);
+  if (command.command.startsWith("cargo ")) {
+    return commandExists("cargo", command.cwd);
   }
-  if (command.command.startsWith('go ')) {
-    return commandExists('go', command.cwd);
+  if (command.command.startsWith("go ")) {
+    return commandExists("go", command.cwd);
   }
-  if (command.command.startsWith('mvn ')) {
-    return commandExists('mvn', command.cwd);
+  if (command.command.startsWith("mvn ")) {
+    return commandExists("mvn", command.cwd);
   }
-  if (command.command.startsWith('./gradlew ')) {
-    return fs.existsSync(path.join(command.cwd, 'gradlew'));
-  }
-  if (command.command.startsWith('gradle ')) {
-    return commandExists('gradle', command.cwd);
-  }
-  if (command.command.startsWith('dotnet ')) {
-    return commandExists('dotnet', command.cwd);
-  }
-  if (command.command.startsWith('make ')) {
-    return commandExists('make', command.cwd);
-  }
-  if (command.command.startsWith('ruff ')) {
-    return commandExists('ruff', command.cwd);
-  }
-  if (command.command.startsWith('mypy ')) {
-    return commandExists('mypy', command.cwd);
-  }
-  if (command.command === 'pytest') {
-    return commandExists('pytest', command.cwd);
-  }
-  if (command.command.startsWith('python -m ')) {
-    return commandExists('python', command.cwd);
-  }
-  if (command.command === 'vendor/bin/phpstan analyse') {
-    return fs.existsSync(path.join(command.cwd, 'vendor/bin/phpstan'));
-  }
-  if (command.command === 'vendor/bin/phpunit') {
-    return fs.existsSync(path.join(command.cwd, 'vendor/bin/phpunit'));
-  }
-  if (command.command.includes('shellcheck')) {
+  if (command.command.startsWith("./gradlew ")) {
     return (
-      commandExists('shellcheck', command.cwd) &&
-      commandExists('find', command.cwd) &&
-      commandExists('xargs', command.cwd)
+      fs.existsSync(path.join(command.cwd, "gradlew")) ||
+      fs.existsSync(path.join(command.cwd, "gradlew.bat"))
     );
   }
-  if (command.command === 'rake test') {
-    return commandExists('rake', command.cwd);
+  if (
+    command.command.startsWith("gradlew.bat ") ||
+    command.command.startsWith(".\\gradlew.bat ")
+  ) {
+    return fs.existsSync(path.join(command.cwd, "gradlew.bat"));
+  }
+  if (command.command.startsWith("gradle ")) {
+    return commandExists("gradle", command.cwd);
+  }
+  if (command.command.startsWith("dotnet ")) {
+    return commandExists("dotnet", command.cwd);
+  }
+  if (command.command.startsWith("make ")) {
+    return commandExists("make", command.cwd);
+  }
+  if (command.command.startsWith("ruff ")) {
+    return commandExists("ruff", command.cwd);
+  }
+  if (command.command.startsWith("mypy ")) {
+    return commandExists("mypy", command.cwd);
+  }
+  if (command.command === "pytest") {
+    return commandExists("pytest", command.cwd);
+  }
+  if (command.command.startsWith("python -m ")) {
+    return commandExists("python", command.cwd);
+  }
+  if (
+    normalizedCommand === "vendor/bin/phpstan analyse" ||
+    normalizedCommand === "vendor/bin/phpstan.bat analyse"
+  ) {
+    return composerBinaryExists(command.cwd, "phpstan");
+  }
+  if (
+    normalizedCommand === "vendor/bin/phpunit" ||
+    normalizedCommand === "vendor/bin/phpunit.bat"
+  ) {
+    return composerBinaryExists(command.cwd, "phpunit");
+  }
+  if (normalizedCommand.includes("shellcheck")) {
+    return (
+      process.platform !== "win32" &&
+      commandExists("shellcheck", command.cwd) &&
+      commandExists("find", command.cwd) &&
+      commandExists("xargs", command.cwd)
+    );
+  }
+  if (command.command === "rake test") {
+    return commandExists("rake", command.cwd);
   }
   return true;
 }
@@ -127,31 +178,36 @@ async function runProjectCommand(
 ): Promise<ValidationRunResult> {
   const startedAt = Date.now();
   const directCommand = tryResolveDirectCommand(command.command, command.cwd);
-  const effectiveCommandText = directCommand?.displayCommandText ?? command.command;
+  const effectiveCommandText =
+    directCommand?.displayCommandText ?? command.command;
   const toolCallId = `validation:${command.id}:${startedAt}`;
 
   return new Promise((resolve) => {
     const child = directCommand
       ? spawn(directCommand.resolvedBinary, [...directCommand.args], {
           cwd: command.cwd,
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: ["ignore", "pipe", "pipe"],
           env: buildShellEnvironment(),
-          shell: false,
+          shell: shouldUseWindowsCommandShell(directCommand.resolvedBinary),
         })
       : (() => {
           const shell = resolveShellProfile();
-          return spawn(shell.executable, [...shell.commandArgs(command.command)], {
-            cwd: command.cwd,
-            stdio: ['ignore', 'pipe', 'pipe'],
-            env: buildShellEnvironment(),
-          });
+          return spawn(
+            shell.executable,
+            [...shell.commandArgs(command.command)],
+            {
+              cwd: command.cwd,
+              stdio: ["ignore", "pipe", "pipe"],
+              env: buildShellEnvironment(),
+            },
+          );
         })();
 
-    let stdout = '';
-    let stderr = '';
+    let stdout = "";
+    let stderr = "";
     let settled = false;
     const timeout = setTimeout(() => {
-      child.kill('SIGTERM');
+      child.kill("SIGTERM");
     }, 120_000);
 
     void callbacks?.onStart?.({
@@ -161,7 +217,7 @@ async function runProjectCommand(
       startedAt,
     });
 
-    child.stdout.on('data', (chunk) => {
+    child.stdout.on("data", (chunk) => {
       const text = String(chunk);
       stdout = `${stdout}${text}`.slice(-MAX_VALIDATION_CAPTURE_CHARS);
       void callbacks?.onChunk?.({
@@ -169,7 +225,7 @@ async function runProjectCommand(
         chunk: text,
       });
     });
-    child.stderr.on('data', (chunk) => {
+    child.stderr.on("data", (chunk) => {
       const text = String(chunk);
       stderr = `${stderr}${text}`.slice(-MAX_VALIDATION_CAPTURE_CHARS);
       void callbacks?.onChunk?.({
@@ -181,7 +237,7 @@ async function runProjectCommand(
     const finalize = (
       success: boolean,
       rawOutput: string,
-      suffix: 'passed' | 'failed',
+      suffix: "passed" | "failed",
       exitCode: number,
     ): void => {
       if (settled) {
@@ -205,23 +261,27 @@ async function runProjectCommand(
           category: command.category,
           durationMs,
           summary: `${command.label} ${suffix}`,
-          issues: success ? Object.freeze([]) : parseIssuesWithCwd(rawOutput, command.id, command.cwd),
+          issues: success
+            ? Object.freeze([])
+            : parseIssuesWithCwd(rawOutput, command.id, command.cwd),
           rawOutputPreview: rawOutput.slice(0, 4000),
         }),
       );
     };
 
-    child.on('error', (error) => {
-      finalize(false, String(error), 'failed', 1);
+    child.on("error", (error) => {
+      finalize(false, String(error), "failed", 1);
     });
-    child.on('close', (code, signal) => {
+    child.on("close", (code, signal) => {
       const rawOutput = `${stdout}${stderr}`.trim();
       if (code === 0) {
-        finalize(true, rawOutput, 'passed', 0);
+        finalize(true, rawOutput, "passed", 0);
         return;
       }
-      const errorText = rawOutput || `Command exited with code ${code ?? 'unknown'}${signal ? ` (signal ${signal})` : ''}`;
-      finalize(false, errorText, 'failed', code ?? 1);
+      const errorText =
+        rawOutput ||
+        `Command exited with code ${code ?? "unknown"}${signal ? ` (signal ${signal})` : ""}`;
+      finalize(false, errorText, "failed", code ?? 1);
     });
   });
 }
@@ -232,18 +292,20 @@ async function runProjectCommand(
  * @param sessionFiles Files changed or touched in the current turn.
  * @returns Validation results for each supported file.
  */
-function runFileSafetyNetValidation(sessionFiles: readonly TrackedFile[]): readonly ValidationRunResult[] {
+function runFileSafetyNetValidation(
+  sessionFiles: readonly TrackedFile[],
+): readonly ValidationRunResult[] {
   const supportedExtensions = new Set([
-    '.ts',
-    '.tsx',
-    '.js',
-    '.mjs',
-    '.json',
-    '.py',
-    '.sh',
-    '.bash',
-    '.php',
-    '.rb',
+    ".ts",
+    ".tsx",
+    ".js",
+    ".mjs",
+    ".json",
+    ".py",
+    ".sh",
+    ".bash",
+    ".php",
+    ".rb",
   ]);
   const runs: ValidationRunResult[] = [];
 
@@ -260,16 +322,20 @@ function runFileSafetyNetValidation(sessionFiles: readonly TrackedFile[]): reado
         success: result.success,
         commandId: `file:${tracked.filePath}`,
         command: `validate_code ${tracked.filePath}`,
-        profile: 'file',
-        category: 'file',
+        profile: "file",
+        category: "file",
         durationMs: Date.now() - startedAt,
         summary: result.success
           ? `Validation passed for ${tracked.filePath}`
           : `Validation failed for ${tracked.filePath}`,
         issues: result.success
           ? Object.freeze([])
-          : parseIssuesWithCwd(result.content || result.error || '', 'validate_code', process.cwd()),
-        rawOutputPreview: (result.content || result.error || '').slice(0, 4000),
+          : parseIssuesWithCwd(
+              result.content || result.error || "",
+              "validate_code",
+              process.cwd(),
+            ),
+        rawOutputPreview: (result.content || result.error || "").slice(0, 4000),
       }),
     );
   }
@@ -305,7 +371,9 @@ async function runCommandPipeline(
  * @param runs Validation runs to inspect.
  * @returns The first failed run or `undefined` when every run succeeded.
  */
-function findFirstFailedRun(runs: readonly ValidationRunResult[]): ValidationRunResult | undefined {
+function findFirstFailedRun(
+  runs: readonly ValidationRunResult[],
+): ValidationRunResult | undefined {
   return runs.find((run) => !run.success);
 }
 
@@ -317,9 +385,9 @@ function findFirstFailedRun(runs: readonly ValidationRunResult[]): ValidationRun
  */
 function buildSuccessSummary(runs: readonly ValidationRunResult[]): string {
   if (runs.length === 0) {
-    return 'No validation checks executed.';
+    return "No validation checks executed.";
   }
-  return runs.map((run) => run.summary).join('; ');
+  return runs.map((run) => run.summary).join("; ");
 }
 
 /**
@@ -335,14 +403,27 @@ function buildSuccessSummary(runs: readonly ValidationRunResult[]): string {
 export async function runFinalValidation(opts: {
   workspacePath: string;
   sessionFiles: readonly TrackedFile[];
-  config?: Pick<GalaxyConfig, 'validation'>;
+  config?: Pick<GalaxyConfig, "validation">;
   streamCallbacks?: ValidationCommandStreamCallbacks;
 }): Promise<FinalValidationResult> {
-  const profiles = detectValidationProfiles(opts.workspacePath, opts.sessionFiles);
-  const commands = detectProjectCommands(opts.workspacePath, opts.sessionFiles, opts.config?.validation).filter(isCommandAvailable);
-  const lintCommands = commands.filter((command) => command.category === 'lint');
-  const staticCommands = commands.filter((command) => command.category === 'static-check');
-  const testCommands = commands.filter((command) => command.category === 'test');
+  const profiles = detectValidationProfiles(
+    opts.workspacePath,
+    opts.sessionFiles,
+  );
+  const commands = detectProjectCommands(
+    opts.workspacePath,
+    opts.sessionFiles,
+    opts.config?.validation,
+  ).filter(isCommandAvailable);
+  const lintCommands = commands.filter(
+    (command) => command.category === "lint",
+  );
+  const staticCommands = commands.filter(
+    (command) => command.category === "static-check",
+  );
+  const testCommands = commands.filter(
+    (command) => command.category === "test",
+  );
   const runs: ValidationRunResult[] = [];
   const shouldRunFileSafetyNet = staticCommands.length === 0;
   const selectionSummary = buildValidationSelectionSummary(
@@ -364,7 +445,7 @@ export async function runFinalValidation(opts: {
     if (failedStaticGate) {
       return Object.freeze({
         success: false,
-        mode: 'project',
+        mode: "project",
         selectionSummary,
         runs: Object.freeze(runs),
         summary: failedStaticGate.summary,
@@ -373,14 +454,17 @@ export async function runFinalValidation(opts: {
   }
 
   if (testCommands.length > 0) {
-    const testRuns = await runCommandPipeline(testCommands, opts.streamCallbacks);
+    const testRuns = await runCommandPipeline(
+      testCommands,
+      opts.streamCallbacks,
+    );
     runs.push(...testRuns);
 
     const failedTest = findFirstFailedRun(testRuns);
     if (failedTest) {
       return Object.freeze({
         success: false,
-        mode: 'project',
+        mode: "project",
         selectionSummary,
         runs: Object.freeze(runs),
         summary: failedTest.summary,
@@ -396,7 +480,7 @@ export async function runFinalValidation(opts: {
     if (failedFileRun) {
       return Object.freeze({
         success: false,
-        mode: runs.length === fileRuns.length ? 'file' : 'project',
+        mode: runs.length === fileRuns.length ? "file" : "project",
         selectionSummary,
         runs: Object.freeze(runs),
         summary: failedFileRun.summary,
@@ -406,16 +490,16 @@ export async function runFinalValidation(opts: {
     if (runs.length === 0 && fileRuns.length === 0) {
       return Object.freeze({
         success: true,
-        mode: 'none',
+        mode: "none",
         selectionSummary,
         runs: Object.freeze([]),
-        summary: 'No validation profile detected for changed files.',
+        summary: "No validation profile detected for changed files.",
       });
     }
 
     return Object.freeze({
       success: true,
-      mode: runs.length === fileRuns.length ? 'file' : 'project',
+      mode: runs.length === fileRuns.length ? "file" : "project",
       selectionSummary,
       runs: Object.freeze(runs),
       summary: buildSuccessSummary(runs),
@@ -425,16 +509,16 @@ export async function runFinalValidation(opts: {
   if (runs.length === 0) {
     return Object.freeze({
       success: true,
-      mode: 'none',
+      mode: "none",
       selectionSummary,
       runs: Object.freeze([]),
-      summary: 'No validation profile detected for changed files.',
+      summary: "No validation profile detected for changed files.",
     });
   }
 
   return Object.freeze({
     success: true,
-    mode: 'project',
+    mode: "project",
     selectionSummary,
     runs: Object.freeze(runs),
     summary: buildSuccessSummary(runs),

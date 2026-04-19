@@ -12,6 +12,7 @@ import { getConfigPath } from '../../config/manager';
 import type { AgentDriver, RuntimeMessage, StreamHandler } from '../../shared/runtime';
 import { buildFunctionTools } from './tool-schemas';
 import { buildDriverSystemPrompt } from './message-builders';
+import { buildOpenAIImageContentParts } from './image-content';
 import { buildDriverErrorChunk, createDoneEmitter, parseToolArguments } from './stream-utils';
 
 /**
@@ -52,6 +53,25 @@ function buildMessages(messages: readonly RuntimeMessage[], config: GalaxyConfig
           role: 'tool' as const,
           tool_call_id: message.toolCallId,
           content: message.content,
+        }] as OpenAI.ChatCompletionMessageParam[];
+      }
+
+      if (message.role === 'user' && message.images?.length) {
+        const contentParts: OpenAI.ChatCompletionContentPart[] = [];
+        if (message.content) {
+          contentParts.push({
+            type: 'text',
+            text: message.content,
+          } as OpenAI.ChatCompletionContentPart);
+        }
+        contentParts.push(
+          ...(buildOpenAIImageContentParts(
+            message.images,
+          ) as unknown as OpenAI.ChatCompletionContentPart[]),
+        );
+        return [{
+          role: 'user' as const,
+          content: contentParts,
         }] as OpenAI.ChatCompletionMessageParam[];
       }
 

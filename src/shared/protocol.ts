@@ -7,9 +7,9 @@
  */
 
 /** Agent identifiers supported by the extension runtime. */
-export type AgentType = 'manual' | 'ollama' | 'gemini' | 'claude' | 'codex';
+export type AgentType = "manual" | "ollama" | "gemini" | "claude" | "codex";
 /** Possible approval decisions returned by the user. */
-export type ToolApprovalDecision = 'deny' | 'allow' | 'ask';
+export type ToolApprovalDecision = "deny" | "allow" | "ask";
 
 /** File entry rendered in the webview file picker. */
 export type FileItem = Readonly<{
@@ -54,7 +54,7 @@ export type MessageAttachment = Readonly<{
   /** Stable attachment id stored in Galaxy project storage. */
   attachmentId: string;
   /** Attachment kind used for rendering and follow-up actions. */
-  kind: 'figma' | 'image' | 'file';
+  kind: "figma" | "image" | "file";
   /** Human-readable label shown alongside the attachment. */
   label: string;
   /** Optional inline preview image data URL shown in the transcript. */
@@ -68,7 +68,7 @@ export type ChatMessage = Readonly<{
   /** Stable message id used by the transcript renderer. */
   id: string;
   /** Message role used by the runtime transcript and protocol bridge. */
-  role: 'assistant' | 'user' | 'tool';
+  role: "assistant" | "user" | "tool";
   /** Main message body shown in the transcript. */
   content: string;
   /** Optional agent type that produced the assistant message. */
@@ -92,7 +92,11 @@ export type ChatMessage = Readonly<{
   /** Stable tool call id used to correlate follow-up events. */
   toolCallId?: string;
   /** Pending tool calls emitted by the model before execution. */
-  toolCalls?: readonly Readonly<{ id: string; name: string; params: Record<string, unknown> }>[];
+  toolCalls?: readonly Readonly<{
+    id: string;
+    name: string;
+    params: Record<string, unknown>;
+  }>[];
   /** Figma attachments resolved for this transcript message. */
   figmaAttachments?: readonly FigmaAttachment[];
 }>;
@@ -106,7 +110,7 @@ export type PlanItem = Readonly<{
   /** Longer detail describing the step. */
   detail: string;
   /** Current execution status for the plan item. */
-  status: 'done' | 'in_progress' | 'pending';
+  status: "done" | "in_progress" | "pending";
 }>;
 
 /** Activity-log entry displayed in the side panel. */
@@ -114,7 +118,7 @@ export type LogEntry = Readonly<{
   /** Stable log entry id. */
   id: string;
   /** Log kind used for styling in the UI. */
-  kind: 'info' | 'status' | 'approval' | 'validation' | 'review' | 'error';
+  kind: "info" | "status" | "approval" | "validation" | "review" | "error";
   /** Log message text shown in the activity panel. */
   text: string;
   /** Unix timestamp in milliseconds when the log entry was produced. */
@@ -136,13 +140,13 @@ export type ReviewFinding = Readonly<{
   /** Stable finding id used for dismiss/apply actions. */
   id: string;
   /** Severity used for prioritization and styling. */
-  severity: 'critical' | 'warning' | 'info';
+  severity: "critical" | "warning" | "info";
   /** Human-readable location string such as file and line. */
   location: string;
   /** Finding message shown to the user and agent. */
   message: string;
   /** Optional lifecycle state tracked by the review workflow. */
-  status?: 'open' | 'dismissed';
+  status?: "open" | "dismissed";
 }>;
 
 /** Persistent quality preferences selected by the user. */
@@ -177,49 +181,53 @@ export type ToolCapabilities = Readonly<{
 
 /** Keys used to persist per-tool enablement state. */
 export type ToolToggleKey =
-  | 'read_file'
-  | 'find_test_files'
-  | 'get_latest_test_failure'
-  | 'get_latest_review_findings'
-  | 'get_next_review_finding'
-  | 'dismiss_review_finding'
-  | 'write_file'
-  | 'insert_file_at_line'
-  | 'edit_file_range'
-  | 'multi_edit_file_ranges'
-  | 'grep'
-  | 'list_dir'
-  | 'head'
-  | 'tail'
-  | 'read_document'
-  | 'search_web'
-  | 'extract_web'
-  | 'map_web'
-  | 'crawl_web'
-  | 'run_terminal_command'
-  | 'await_terminal_command'
-  | 'get_terminal_output'
-  | 'kill_terminal_command'
-  | 'git_status'
-  | 'git_diff'
-  | 'git_add'
-  | 'git_commit'
-  | 'git_push'
-  | 'git_pull'
-  | 'git_checkout'
-  | 'run_project_command'
-  | 'validate_code'
-  | 'request_code_review'
-  | 'vscode_open_diff'
-  | 'vscode_show_problems'
-  | 'vscode_workspace_search'
-  | 'vscode_find_references'
-  | 'search_extension_tools'
-  | 'activate_extension_tools'
-  | 'galaxy_design_project_info'
-  | 'galaxy_design_registry'
-  | 'galaxy_design_init'
-  | 'galaxy_design_add';
+  | "read_file"
+  | "find_test_files"
+  | "get_latest_test_failure"
+  | "get_latest_review_findings"
+  | "get_next_review_finding"
+  | "dismiss_review_finding"
+  | "write_file"
+  | "create_drawio_diagram"
+  | "convert_drawio_diagram"
+  | "export_drawio_diagram"
+  | "insert_file_at_line"
+  | "edit_file_range"
+  | "multi_edit_file_ranges"
+  | "grep"
+  | "list_dir"
+  | "head"
+  | "tail"
+  | "read_document"
+  | "search_web"
+  | "extract_web"
+  | "map_web"
+  | "crawl_web"
+  | "run_terminal_command"
+  | "await_terminal_command"
+  | "get_terminal_output"
+  | "kill_terminal_command"
+  | "git_status"
+  | "git_diff"
+  | "git_add"
+  | "git_commit"
+  | "git_push"
+  | "git_pull"
+  | "git_checkout"
+  | "run_project_command"
+  | "validate_code"
+  | "request_code_review"
+  | "vscode_open_diff"
+  | "vscode_start_frontend_preview"
+  | "vscode_show_problems"
+  | "vscode_workspace_search"
+  | "vscode_find_references"
+  | "search_extension_tools"
+  | "activate_extension_tools"
+  | "galaxy_design_project_info"
+  | "galaxy_design_registry"
+  | "galaxy_design_init"
+  | "galaxy_design_add";
 
 /** Mapping from tool toggle key to enabled state. */
 export type ToolToggles = Readonly<Record<ToolToggleKey, boolean>>;
@@ -239,13 +247,13 @@ export type ExtensionToolItem = Readonly<{
   /** Tags used for search and grouping. */
   tags: readonly string[];
   /** Invocation path describing whether the tool is an LM tool or command bridge. */
-  invocation: 'lm_tool' | 'command';
+  invocation: "lm_tool" | "command";
   /** Optional VS Code command id when the tool is command-backed. */
   commandId?: string;
 }>;
 
 /** Source used to register extension-provided tools. */
-export type ExtensionToolSource = 'lm_tool' | 'mcp_curated';
+export type ExtensionToolSource = "lm_tool" | "mcp_curated";
 
 /** Group of extension-provided tools shown together in settings and search. */
 export type ExtensionToolGroup = Readonly<{
@@ -312,7 +320,16 @@ export type SessionInitPayload = Readonly<{
   /** Currently selected agent in the composer. */
   selectedAgent: AgentType;
   /** Current execution phase of the runtime state machine. */
-  phase: 'phase-0' | 'phase-1' | 'phase-2' | 'phase-3' | 'phase-4' | 'phase-5' | 'phase-6' | 'phase-7' | 'phase-8';
+  phase:
+    | "phase-0"
+    | "phase-1"
+    | "phase-2"
+    | "phase-3"
+    | "phase-4"
+    | "phase-5"
+    | "phase-6"
+    | "phase-7"
+    | "phase-8";
   /** Whether the runtime is currently busy processing a turn. */
   isRunning: boolean;
   /** Human-readable status line shown in the UI. */
@@ -335,6 +352,8 @@ export type SessionInitPayload = Readonly<{
   extensionToolToggles: Readonly<Record<string, boolean>>;
   /** Current workspace change summary. */
   changeSummary: ChangeSummary;
+  /** Draft local attachments that should remain visible in the composer. */
+  localAttachments?: readonly LocalAttachmentPayload[];
   /** Whether older transcript history exists beyond the currently loaded batch. */
   hasOlderMessages?: boolean;
   /** Optional in-flight assistant text stream restored into the composer. */
@@ -397,7 +416,7 @@ export type EvidenceContextPayload = Readonly<{
     /** Optional symbol name associated with the read plan item. */
     symbolName?: string;
     /** Tool expected to satisfy the read plan item. */
-    tool: 'read_file' | 'grep';
+    tool: "read_file" | "grep";
   }>[];
   /** Number of read plan items already confirmed. */
   confirmedReadCount?: number;
@@ -474,79 +493,124 @@ export type ApprovalRequestPayload = Readonly<{
 
 /** Messages sent from the extension host to the webview. */
 export type HostMessage =
-  | Readonly<{ type: 'session-init'; payload: SessionInitPayload }>
-  | Readonly<{ type: 'selected-agent-updated'; payload: {
-      /** Agent selected in the webview composer. */
-      selectedAgent: AgentType;
-    } }>
-  | Readonly<{ type: 'assistant-stream'; payload: {
-      /** Incremental assistant text chunk. */
-      delta: string;
-    } }>
-  | Readonly<{ type: 'assistant-thinking'; payload: {
-      /** Incremental assistant thinking chunk. */
-      delta: string;
-    } }>
-  | Readonly<{ type: 'assistant-message'; payload: ChatMessage }>
-  | Readonly<{ type: 'message-added'; payload: ChatMessage }>
-  | Readonly<{ type: 'selection-updated'; payload: {
-      /** Currently selected file paths in the UI. */
-      selectedFiles: readonly string[];
-    } }>
-  | Readonly<{ type: 'files-updated'; payload: {
-      /** Refreshed file list shown in the selector. */
-      files: readonly FileItem[];
-    } }>
-  | Readonly<{ type: 'approval-request'; payload: ApprovalRequestPayload }>
-  | Readonly<{ type: 'command-stream-start'; payload: CommandStreamStartPayload }>
-  | Readonly<{ type: 'command-stream-chunk'; payload: CommandStreamChunkPayload }>
-  | Readonly<{ type: 'command-stream-end'; payload: CommandStreamEndPayload }>
-  | Readonly<{ type: 'evidence-context'; payload: EvidenceContextPayload }>
-  | Readonly<{ type: 'run-state'; payload: {
-      /** Whether the host is currently executing a turn. */
-      isRunning: boolean;
-      /** Human-readable run state shown in the composer footer. */
-      statusText: string;
-    } }>
-  | Readonly<{ type: 'logs-updated'; payload: {
-      /** Refreshed activity log entries. */
-      logs: readonly LogEntry[];
-    } }>
-  | Readonly<{ type: 'quality-updated'; payload: QualityDetails }>
-  | Readonly<{ type: 'quality-preferences-updated'; payload: QualityPreferences }>
-  | Readonly<{ type: 'tool-capabilities-updated'; payload: ToolCapabilities }>
-  | Readonly<{ type: 'tool-toggles-updated'; payload: ToolToggles }>
-  | Readonly<{ type: 'extension-tool-toggles-updated'; payload: {
-      /** Toggle state for extension-contributed tools. */
-      [key: string]: boolean;
-    } }>
-  | Readonly<{ type: 'change-summary-updated'; payload: ChangeSummary }>
-  | Readonly<{ type: 'transcript-older-loaded'; payload: {
-      /** Older transcript batch prepended ahead of the current oldest visible message. */
-      messages: readonly ChatMessage[];
-      /** Whether even older transcript history is still available after this batch. */
-      hasOlderMessages: boolean;
-    } }>
-  | Readonly<{ type: 'figma-attachment-resolved'; payload: {
-      /** Resolved Figma attachment metadata. */
-      attachment: FigmaAttachment;
-      /** Whether the resolution is for transcript attach or preview. */
-      purpose: 'attach' | 'preview';
-    } }>
-  | Readonly<{ type: 'local-attachment-added'; payload: {
-      /** Newly stored local attachment metadata. */
-      attachment: LocalAttachmentPayload;
-    } }>
-  | Readonly<{ type: 'error'; payload: {
-      /** User-facing error message. */
-      message: string;
-    } }>;
+  | Readonly<{ type: "session-init"; payload: SessionInitPayload }>
+  | Readonly<{
+      type: "selected-agent-updated";
+      payload: {
+        /** Agent selected in the webview composer. */
+        selectedAgent: AgentType;
+      };
+    }>
+  | Readonly<{
+      type: "assistant-stream";
+      payload: {
+        /** Incremental assistant text chunk. */
+        delta: string;
+      };
+    }>
+  | Readonly<{
+      type: "assistant-thinking";
+      payload: {
+        /** Incremental assistant thinking chunk. */
+        delta: string;
+      };
+    }>
+  | Readonly<{ type: "assistant-message"; payload: ChatMessage }>
+  | Readonly<{ type: "message-added"; payload: ChatMessage }>
+  | Readonly<{
+      type: "selection-updated";
+      payload: {
+        /** Currently selected file paths in the UI. */
+        selectedFiles: readonly string[];
+      };
+    }>
+  | Readonly<{
+      type: "files-updated";
+      payload: {
+        /** Refreshed file list shown in the selector. */
+        files: readonly FileItem[];
+      };
+    }>
+  | Readonly<{ type: "approval-request"; payload: ApprovalRequestPayload }>
+  | Readonly<{
+      type: "command-stream-start";
+      payload: CommandStreamStartPayload;
+    }>
+  | Readonly<{
+      type: "command-stream-chunk";
+      payload: CommandStreamChunkPayload;
+    }>
+  | Readonly<{ type: "command-stream-end"; payload: CommandStreamEndPayload }>
+  | Readonly<{ type: "evidence-context"; payload: EvidenceContextPayload }>
+  | Readonly<{
+      type: "run-state";
+      payload: {
+        /** Whether the host is currently executing a turn. */
+        isRunning: boolean;
+        /** Human-readable run state shown in the composer footer. */
+        statusText: string;
+      };
+    }>
+  | Readonly<{
+      type: "logs-updated";
+      payload: {
+        /** Refreshed activity log entries. */
+        logs: readonly LogEntry[];
+      };
+    }>
+  | Readonly<{ type: "quality-updated"; payload: QualityDetails }>
+  | Readonly<{
+      type: "quality-preferences-updated";
+      payload: QualityPreferences;
+    }>
+  | Readonly<{ type: "tool-capabilities-updated"; payload: ToolCapabilities }>
+  | Readonly<{ type: "tool-toggles-updated"; payload: ToolToggles }>
+  | Readonly<{
+      type: "extension-tool-toggles-updated";
+      payload: {
+        /** Toggle state for extension-contributed tools. */
+        [key: string]: boolean;
+      };
+    }>
+  | Readonly<{ type: "change-summary-updated"; payload: ChangeSummary }>
+  | Readonly<{
+      type: "transcript-older-loaded";
+      payload: {
+        /** Older transcript batch prepended ahead of the current oldest visible message. */
+        messages: readonly ChatMessage[];
+        /** Whether even older transcript history is still available after this batch. */
+        hasOlderMessages: boolean;
+      };
+    }>
+  | Readonly<{
+      type: "figma-attachment-resolved";
+      payload: {
+        /** Resolved Figma attachment metadata. */
+        attachment: FigmaAttachment;
+        /** Whether the resolution is for transcript attach or preview. */
+        purpose: "attach" | "preview";
+      };
+    }>
+  | Readonly<{
+      type: "local-attachment-added";
+      payload: {
+        /** Newly stored local attachment metadata. */
+        attachment: LocalAttachmentPayload;
+      };
+    }>
+  | Readonly<{
+      type: "error";
+      payload: {
+        /** User-facing error message. */
+        message: string;
+      };
+    }>;
 
 /** Messages sent from the webview back to the extension host. */
 export type WebviewMessage =
-  | Readonly<{ type: 'webview-ready' }>
+  | Readonly<{ type: "webview-ready" }>
   | Readonly<{
-      type: 'chat-send';
+      type: "chat-send";
       payload: {
         /** User-authored message text sent to the host. */
         content: string;
@@ -566,86 +630,134 @@ export type WebviewMessage =
         fullAccessEnabled?: boolean;
       };
     }>
-  | Readonly<{ type: 'quality-set'; payload: QualityPreferences }>
-  | Readonly<{ type: 'tool-capabilities-set'; payload: ToolCapabilities }>
-  | Readonly<{ type: 'tool-toggles-set'; payload: ToolToggles }>
-  | Readonly<{ type: 'extension-tool-toggles-set'; payload: {
-      /** Updated enablement state for extension-contributed tools. */
-      [key: string]: boolean;
-    } }>
-  | Readonly<{ type: 'composer-command'; payload: {
-      /** Composer command identifier to execute. */
-      id: 'config' | 'reset' | 'clear';
-    } }>
-  | Readonly<{ type: 'attachment-add-local'; payload: {
-      /** Original file name chosen by the user. */
-      name: string;
-      /** Browser-reported MIME type for the attachment. */
-      mimeType: string;
-      /** Base64 or data URL payload of the attachment. */
-      dataUrl: string;
-    } }>
-  | Readonly<{ type: 'attachment-remove'; payload: {
-      /** Attachment id to remove from pending state. */
-      attachmentId: string;
-    } }>
-  | Readonly<{ type: 'review-open' }>
-  | Readonly<{ type: 'review-finding-dismiss'; payload: {
-      /** Review finding id to dismiss. */
-      findingId: string;
-    } }>
-  | Readonly<{ type: 'review-finding-apply'; payload: {
-      /** Review finding id to apply or navigate to. */
-      findingId: string;
-    } }>
-  | Readonly<{ type: 'revert-all-changes' }>
-  | Readonly<{ type: 'revert-file-change'; payload: {
-      /** File path whose pending changes should be reverted. */
-      filePath: string;
-    } }>
-  | Readonly<{ type: 'file-toggle'; payload: {
-      /** File path whose selection state changed. */
-      filePath: string;
-      /** Updated selected state for the file. */
-      selected: boolean;
-    } }>
-  | Readonly<{ type: 'file-open'; payload: {
-      /** File path that should be opened in the editor. */
-      filePath: string;
-    } }>
-  | Readonly<{ type: 'file-diff'; payload: {
-      /** File path whose diff should be opened. */
-      filePath: string;
-    } }>
-  | Readonly<{ type: 'transcript-load-older'; payload: {
-      /** Current oldest loaded transcript message id. */
-      oldestMessageId?: string;
-      /** Number of older messages requested from storage. */
-      batchSize?: number;
-    } }>
-  | Readonly<{ type: 'link-open'; payload: {
-      /** URL or href that should be opened externally. */
-      href: string;
-    } }>
-  | Readonly<{ type: 'terminal-snippet-run'; payload: {
-      /** Code snippet or command fragment to execute. */
-      code: string;
-      /** Optional language hint used to choose execution behavior. */
-      language?: string;
-    } }>
-  | Readonly<{ type: 'approval-response'; payload: {
-      /** Approval request id being answered. */
-      requestId: string;
-      /** User decision for the pending approval request. */
-      decision: ToolApprovalDecision;
-    } }>
-  | Readonly<{ type: 'resolve-figma-attachment'; payload: {
-      /** Figma import id that should be resolved. */
-      importId: string;
-      /** Whether the resolution is for transcript attach or preview. */
-      purpose: 'attach' | 'preview';
-    } }>
-  | Readonly<{ type: 'shell-open-terminal'; payload: {
-      /** Tool call id whose terminal should be revealed. */
-      toolCallId: string;
-    } }>;
+  | Readonly<{ type: "quality-set"; payload: QualityPreferences }>
+  | Readonly<{ type: "tool-capabilities-set"; payload: ToolCapabilities }>
+  | Readonly<{ type: "tool-toggles-set"; payload: ToolToggles }>
+  | Readonly<{
+      type: "extension-tool-toggles-set";
+      payload: {
+        /** Updated enablement state for extension-contributed tools. */
+        [key: string]: boolean;
+      };
+    }>
+  | Readonly<{
+      type: "composer-command";
+      payload: {
+        /** Composer command identifier to execute. */
+        id: "config" | "reset" | "clear";
+      };
+    }>
+  | Readonly<{
+      type: "attachment-add-local";
+      payload: {
+        /** Original file name chosen by the user. */
+        name: string;
+        /** Browser-reported MIME type for the attachment. */
+        mimeType: string;
+        /** Base64 or data URL payload of the attachment. */
+        dataUrl: string;
+      };
+    }>
+  | Readonly<{
+      type: "attachment-remove";
+      payload: {
+        /** Attachment id to remove from pending state. */
+        attachmentId: string;
+      };
+    }>
+  | Readonly<{ type: "review-open" }>
+  | Readonly<{
+      type: "review-finding-dismiss";
+      payload: {
+        /** Review finding id to dismiss. */
+        findingId: string;
+      };
+    }>
+  | Readonly<{
+      type: "review-finding-apply";
+      payload: {
+        /** Review finding id to apply or navigate to. */
+        findingId: string;
+      };
+    }>
+  | Readonly<{ type: "revert-all-changes" }>
+  | Readonly<{
+      type: "revert-file-change";
+      payload: {
+        /** File path whose pending changes should be reverted. */
+        filePath: string;
+      };
+    }>
+  | Readonly<{
+      type: "file-toggle";
+      payload: {
+        /** File path whose selection state changed. */
+        filePath: string;
+        /** Updated selected state for the file. */
+        selected: boolean;
+      };
+    }>
+  | Readonly<{
+      type: "file-open";
+      payload: {
+        /** File path that should be opened in the editor. */
+        filePath: string;
+      };
+    }>
+  | Readonly<{
+      type: "file-diff";
+      payload: {
+        /** File path whose diff should be opened. */
+        filePath: string;
+      };
+    }>
+  | Readonly<{
+      type: "transcript-load-older";
+      payload: {
+        /** Current oldest loaded transcript message id. */
+        oldestMessageId?: string;
+        /** Number of older messages requested from storage. */
+        batchSize?: number;
+      };
+    }>
+  | Readonly<{
+      type: "link-open";
+      payload: {
+        /** URL or href that should be opened externally. */
+        href: string;
+      };
+    }>
+  | Readonly<{
+      type: "terminal-snippet-run";
+      payload: {
+        /** Code snippet or command fragment to execute. */
+        code: string;
+        /** Optional language hint used to choose execution behavior. */
+        language?: string;
+      };
+    }>
+  | Readonly<{
+      type: "approval-response";
+      payload: {
+        /** Approval request id being answered. */
+        requestId: string;
+        /** User decision for the pending approval request. */
+        decision: ToolApprovalDecision;
+      };
+    }>
+  | Readonly<{
+      type: "resolve-figma-attachment";
+      payload: {
+        /** Figma import id that should be resolved. */
+        importId: string;
+        /** Whether the resolution is for transcript attach or preview. */
+        purpose: "attach" | "preview";
+      };
+    }>
+  | Readonly<{
+      type: "shell-open-terminal";
+      payload: {
+        /** Tool call id whose terminal should be revealed. */
+        toolCallId: string;
+      };
+    }>;

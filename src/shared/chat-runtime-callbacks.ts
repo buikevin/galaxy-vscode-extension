@@ -20,6 +20,10 @@ export type RuntimeToolBindings = Readonly<{
   refreshWorkspaceFiles: () => Promise<void>;
   /** Opens the tracked diff viewer tool for one file. */
   openTrackedDiff: (filePath: string) => Promise<ToolResult>;
+  /** Starts one frontend preview session from discovered workspace apps. */
+  startFrontendPreview?: FileToolContext["startFrontendPreview"];
+  /** Opens one Draw.io diagram using a supported custom editor when available. */
+  openDrawioDiagram: (filePath: string) => Promise<ToolResult>;
   /** Returns VS Code problem diagnostics for an optional file. */
   showProblems: (filePath?: string) => Promise<ToolResult>;
   /** Searches the workspace through the native search tool. */

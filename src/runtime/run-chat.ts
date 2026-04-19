@@ -6,36 +6,51 @@
  * @desc Orchestrate one extension chat turn, including prompt building, tool execution, approvals, review, and session tracking.
  */
 
-import type { GalaxyConfig } from '../shared/config';
+import type { GalaxyConfig } from "../shared/config";
 import {
   askActionApproval,
   buildPermissionContextBlock,
   denyActionApproval,
   getCommandPermission,
   grantActionApproval,
-} from '../context/action-approval-store';
-import { mapPathsToProjectScope, resolveEffectiveProjectPath } from '../context/active-project';
-import { computeWorkingContextBudget, estimateTokens } from '../context/compaction';
-import { buildPromptContext } from '../context/prompt-builder';
-import { appendTelemetryEvent } from '../context/telemetry';
-import type { HistoryManager } from '../context/entities/history-manager';
-import { scheduleWorkflowGraphRefresh } from '../context/workflow/extractor/runtime';
-import { evaluateWorkflowRereadGuard } from '../context/workflow/reread-guard';
-import type { AgentType, ChatMessage, ToolApprovalDecision } from '../shared/protocol';
-import type { PendingActionApproval, RunResult } from '../shared/runtime';
+} from "../context/action-approval-store";
 import {
-  executeToolAsync,
-} from '../tools/file/dispatch';
-import { getEnabledToolDefinitions, isToolEnabled } from '../tools/file/definitions';
-import { normalizeToolName } from '../tools/file/tooling';
-import type { FileToolContext, ToolCall } from '../tools/entities/file-tools';
-import { runCodeReviewTool } from './code-reviewer';
-import { buildApprovalRequest, getBlockedCapability } from './chat-approvals';
-import { createDriver } from './driver-factory';
-import { derivePromptContextHints } from './drivers/message-builders';
-import { captureWorkspaceSnapshot, getSessionFiles, trackWorkspaceChanges } from './session-tracker';
-import { buildSystemPrompt } from './system-prompt';
-import type { StreamChunk } from '../shared/runtime';
+  mapPathsToProjectScope,
+  resolveEffectiveProjectPath,
+} from "../context/active-project";
+import {
+  computeWorkingContextBudget,
+  estimateTokens,
+} from "../context/compaction";
+import { buildPromptContext } from "../context/prompt-builder";
+import { appendTelemetryEvent } from "../context/telemetry";
+import type { HistoryManager } from "../context/entities/history-manager";
+import { scheduleWorkflowGraphRefresh } from "../context/workflow/extractor/runtime";
+import { evaluateWorkflowRereadGuard } from "../context/workflow/reread-guard";
+import type {
+  AgentType,
+  ChatMessage,
+  ToolApprovalDecision,
+} from "../shared/protocol";
+import type { PendingActionApproval, RunResult } from "../shared/runtime";
+import { executeToolAsync } from "../tools/file/dispatch";
+import {
+  getEnabledToolDefinitions,
+  isToolEnabled,
+} from "../tools/file/definitions";
+import { normalizeToolName } from "../tools/file/tooling";
+import type { FileToolContext, ToolCall } from "../tools/entities/file-tools";
+import { runCodeReviewTool } from "./code-reviewer";
+import { buildApprovalRequest, getBlockedCapability } from "./chat-approvals";
+import { createDriver } from "./driver-factory";
+import { derivePromptContextHints } from "./drivers/message-builders";
+import {
+  captureWorkspaceSnapshot,
+  getSessionFiles,
+  trackWorkspaceChanges,
+} from "./session-tracker";
+import { buildSystemPrompt } from "./system-prompt";
+import type { StreamChunk } from "../shared/runtime";
 
 /**
  * Creates a stable-ish message id for transcript entries generated during one run.
@@ -53,38 +68,49 @@ function createMessageId(): string {
  * @param result Raw tool result returned by dispatch.
  * @returns Transcript-safe tool message content.
  */
-function formatToolResultContent(toolName: string, result: Readonly<{
-  success: boolean;
-  content: string;
-  error?: string;
-  meta?: Readonly<Record<string, unknown>>;
-}>): string {
+function formatToolResultContent(
+  toolName: string,
+  result: Readonly<{
+    success: boolean;
+    content: string;
+    error?: string;
+    meta?: Readonly<Record<string, unknown>>;
+  }>,
+): string {
   if (!result.success) {
-    return `Error: ${result.error ?? (result.content || 'Unknown error')}`;
+    return `Error: ${result.error ?? (result.content || "Unknown error")}`;
   }
 
-  const commandState = typeof result.meta?.commandState === 'string' ? String(result.meta.commandState) : '';
+  const commandState =
+    typeof result.meta?.commandState === "string"
+      ? String(result.meta.commandState)
+      : "";
   const isBackgroundRunning =
     result.meta?.background === true &&
-    (result.meta?.running === true || commandState === 'running');
+    (result.meta?.running === true || commandState === "running");
   if (isBackgroundRunning) {
     const commandLabel =
-      typeof result.meta?.commandLabel === 'string' && result.meta.commandLabel.trim()
+      typeof result.meta?.commandLabel === "string" &&
+      result.meta.commandLabel.trim()
         ? result.meta.commandLabel
         : toolName;
     const commandId =
-      typeof result.meta?.commandId === 'string' && result.meta.commandId.trim()
+      typeof result.meta?.commandId === "string" && result.meta.commandId.trim()
         ? result.meta.commandId
-        : '';
+        : "";
     return [
       `Command started and is still running in the background: ${commandLabel}`,
       ...(commandId ? [`commandId: ${commandId}`] : []),
-      ...(commandId ? [`Use await_terminal_command with commandId "${commandId}" to wait for completion.`] : []),
-      'Use View terminal to inspect live output while Galaxy continues working.',
-    ].join('\n');
+      ...(commandId
+        ? [
+            `Use await_terminal_command with commandId "${commandId}" to wait for completion.`,
+          ]
+        : []),
+      "Use View terminal to inspect live output while Galaxy continues working.",
+    ].join("\n");
   }
 
-  return result.content || '(no output)';
+  return result.content || "(no output)";
 }
 
 /**
@@ -100,7 +126,13 @@ export async function runExtensionChat(opts: {
   toolContext: FileToolContext;
   onChunk: (chunk: StreamChunk) => Promise<void> | void;
   onMessage: (message: ChatMessage) => Promise<void> | void;
-  onToolCalls?: (toolCalls: readonly Readonly<{ id: string; name: string; params: Record<string, unknown> }>[]) => Promise<void> | void;
+  onToolCalls?: (
+    toolCalls: readonly Readonly<{
+      id: string;
+      name: string;
+      params: Record<string, unknown>;
+    }>[],
+  ) => Promise<void> | void;
   onStatus?: (statusText: string) => Promise<void> | void;
   onEvidenceContext?: (payload: {
     content: string;
@@ -116,17 +148,19 @@ export async function runExtensionChat(opts: {
       evidenceSummary?: string;
       targetPath: string;
       symbolName?: string;
-      tool: 'read_file' | 'grep';
+      tool: "read_file" | "grep";
     }>[];
     confirmedReadCount?: number;
   }) => Promise<void> | void;
-  requestToolApproval: (approval: PendingActionApproval) => Promise<ToolApprovalDecision>;
+  requestToolApproval: (
+    approval: PendingActionApproval,
+  ) => Promise<ToolApprovalDecision>;
 }): Promise<RunResult> {
   const driver = createDriver(opts.config, opts.agentType, true);
   const workspacePath = opts.historyManager.getSessionMemory().workspacePath;
   appendTelemetryEvent(workspacePath, {
-    kind: 'capability_snapshot',
-    source: 'chat_turn',
+    kind: "capability_snapshot",
+    source: "chat_turn",
     agentType: opts.agentType,
     enabledCapabilities: Object.freeze(
       Object.entries(opts.config.toolCapabilities)
@@ -137,14 +171,19 @@ export async function runExtensionChat(opts: {
   });
   const filesWritten = new Set<string>();
   const maxToolRounds =
-    typeof opts.config.maxToolRounds === 'number' && Number.isFinite(opts.config.maxToolRounds)
+    typeof opts.config.maxToolRounds === "number" &&
+    Number.isFinite(opts.config.maxToolRounds)
       ? Math.max(1, Math.floor(opts.config.maxToolRounds))
       : null;
   const toolSchemaTokens = estimateTokens(
     JSON.stringify(getEnabledToolDefinitions(opts.config)),
   );
 
-  for (let round = 0; maxToolRounds === null || round < maxToolRounds; round += 1) {
+  for (
+    let round = 0;
+    maxToolRounds === null || round < maxToolRounds;
+    round += 1
+  ) {
     const buildRoundPrompt = async () => {
       const promptBuild = await buildPromptContext({
         agentType: opts.agentType,
@@ -160,7 +199,9 @@ export async function runExtensionChat(opts: {
         ),
       );
       const permissionsBlock = buildPermissionContextBlock(workspacePath);
-      const permissionTokens = permissionsBlock ? estimateTokens(permissionsBlock) : 0;
+      const permissionTokens = permissionsBlock
+        ? estimateTokens(permissionsBlock)
+        : 0;
       const promptTokensEstimate =
         promptBuild.finalPromptTokens +
         systemPromptTokens +
@@ -187,7 +228,7 @@ export async function runExtensionChat(opts: {
         break;
       }
       appendTelemetryEvent(workspacePath, {
-        kind: 'working_turn_compacted',
+        kind: "working_turn_compacted",
         promptTokensEstimate: roundPrompt.promptTokensEstimate,
         workingTurnBudget,
         workingTurnTokens: roundPrompt.promptBuild.workingTurnTokens,
@@ -212,38 +253,38 @@ export async function runExtensionChat(opts: {
           ...promptBuild.messages,
           Object.freeze({
             id: `ctx-command-permissions-${Date.now()}`,
-            role: 'user' as const,
+            role: "user" as const,
             content: permissionsBlock,
             timestamp: Date.now(),
           }),
         ])
       : promptBuild.messages;
 
-    let roundText = '';
-    let roundThinking = '';
-    let errorMessage = '';
+    let roundText = "";
+    let roundThinking = "";
+    let errorMessage = "";
     const pendingToolCalls: ToolCall[] = [];
 
     await driver.chat(messages, async (chunk) => {
-      if (chunk.type === 'text') {
+      if (chunk.type === "text") {
         roundText += chunk.delta;
         await opts.onChunk(chunk);
         return;
       }
 
-      if (chunk.type === 'thinking') {
+      if (chunk.type === "thinking") {
         roundThinking += chunk.delta;
         await opts.onChunk(chunk);
         return;
       }
 
-      if (chunk.type === 'tool_call') {
+      if (chunk.type === "tool_call") {
         pendingToolCalls.push(chunk.call);
         await opts.onStatus?.(`Tool: ${normalizeToolName(chunk.call.name)}`);
         return;
       }
 
-      if (chunk.type === 'error') {
+      if (chunk.type === "error") {
         errorMessage = chunk.message;
         await opts.onChunk(chunk);
       }
@@ -270,15 +311,17 @@ export async function runExtensionChat(opts: {
       });
     }
 
-    const assistantToolCalls = pendingToolCalls.map((call) => Object.freeze({
-      id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      name: normalizeToolName(call.name),
-      params: call.params,
-    }));
+    const assistantToolCalls = pendingToolCalls.map((call) =>
+      Object.freeze({
+        id: `call_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        name: normalizeToolName(call.name),
+        params: call.params,
+      }),
+    );
 
     const assistantContextMessage: ChatMessage = Object.freeze({
       id: createMessageId(),
-      role: 'assistant',
+      role: "assistant",
       content: roundText,
       agentType: opts.agentType,
       ...(roundThinking.trim() ? { thinking: roundThinking } : {}),
@@ -299,13 +342,13 @@ export async function runExtensionChat(opts: {
 
       if (!isToolEnabled(toolName, opts.config)) {
         appendTelemetryEvent(workspacePath, {
-          kind: 'blocked_tool',
+          kind: "blocked_tool",
           toolName,
           capability: getBlockedCapability(toolName),
         });
         const disabledToolMessage: ChatMessage = Object.freeze({
           id: createMessageId(),
-          role: 'tool',
+          role: "tool",
           content: `Error: ${toolName} is disabled in config.`,
           timestamp: Date.now(),
           toolName,
@@ -324,12 +367,15 @@ export async function runExtensionChat(opts: {
         toolName,
         params: call.params,
       });
-      if (toolName === 'run_project_command' && approvalRequest) {
-        const permission = getCommandPermission(workspacePath, approvalRequest.approvalKey);
-        if (permission === 'deny') {
+      if (toolName === "run_project_command" && approvalRequest) {
+        const permission = getCommandPermission(
+          workspacePath,
+          approvalRequest.approvalKey,
+        );
+        if (permission === "deny") {
           const deniedToolMessage: ChatMessage = Object.freeze({
             id: createMessageId(),
-            role: 'tool',
+            role: "tool",
             content: `Permission denied by user for command: ${approvalRequest.approvalKey}`,
             timestamp: Date.now(),
             toolName,
@@ -342,17 +388,21 @@ export async function runExtensionChat(opts: {
           continue;
         }
 
-        if (permission !== 'allow') {
+        if (permission !== "allow") {
           const decision = await opts.requestToolApproval(approvalRequest);
-          if (decision === 'allow') {
-            grantActionApproval(workspacePath, approvalRequest.approvalKey, toolName);
-          } else if (decision === 'ask') {
+          if (decision === "allow") {
+            grantActionApproval(
+              workspacePath,
+              approvalRequest.approvalKey,
+              toolName,
+            );
+          } else if (decision === "ask") {
             askActionApproval(workspacePath, approvalRequest.approvalKey);
-          } else if (decision === 'deny') {
+          } else if (decision === "deny") {
             denyActionApproval(workspacePath, approvalRequest.approvalKey);
             const deniedToolMessage: ChatMessage = Object.freeze({
               id: createMessageId(),
-              role: 'tool',
+              role: "tool",
               content: `Permission denied by user for command: ${approvalRequest.approvalKey}`,
               timestamp: Date.now(),
               toolName,
@@ -367,11 +417,11 @@ export async function runExtensionChat(opts: {
         }
       } else if (approvalRequest) {
         const decision = await opts.requestToolApproval(approvalRequest);
-        if (decision === 'deny') {
+        if (decision === "deny") {
           const deniedToolMessage: ChatMessage = Object.freeze({
             id: createMessageId(),
-            role: 'tool',
-          content: `Permission denied by user for ${toolName}.`,
+            role: "tool",
+            content: `Permission denied by user for ${toolName}.`,
             timestamp: Date.now(),
             toolName,
             toolParams: Object.freeze(call.params),
@@ -393,7 +443,7 @@ export async function runExtensionChat(opts: {
       if (workflowGuardDecision.blocked) {
         const blockedToolMessage: ChatMessage = Object.freeze({
           id: createMessageId(),
-          role: 'tool',
+          role: "tool",
           content: `Error: ${workflowGuardDecision.reason}`,
           timestamp: Date.now(),
           toolName,
@@ -401,8 +451,8 @@ export async function runExtensionChat(opts: {
           toolSuccess: false,
           toolCallId: toolCall.id,
           toolMeta: Object.freeze({
-            blockedBy: 'workflow_reread_guard',
-            relativePath: workflowGuardDecision.relativePath ?? '',
+            blockedBy: "workflow_reread_guard",
+            relativePath: workflowGuardDecision.relativePath ?? "",
           }),
         });
         opts.historyManager.appendToolMessage(blockedToolMessage);
@@ -412,16 +462,17 @@ export async function runExtensionChat(opts: {
 
       await opts.onStatus?.(`Executing: ${toolName}`);
       const shouldTrackWorkspaceChanges = [
-        'run_project_command',
-        'galaxy_design_init',
-        'galaxy_design_add',
+        "run_project_command",
+        "galaxy_design_init",
+        "galaxy_design_add",
       ].includes(toolName);
       const workspaceSnapshotBefore = shouldTrackWorkspaceChanges
         ? captureWorkspaceSnapshot(workspacePath)
         : null;
       const result =
-        toolName === 'request_code_review'
+        toolName === "request_code_review"
           ? await runCodeReviewTool({
+              workspacePath,
               sessionFiles: getSessionFiles(),
               config: opts.config,
               agentType: opts.agentType,
@@ -431,7 +482,10 @@ export async function runExtensionChat(opts: {
                 ...call,
                 params: Object.freeze({
                   ...call.params,
-                  ...(toolName === 'run_project_command' || toolName === 'run_terminal_command' ? { toolCallId: toolCall.id } : {}),
+                  ...(toolName === "run_project_command" ||
+                  toolName === "run_terminal_command"
+                    ? { toolCallId: toolCall.id }
+                    : {}),
                 }),
               }),
               opts.toolContext,
@@ -445,18 +499,23 @@ export async function runExtensionChat(opts: {
         toolCallId: toolCall.id,
       });
       const touchedPath =
-        typeof result.meta?.filePath === 'string'
+        typeof result.meta?.filePath === "string"
           ? result.meta.filePath
-          : typeof result.meta?.targetPath === 'string'
+          : typeof result.meta?.targetPath === "string"
             ? result.meta.targetPath
             : null;
       if (
         result.success &&
         touchedPath &&
-        (
-          ['write_file', 'insert_file_at_line', 'edit_file', 'edit_file_range', 'multi_edit_file_ranges'].includes(toolName) ||
-          ['galaxy_design_init', 'galaxy_design_add'].includes(toolName)
-        )
+        ([
+          "write_file",
+          "create_drawio_diagram",
+          "insert_file_at_line",
+          "edit_file",
+          "edit_file_range",
+          "multi_edit_file_ranges",
+        ].includes(toolName) ||
+          ["galaxy_design_init", "galaxy_design_add"].includes(toolName))
       ) {
         filesWritten.add(touchedPath);
       }
@@ -464,15 +523,24 @@ export async function runExtensionChat(opts: {
       if (
         result.success &&
         touchedPath &&
-        (
-          ['write_file', 'insert_file_at_line', 'edit_file', 'edit_file_range', 'multi_edit_file_ranges', 'revert_file'].includes(toolName) ||
-          ['galaxy_design_init', 'galaxy_design_add'].includes(toolName)
-        )
+        ([
+          "write_file",
+          "create_drawio_diagram",
+          "insert_file_at_line",
+          "edit_file",
+          "edit_file_range",
+          "multi_edit_file_ranges",
+          "revert_file",
+        ].includes(toolName) ||
+          ["galaxy_design_init", "galaxy_design_add"].includes(toolName))
       ) {
         workflowRefreshPaths.add(touchedPath);
       }
       if (result.success && workspaceSnapshotBefore) {
-        for (const changedPath of trackWorkspaceChanges(workspacePath, workspaceSnapshotBefore)) {
+        for (const changedPath of trackWorkspaceChanges(
+          workspacePath,
+          workspaceSnapshotBefore,
+        )) {
           filesWritten.add(changedPath);
           workflowRefreshPaths.add(changedPath);
         }
@@ -480,7 +548,8 @@ export async function runExtensionChat(opts: {
       if (result.success && workflowRefreshPaths.size > 0) {
         const workflowRefreshWorkspacePath = resolveEffectiveProjectPath({
           workspacePath,
-          activeProjectPath: opts.historyManager.getSessionMemory().activeProjectPath,
+          activeProjectPath:
+            opts.historyManager.getSessionMemory().activeProjectPath,
           candidateFilePaths: [...workflowRefreshPaths],
         });
         const scopedWorkflowRefreshPaths = mapPathsToProjectScope(
@@ -495,7 +564,7 @@ export async function runExtensionChat(opts: {
       }
       const toolMessage: ChatMessage = Object.freeze({
         id: createMessageId(),
-        role: 'tool',
+        role: "tool",
         content: formatToolResultContent(toolName, result),
         timestamp: Date.now(),
         toolName,
@@ -513,9 +582,9 @@ export async function runExtensionChat(opts: {
   }
 
   return Object.freeze({
-    assistantText: '',
-    assistantThinking: '',
-    errorMessage: `Agent exceeded the configured maximum tool rounds (${maxToolRounds ?? 'unlimited'}).`,
+    assistantText: "",
+    assistantThinking: "",
+    errorMessage: `Agent exceeded the configured maximum tool rounds (${maxToolRounds ?? "unlimited"}).`,
     filesWritten: Object.freeze([...filesWritten]),
   });
 }

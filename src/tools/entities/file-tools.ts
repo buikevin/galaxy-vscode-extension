@@ -6,8 +6,11 @@
  * @desc Shared tool-layer entities for VS Code file tools.
  */
 
-import type { GalaxyConfig } from '../../shared/config';
-import type { ExtensionToolGroup, ExtensionToolItem } from '../../shared/protocol';
+import type { GalaxyConfig } from "../../shared/config";
+import type {
+  ExtensionToolGroup,
+  ExtensionToolItem,
+} from "../../shared/protocol";
 
 export type ToolResult = Readonly<{
   /** Whether the tool completed successfully. */
@@ -54,8 +57,16 @@ export type FileToolContext = Readonly<{
   refreshWorkspaceFiles: () => Promise<void>;
   /** Opens a tracked diff for a file. */
   openTrackedDiff?: (filePath: string) => Promise<ToolResult>;
+  /** Starts a local frontend preview session from discovered workspace apps. */
+  startFrontendPreview?: (
+    options?: Readonly<{
+      query?: string;
+    }>,
+  ) => Promise<ToolResult>;
   /** Shows current problems for a file or workspace. */
   showProblems?: (filePath?: string) => Promise<ToolResult>;
+  /** Opens one Draw.io diagram using a supported custom editor when available. */
+  openDrawioDiagram?: (filePath: string) => Promise<ToolResult>;
   /** Uses workspace search with optional filters. */
   workspaceSearch?: (
     query: string,
@@ -78,7 +89,11 @@ export type FileToolContext = Readonly<{
     }>,
   ) => Promise<ToolResult>;
   /** Executes an extension command by id. */
-  executeExtensionCommand?: (commandId: string, title: string, extensionId: string) => Promise<ToolResult>;
+  executeExtensionCommand?: (
+    commandId: string,
+    title: string,
+    extensionId: string,
+  ) => Promise<ToolResult>;
   /** Invokes a language-model-backed extension tool. */
   invokeLanguageModelTool?: (
     toolName: string,
@@ -87,7 +102,10 @@ export type FileToolContext = Readonly<{
     input: Readonly<Record<string, unknown>>,
   ) => Promise<ToolResult>;
   /** Searches discoverable extension tools. */
-  searchExtensionTools?: (query: string, maxResults?: number) => Promise<ToolResult>;
+  searchExtensionTools?: (
+    query: string,
+    maxResults?: number,
+  ) => Promise<ToolResult>;
   /** Activates selected extension tools. */
   activateExtensionTools?: (toolKeys: readonly string[]) => Promise<ToolResult>;
   /** Returns the latest persisted test failure. */
@@ -99,22 +117,41 @@ export type FileToolContext = Readonly<{
   /** Dismisses one persisted review finding. */
   dismissReviewFinding?: (findingId: string) => Promise<ToolResult>;
   /** Signals that a managed project command started. */
-  onProjectCommandStart?: (payload: Readonly<{ toolCallId: string; commandText: string; cwd: string; startedAt: number }>) => Promise<void> | void;
+  onProjectCommandStart?: (
+    payload: Readonly<{
+      toolCallId: string;
+      commandText: string;
+      cwd: string;
+      startedAt: number;
+    }>,
+  ) => Promise<void> | void;
   /** Streams project-command output chunks. */
-  onProjectCommandChunk?: (payload: Readonly<{ toolCallId: string; chunk: string }>) => Promise<void> | void;
+  onProjectCommandChunk?: (
+    payload: Readonly<{ toolCallId: string; chunk: string }>,
+  ) => Promise<void> | void;
   /** Signals project-command completion metadata. */
-  onProjectCommandEnd?: (payload: Readonly<{ toolCallId: string; exitCode: number; success: boolean; durationMs: number; background?: boolean }>) => Promise<void> | void;
+  onProjectCommandEnd?: (
+    payload: Readonly<{
+      toolCallId: string;
+      exitCode: number;
+      success: boolean;
+      durationMs: number;
+      background?: boolean;
+    }>,
+  ) => Promise<void> | void;
   /** Reports final project-command output. */
-  onProjectCommandComplete?: (payload: Readonly<{
-    toolCallId: string;
-    commandText: string;
-    cwd: string;
-    exitCode: number;
-    success: boolean;
-    durationMs: number;
-    output: string;
-    background: boolean;
-  }>) => Promise<void> | void;
+  onProjectCommandComplete?: (
+    payload: Readonly<{
+      toolCallId: string;
+      commandText: string;
+      cwd: string;
+      exitCode: number;
+      success: boolean;
+      durationMs: number;
+      output: string;
+      background: boolean;
+    }>,
+  ) => Promise<void> | void;
 }>;
 
 export type DiscoveredExtensionTool = Readonly<{
@@ -184,7 +221,7 @@ export type WebSearchToolOptions = Readonly<{
   /** Maximum number of search hits to request from Tavily. */
   maxResults?: number;
   /** Search depth requested from Tavily. */
-  searchDepth?: 'basic' | 'advanced';
+  searchDepth?: "basic" | "advanced";
   /** Whether Tavily should include an answer summary. */
   includeAnswer?: boolean;
   /** Whether Tavily should include raw page content. */
@@ -194,7 +231,7 @@ export type WebSearchToolOptions = Readonly<{
   /** Domain denylist applied to the search. */
   excludeDomains?: string[];
   /** Relative freshness window for the search. */
-  timeRange?: 'day' | 'week' | 'month' | 'year';
+  timeRange?: "day" | "week" | "month" | "year";
 }>;
 
 export type WebMapToolOptions = Readonly<{
@@ -220,9 +257,9 @@ export type WebMapToolOptions = Readonly<{
 
 export type WebExtractToolOptions = Readonly<{
   /** Extraction depth requested from Tavily. */
-  extractDepth?: 'basic' | 'advanced';
+  extractDepth?: "basic" | "advanced";
   /** Desired content format for extracted pages. */
-  format?: 'text' | 'markdown';
+  format?: "text" | "markdown";
   /** Semantic query used to bias extraction. */
   query?: string;
   /** Whether extracted image references should be included. */
@@ -241,7 +278,7 @@ export type WebCrawlToolOptions = Readonly<{
   /** Extra crawl instructions sent to Tavily. */
   instructions?: string;
   /** Extraction depth for crawled pages. */
-  extractDepth?: 'basic' | 'advanced';
+  extractDepth?: "basic" | "advanced";
   /** Path allowlist applied during crawl. */
   selectPaths?: string[];
   /** Domain allowlist applied during crawl. */
@@ -255,7 +292,7 @@ export type WebCrawlToolOptions = Readonly<{
   /** Whether extracted image references should be included. */
   includeImages?: boolean;
   /** Desired content format for crawled pages. */
-  format?: 'text' | 'markdown';
+  format?: "text" | "markdown";
   /** Maximum characters to keep per crawled page. */
   maxCharsPerPage?: number;
 }>;

@@ -21,6 +21,17 @@ export const VSCODE_NATIVE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.
     }),
   }),
   Object.freeze({
+    name: 'vscode_start_frontend_preview',
+    description: 'Start a local frontend preview by auto-discovering the best workspace app, launching its dev server, and opening the localhost preview panel.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        query: Object.freeze({ type: 'string', description: 'Optional project, package, or relative path hint used to choose the frontend app to preview' }),
+      }),
+      required: Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
     name: 'vscode_show_problems',
     description: 'Show the native Problems panel and return a compact summary of diagnostics, optionally filtered to one file.',
     parameters: Object.freeze({

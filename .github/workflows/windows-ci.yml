@@ -1,0 +1,43 @@
+name: Extension CI
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+jobs:
+  extension-tests:
+    name: Extension Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    timeout-minutes: 30
+    env:
+      CI: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Compile Test Suite
+        run: yarn run compile-tests
+
+      - name: Run Extension Tests
+        run: yarn test

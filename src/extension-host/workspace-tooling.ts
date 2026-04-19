@@ -21,6 +21,7 @@ import {
   executeExtensionCommandTool as executeNativeExtensionCommandTool,
   findReferencesTool as findNativeReferencesTool,
   invokeLanguageModelToolTool as invokeNativeLanguageModelTool,
+  openDrawioDiagramTool as openNativeDrawioDiagramTool,
   openTrackedDiff as openNativeTrackedDiff,
   openTrackedDiffTool as openNativeTrackedDiffTool,
   openWorkspaceFile as openNativeWorkspaceFile,
@@ -83,6 +84,24 @@ export async function showProblemsTool(
   params: ShowProblemsRequest,
 ): Promise<ToolResult> {
   return showNativeProblemsTool(params);
+}
+
+/** Opens one Draw.io diagram in a supported custom editor or falls back to text. */
+export async function openDrawioDiagramTool(
+  workspacePath: string,
+  filePath: string,
+  asWorkspaceRelative: (filePath: string) => string,
+  appendLog: (
+    level: "info" | "error" | "status" | "approval" | "review" | "validation",
+    message: string,
+  ) => void,
+): Promise<ToolResult> {
+  return openNativeDrawioDiagramTool({
+    workspacePath,
+    filePath,
+    asWorkspaceRelative,
+    appendLog,
+  });
 }
 
 /** Runs one workspace search using the native VS Code search UI. */

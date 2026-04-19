@@ -228,6 +228,107 @@ export async function runValidationAndReviewFlow(
       return Object.freeze({ passed: true, repaired });
     }
 
+    let validationSummary: string | undefined;
+
+    if (shouldRunValidation) {
+      params.callbacks.appendLog(
+        "validation",
+        `Running blocking validation quality gate for ${sessionFiles.length} changed files.`,
+      );
+      await params.callbacks.updateStatus("Running validation quality gate");
+      const validationResult = await runFinalValidation({
+        workspacePath: params.workspacePath,
+        sessionFiles,
+        config: params.callbacks.getEffectiveConfig(),
+        streamCallbacks: {
+          onStart: async (payload) =>
+            params.callbacks.emitCommandStreamStart(payload),
+          onChunk: async (payload) =>
+            params.callbacks.emitCommandStreamChunk(payload),
+          onEnd: async (payload) =>
+            params.callbacks.emitCommandStreamEnd(payload),
+        },
+      });
+      scheduleWorkflowGraphRefresh(params.workspacePath, {
+        reason: "validation",
+        filePaths: sessionFiles.map((file) => file.filePath),
+        delayMs: 250,
+      });
+      params.callbacks.appendLog("validation", validationResult.selectionSummary);
+      validationSummary = formatValidationSummary(validationResult);
+      params.callbacks.updateQualityDetails({
+        validationSummary,
+      });
+
+      const latestFailedRun =
+        validationResult.runs.find(
+          (run) => !run.success && run.category === "test",
+        ) ?? validationResult.runs.find((run) => !run.success);
+      params.callbacks.persistProjectMetaPatch((previousMeta) =>
+        previousMeta
+          ? {
+              ...previousMeta,
+              ...(latestFailedRun
+                ? {
+                    latestTestFailure: Object.freeze({
+                      capturedAt: Date.now(),
+                      summary: latestFailedRun.summary,
+                      command: latestFailedRun.command,
+                      profile: latestFailedRun.profile,
+                      category: latestFailedRun.category,
+                      issues: latestFailedRun.issues,
+                    }),
+                  }
+                : { latestTestFailure: undefined }),
+            }
+          : null,
+      );
+      if (latestFailedRun) {
+        persistValidationFindingsToTaskMemory(
+          params.workspacePath,
+          params.projectStorage,
+          sessionFiles.map((file) => file.filePath),
+          latestFailedRun,
+        );
+      }
+      params.callbacks.appendLog(
+        "validation",
+        validationResult.success
+          ? "Final validation passed."
+          : "Final validation failed.",
+      );
+
+      if (!validationResult.success) {
+        if (validationRepairAttempt >= MAX_AUTO_REPAIR_ATTEMPTS) {
+          return Object.freeze({ passed: false, repaired });
+        }
+
+        validationRepairAttempt += 1;
+        repaired = true;
+        await params.callbacks.addMessage(
+          createAssistantMessage(
+            `Attempting automatic repair from final validation errors (${validationRepairAttempt}/${MAX_AUTO_REPAIR_ATTEMPTS})...`,
+          ),
+        );
+
+        const repairResult = await params.callbacks.runInternalRepairTurn({
+          config: params.callbacks.getEffectiveConfig(),
+          agentType: params.agentType,
+          userMessage: buildValidationRepairMessage(
+            validationResult,
+            validationRepairAttempt,
+          ),
+          showUserMessageInTranscript: false,
+        });
+
+        if (repairResult.hadError || repairResult.filesWritten.length === 0) {
+          return Object.freeze({ passed: false, repaired });
+        }
+
+        continue;
+      }
+    }
+
     if (shouldRunReview) {
       await params.callbacks.updateStatus("Running review quality gate");
       params.callbacks.appendLog(
@@ -235,9 +336,11 @@ export async function runValidationAndReviewFlow(
         "Running blocking review quality gate...",
       );
       const reviewResult = await runCodeReview({
+        workspacePath: params.workspacePath,
         sessionFiles,
         config: params.callbacks.getEffectiveConfig(),
         agentType: params.agentType,
+        ...(validationSummary ? { validationSummary } : {}),
       });
 
       if (!reviewResult) {
@@ -335,105 +438,7 @@ export async function runValidationAndReviewFlow(
       }
     }
 
-    if (!shouldRunValidation) {
-      return Object.freeze({ passed: true, repaired });
-    }
-
-    params.callbacks.appendLog(
-      "validation",
-      `Running blocking validation quality gate for ${sessionFiles.length} changed files.`,
-    );
-    await params.callbacks.updateStatus("Running validation quality gate");
-    const validationResult = await runFinalValidation({
-      workspacePath: params.workspacePath,
-      sessionFiles,
-      config: params.callbacks.getEffectiveConfig(),
-      streamCallbacks: {
-        onStart: async (payload) =>
-          params.callbacks.emitCommandStreamStart(payload),
-        onChunk: async (payload) =>
-          params.callbacks.emitCommandStreamChunk(payload),
-        onEnd: async (payload) =>
-          params.callbacks.emitCommandStreamEnd(payload),
-      },
-    });
-    scheduleWorkflowGraphRefresh(params.workspacePath, {
-      reason: "validation",
-      filePaths: sessionFiles.map((file) => file.filePath),
-      delayMs: 250,
-    });
-    params.callbacks.appendLog("validation", validationResult.selectionSummary);
-    params.callbacks.updateQualityDetails({
-      validationSummary: formatValidationSummary(validationResult),
-    });
-
-    const latestFailedRun =
-      validationResult.runs.find(
-        (run) => !run.success && run.category === "test",
-      ) ?? validationResult.runs.find((run) => !run.success);
-    params.callbacks.persistProjectMetaPatch((previousMeta) =>
-      previousMeta
-        ? {
-            ...previousMeta,
-            ...(latestFailedRun
-              ? {
-                  latestTestFailure: Object.freeze({
-                    capturedAt: Date.now(),
-                    summary: latestFailedRun.summary,
-                    command: latestFailedRun.command,
-                    profile: latestFailedRun.profile,
-                    category: latestFailedRun.category,
-                    issues: latestFailedRun.issues,
-                  }),
-                }
-              : { latestTestFailure: undefined }),
-          }
-        : null,
-    );
-    if (latestFailedRun) {
-      persistValidationFindingsToTaskMemory(
-        params.workspacePath,
-        params.projectStorage,
-        sessionFiles.map((file) => file.filePath),
-        latestFailedRun,
-      );
-    }
-    params.callbacks.appendLog(
-      "validation",
-      validationResult.success
-        ? "Final validation passed."
-        : "Final validation failed.",
-    );
-
-    if (validationResult.success) {
-      return Object.freeze({ passed: true, repaired });
-    }
-
-    if (validationRepairAttempt >= MAX_AUTO_REPAIR_ATTEMPTS) {
-      return Object.freeze({ passed: false, repaired });
-    }
-
-    validationRepairAttempt += 1;
-    repaired = true;
-    await params.callbacks.addMessage(
-      createAssistantMessage(
-        `Attempting automatic repair from final validation errors (${validationRepairAttempt}/${MAX_AUTO_REPAIR_ATTEMPTS})...`,
-      ),
-    );
-
-    const repairResult = await params.callbacks.runInternalRepairTurn({
-      config: params.callbacks.getEffectiveConfig(),
-      agentType: params.agentType,
-      userMessage: buildValidationRepairMessage(
-        validationResult,
-        validationRepairAttempt,
-      ),
-      showUserMessageInTranscript: false,
-    });
-
-    if (repairResult.hadError || repairResult.filesWritten.length === 0) {
-      return Object.freeze({ passed: false, repaired });
-    }
+    return Object.freeze({ passed: true, repaired });
   }
 }
 function persistReviewFindingsToTaskMemory(

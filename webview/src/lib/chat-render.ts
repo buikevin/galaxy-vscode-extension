@@ -44,7 +44,15 @@ export function buildListDirEntries(message: ChatMessage): ListDirEntry[] {
 
   const basePath =
     typeof message.toolParams?.path === "string" ? message.toolParams.path : "";
-  const lines = message.content.split("\n").filter((line) => line.trim());
+  const lines = message.content.split("\n").filter((line) => {
+    const trimmed = line.trim();
+    return (
+      trimmed.length > 0 &&
+      trimmed !== "(empty directory)" &&
+      !trimmed.startsWith("Top-level entries:") &&
+      !trimmed.startsWith("... [truncated")
+    );
+  });
   const segmentStack: string[] = [];
   const entries: ListDirEntry[] = [];
 

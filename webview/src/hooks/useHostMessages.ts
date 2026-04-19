@@ -188,7 +188,16 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         options.setStreamingAssistant(message.payload.streamingAssistant ?? "");
         options.setStreamingThinking(message.payload.streamingThinking ?? "");
         options.setFigmaAttachments([]);
-        options.setLocalAttachments([]);
+        options.setLocalAttachments(
+          (message.payload.localAttachments ?? []).map((attachment) => ({
+            attachmentId: attachment.attachmentId,
+            name: attachment.name,
+            isImage: attachment.isImage,
+            ...(attachment.previewDataUrl
+              ? { previewUrl: attachment.previewDataUrl }
+              : {}),
+          }))
+        );
         options.setPreviewAsset(null);
         options.setIsPlusMenuOpen(false);
         options.setApprovalRequest(message.payload.approvalRequest ?? null);
@@ -381,9 +390,7 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         return;
       case "change-summary-updated":
         options.setChangeSummary(message.payload);
-        if (message.payload.fileCount === 0) {
-          options.setKeptChangeSummaryKey("");
-        }
+        options.setKeptChangeSummaryKey("");
         return;
       case "error":
         if (options.inflightRequest && !options.inflightRequest.hasServerResponse) {

@@ -57,6 +57,9 @@ export function ToolCard(props: ToolCardProps) {
     return <>{props.shellContent}</>;
   }
 
+  const listDirWasTruncated =
+    props.isListDirMessage && props.message.toolMeta?.truncated === true;
+
   if (props.isReadFileMessage) {
     const readLabel = "Đọc file";
     return (
@@ -127,6 +130,11 @@ export function ToolCard(props: ToolCardProps) {
               <div className="text-xs text-[color:var(--gc-muted)]">
                 Giữ `Shift` rồi rê chuột vào file để mở nhanh trong editor.
               </div>
+              {listDirWasTruncated ? (
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-2.5 py-2 text-xs leading-5 text-amber-100/90">
+                  Kết quả quét đã bị cắt bớt. Hãy thu hẹp `path` hoặc giảm `depth` để xem đầy đủ hơn.
+                </div>
+              ) : null}
               <div className="space-y-1">
                 {props.listDirEntries.map((entry) => (
                   <button

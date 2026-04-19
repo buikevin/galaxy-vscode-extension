@@ -22,6 +22,7 @@ import type {
 import { Card, CardContent } from "@webview/components/ui/card";
 import { ApprovalPopup } from "@webview/components/chat/ApprovalPopup";
 import { ComposerPanel } from "@webview/components/chat/ComposerPanel";
+import { FullAccessConfirmModal } from "@webview/components/chat/FullAccessConfirmModal";
 import { PreviewModal } from "@webview/components/chat/PreviewModal";
 import { Transcript } from "@webview/components/chat/Transcript";
 import {
@@ -43,7 +44,13 @@ import type {
 /**
  * Supported agent options shown in the composer selector.
  */
-const AGENTS: readonly AgentType[] = ["manual", "ollama", "gemini", "claude", "codex"];
+const AGENTS: readonly AgentType[] = [
+  "manual",
+  "ollama",
+  "gemini",
+  "claude",
+  "codex",
+];
 
 /**
  * Default individual tool-toggle state used before the host session-init arrives.
@@ -56,6 +63,9 @@ const DEFAULT_TOOL_TOGGLES: ToolToggles = {
   get_next_review_finding: true,
   dismiss_review_finding: true,
   write_file: true,
+  create_drawio_diagram: true,
+  convert_drawio_diagram: true,
+  export_drawio_diagram: true,
   insert_file_at_line: true,
   edit_file_range: true,
   multi_edit_file_ranges: true,
@@ -83,6 +93,7 @@ const DEFAULT_TOOL_TOGGLES: ToolToggles = {
   validate_code: true,
   request_code_review: true,
   vscode_open_diff: true,
+  vscode_start_frontend_preview: true,
   vscode_show_problems: true,
   vscode_workspace_search: true,
   vscode_find_references: true,
@@ -123,10 +134,10 @@ export function App() {
   const [, setWorkspaceName] = useState("Workspace");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<AgentType>(
-    (persisted?.selectedAgent as AgentType | undefined) ?? "manual"
+    (persisted?.selectedAgent as AgentType | undefined) ?? "manual",
   );
   const [selectedFiles, setSelectedFiles] = useState<string[]>(
-    persisted?.selectedFiles ?? []
+    persisted?.selectedFiles ?? [],
   );
   const [input, setInput] = useState(persisted?.input ?? "");
   const [isRunning, setIsRunning] = useState(false);
@@ -139,12 +150,14 @@ export function App() {
   const [approvalRequest, setApprovalRequest] =
     useState<ApprovalRequestPayload | null>(null);
   const [figmaAttachments, setFigmaAttachments] = useState<FigmaAttachment[]>(
-    []
+    [],
   );
   const [localAttachments, setLocalAttachments] = useState<LocalAttachment[]>(
-    []
+    [],
   );
   const [previewAsset, setPreviewAsset] = useState<PreviewAsset | null>(null);
+  const [pendingFullAccessPreferences, setPendingFullAccessPreferences] =
+    useState<QualityPreferences | null>(null);
   const [copiedCommandMessageId, setCopiedCommandMessageId] = useState<
     string | null
   >(null);
@@ -195,12 +208,12 @@ export function App() {
     files: [],
   });
   const [keptChangeSummaryKey, setKeptChangeSummaryKey] = useState(
-    persisted?.keptChangeSummaryKey ?? ""
+    persisted?.keptChangeSummaryKey ?? "",
   );
   const [isPlusMenuOpen, setIsPlusMenuOpen] = useState(false);
   const [pendingMessageId, setPendingMessageId] = useState<string | null>(null);
   const [inflightRequest, setInflightRequest] = useState<PendingRequest | null>(
-    null
+    null,
   );
   const [retryRequest, setRetryRequest] = useState<PendingRequest | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -254,7 +267,8 @@ export function App() {
     const maxHeight = lineHeight * 6 + borderBox + 16;
     const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
     textarea.style.height = `${Math.max(nextHeight, lineHeight + borderBox + 16)}px`;
-    textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
+    textarea.style.overflowY =
+      textarea.scrollHeight > maxHeight ? "auto" : "hidden";
   }, [input]);
 
   useEffect(() => {
@@ -277,9 +291,15 @@ export function App() {
       });
     };
 
-    window.addEventListener("galaxy:insert-composer-text", handleInsertComposerText as EventListener);
+    window.addEventListener(
+      "galaxy:insert-composer-text",
+      handleInsertComposerText as EventListener,
+    );
     return () => {
-      window.removeEventListener("galaxy:insert-composer-text", handleInsertComposerText as EventListener);
+      window.removeEventListener(
+        "galaxy:insert-composer-text",
+        handleInsertComposerText as EventListener,
+      );
     };
   }, []);
 
@@ -293,7 +313,7 @@ export function App() {
     }
 
     const viewport = root.querySelector(
-      "[data-radix-scroll-area-viewport]"
+      "[data-radix-scroll-area-viewport]",
     ) as HTMLElement | null;
     if (!viewport) {
       return;
@@ -308,7 +328,14 @@ export function App() {
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [messages, streamingAssistant, streamingThinking, activeShellSessions, approvalRequest, errorText]);
+  }, [
+    messages,
+    streamingAssistant,
+    streamingThinking,
+    activeShellSessions,
+    approvalRequest,
+    errorText,
+  ]);
 
   function requestOlderMessages(): void {
     if (isLoadingOlderMessages || !hasOlderMessages || messages.length === 0) {
@@ -317,7 +344,7 @@ export function App() {
 
     const root = scrollAreaRef.current;
     const viewport = root?.querySelector(
-      "[data-radix-scroll-area-viewport]"
+      "[data-radix-scroll-area-viewport]",
     ) as HTMLElement | null;
     if (!viewport) {
       return;
@@ -330,7 +357,8 @@ export function App() {
     setIsLoadingOlderMessages(true);
     void window.requestAnimationFrame(() => {
       // keep the current viewport stable until older messages are prepended
-      viewport.scrollTop = prependHistoryScrollRef.current?.previousTop ?? viewport.scrollTop;
+      viewport.scrollTop =
+        prependHistoryScrollRef.current?.previousTop ?? viewport.scrollTop;
     });
     postHostMessage({
       type: "transcript-load-older",
@@ -484,6 +512,44 @@ export function App() {
   });
 
   /**
+   * Require one explicit confirmation before switching from default permissions to full access.
+   */
+  function handleQualityPreferencesChange(next: QualityPreferences): void {
+    const shouldConfirmFullAccess =
+      !qualityPreferences.fullAccessEnabled && next.fullAccessEnabled;
+
+    if (shouldConfirmFullAccess) {
+      setPendingFullAccessPreferences(next);
+      return;
+    }
+
+    setPendingFullAccessPreferences(null);
+    updateQualityPreferences(next);
+  }
+
+  function cancelFullAccessConfirmation(): void {
+    setPendingFullAccessPreferences(null);
+  }
+
+  function confirmFullAccessConfirmation(): void {
+    if (!pendingFullAccessPreferences) {
+      return;
+    }
+    updateQualityPreferences(pendingFullAccessPreferences);
+    setPendingFullAccessPreferences(null);
+  }
+
+  useEffect(() => {
+    if (
+      pendingFullAccessPreferences &&
+      qualityPreferences.fullAccessEnabled ===
+        pendingFullAccessPreferences.fullAccessEnabled
+    ) {
+      setPendingFullAccessPreferences(null);
+    }
+  }, [pendingFullAccessPreferences, qualityPreferences.fullAccessEnabled]);
+
+  /**
    * Derive the presentation-oriented view model used by providers and top-level error UI.
    */
   const {
@@ -543,7 +609,7 @@ export function App() {
     removeLocalAttachment,
     handleFileSelection,
     handleComposerPaste,
-    updateQualityPreferences,
+    updateQualityPreferences: handleQualityPreferencesChange,
     updateToolCapabilities,
     updateToolToggles,
     updateExtensionToolToggles,
@@ -585,6 +651,12 @@ export function App() {
         <PreviewModal
           previewAsset={previewAsset}
           onClose={() => setPreviewAsset(null)}
+        />
+
+        <FullAccessConfirmModal
+          isOpen={pendingFullAccessPreferences !== null}
+          onCancel={cancelFullAccessConfirmation}
+          onConfirm={confirmFullAccessConfirmation}
         />
 
         <ApprovalPopup

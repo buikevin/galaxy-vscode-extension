@@ -54,7 +54,7 @@ async function main() {
 		sourcesContent: false,
 		platform: 'node',
 		outdir: 'dist',
-		external: ['vscode'],
+		external: ['vscode', 'playwright-core'],
 		logLevel: 'silent',
 		plugins: [esbuildProblemMatcherPlugin],
 	});

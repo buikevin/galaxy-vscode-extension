@@ -19,6 +19,228 @@ type LogWriter = (
 ) => void;
 type ErrorPoster = (message: string) => Promise<void>;
 
+const LOCALHOST_PREVIEW_PANEL_TYPE = "galaxy-code.localhostPreview";
+let localhostPreviewPanel: vscode.WebviewPanel | null = null;
+let lastLocalPreviewUrl: string | null = null;
+
+export function getLastLocalPreviewUrl(): string | null {
+  return lastLocalPreviewUrl;
+}
+
+function looksLikeHttpUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value.trim());
+}
+
+/** Normalize user input into a localhost preview URL. */
+export function normalizeLocalPreviewInput(raw: string): string {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) {
+    throw new Error("A localhost URL or port is required.");
+  }
+
+  if (/^\d{2,5}$/.test(trimmed)) {
+    return `http://127.0.0.1:${trimmed}`;
+  }
+
+  if (looksLikeHttpUrl(trimmed)) {
+    const parsed = new URL(trimmed);
+    if (!["localhost", "127.0.0.1", "0.0.0.0"].includes(parsed.hostname)) {
+      throw new Error("Only localhost preview URLs are supported right now.");
+    }
+    if (parsed.hostname === "0.0.0.0") {
+      parsed.hostname = "127.0.0.1";
+    }
+    return parsed.toString();
+  }
+
+  if (/^(localhost|127\.0\.0\.1|0\.0\.0\.0):\d{2,5}(\/.*)?$/i.test(trimmed)) {
+    return normalizeLocalPreviewInput(`http://${trimmed}`);
+  }
+
+  throw new Error(
+    "Enter a localhost URL such as http://127.0.0.1:3000 or just a port like 3000.",
+  );
+}
+
+function buildLocalPreviewHtml(
+  webview: vscode.Webview,
+  previewUrl: vscode.Uri,
+  displayUrl: string,
+): string {
+  const nonce = `${Date.now()}${Math.random().toString(36).slice(2, 8)}`;
+  const frameSrc = previewUrl.toString();
+  const escapedDisplayUrl = displayUrl
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; img-src ${webview.cspSource} https: http: data:; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'nonce-${nonce}'; frame-src ${frameSrc};"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Galaxy Preview</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0b1220;
+        --panel: rgba(15, 23, 42, 0.92);
+        --border: rgba(148, 163, 184, 0.22);
+        --text: #e5eefc;
+        --muted: #94a3b8;
+        --accent: #38bdf8;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background:
+          radial-gradient(circle at top, rgba(56, 189, 248, 0.12), transparent 40%),
+          linear-gradient(180deg, #020617 0%, #0f172a 100%);
+        color: var(--text);
+        height: 100vh;
+        overflow: hidden;
+      }
+      .shell {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        height: 100vh;
+      }
+      .toolbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+        backdrop-filter: blur(10px);
+      }
+      .badge {
+        flex: 1;
+        min-width: 0;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: rgba(2, 6, 23, 0.45);
+        color: var(--muted);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+      }
+      button, a {
+        appearance: none;
+        border: 1px solid var(--border);
+        background: rgba(15, 23, 42, 0.9);
+        color: var(--text);
+        text-decoration: none;
+        border-radius: 10px;
+        padding: 9px 12px;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover, a:hover {
+        border-color: rgba(56, 189, 248, 0.6);
+        color: white;
+      }
+      iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        background: white;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="toolbar">
+        <div class="badge">${escapedDisplayUrl}</div>
+        <div class="actions">
+          <button id="reload" type="button">Reload</button>
+          <a href="${frameSrc}" target="_blank" rel="noreferrer">Open External</a>
+        </div>
+      </div>
+      <iframe id="preview-frame" src="${frameSrc}" title="Galaxy localhost preview"></iframe>
+    </div>
+    <script nonce="${nonce}">
+      const frame = document.getElementById("preview-frame");
+      const reload = document.getElementById("reload");
+      reload?.addEventListener("click", () => {
+        const current = frame.getAttribute("src");
+        frame.setAttribute("src", current || ${JSON.stringify(frameSrc)});
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+/** Open a localhost frontend preview in a browser-like VS Code webview panel. */
+export async function openLocalhostPreviewPanel(
+  initialInput?: string,
+): Promise<string | null> {
+  const rawValue = initialInput?.trim()
+    ? initialInput
+    : await vscode.window.showInputBox({
+        title: "Galaxy Frontend Preview",
+        prompt: "Enter a localhost URL or port",
+        placeHolder: "http://127.0.0.1:3000 or 3000",
+        value: "http://127.0.0.1:3000",
+        ignoreFocusOut: true,
+      });
+
+  if (!rawValue) {
+    return null;
+  }
+
+  const normalizedUrl = normalizeLocalPreviewInput(rawValue);
+  const externalUri = await vscode.env.asExternalUri(
+    vscode.Uri.parse(normalizedUrl),
+  );
+  lastLocalPreviewUrl = normalizedUrl;
+
+  const targetColumn =
+    vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.Active;
+  const panel = localhostPreviewPanel;
+  const resolvedPanel =
+    panel ??
+    vscode.window.createWebviewPanel(
+      LOCALHOST_PREVIEW_PANEL_TYPE,
+      `Frontend Preview: ${new URL(normalizedUrl).host}`,
+      targetColumn,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+      },
+    );
+
+  if (!panel) {
+    localhostPreviewPanel = resolvedPanel;
+    resolvedPanel.onDidDispose(() => {
+      if (localhostPreviewPanel === resolvedPanel) {
+        localhostPreviewPanel = null;
+      }
+    });
+  } else {
+    resolvedPanel.reveal(targetColumn, true);
+  }
+
+  resolvedPanel.title = `Frontend Preview: ${new URL(normalizedUrl).host}`;
+  resolvedPanel.webview.html = buildLocalPreviewHtml(
+    resolvedPanel.webview,
+    externalUri,
+    normalizedUrl,
+  );
+  return normalizedUrl;
+}
+
 /** Create a temporary text file used as the left side of a native diff. */
 export async function createTempFile(
   name: string,
@@ -61,6 +283,92 @@ export async function openWorkspaceFile(
     vscode.Uri.file(targetPath),
   );
   await vscode.window.showTextDocument(document, { preview: false });
+}
+
+const DRAWIO_EDITOR_CANDIDATES = Object.freeze([
+  Object.freeze({
+    extensionId: "hediet.vscode-drawio",
+    providerId: "hediet.vscode-drawio-text",
+  }),
+  Object.freeze({
+    extensionId: "eighthundreds.vscode-drawio",
+    providerId: "vscode-drawio.editor",
+  }),
+]);
+
+function getInstalledDrawioEditorProviderId(): string | null {
+  const installedIds = new Set(
+    vscode.extensions.all.map((extension) => extension.id.toLowerCase()),
+  );
+  const matched = DRAWIO_EDITOR_CANDIDATES.find((candidate) =>
+    installedIds.has(candidate.extensionId),
+  );
+  return matched?.providerId ?? null;
+}
+
+/** Open one Draw.io diagram in a supported custom editor when available, otherwise fall back to text. */
+export async function openDrawioDiagramTool(
+  params: Readonly<{
+    workspacePath: string;
+    filePath: string;
+    asWorkspaceRelative: RelativePathFormatter;
+    appendLog: LogWriter;
+  }>,
+): Promise<ToolResult> {
+  const targetPath = resolveWorkspaceFilePath(
+    params.workspacePath,
+    params.filePath,
+  );
+  const targetUri = vscode.Uri.file(targetPath);
+  const providerId = getInstalledDrawioEditorProviderId();
+
+  try {
+    if (providerId) {
+      await vscode.commands.executeCommand(
+        "vscode.openWith",
+        targetUri,
+        providerId,
+      );
+      params.appendLog(
+        "info",
+        `Opened Draw.io diagram ${params.asWorkspaceRelative(targetPath)} with ${providerId}.`,
+      );
+      return Object.freeze({
+        success: true,
+        content: `Opened Draw.io diagram ${params.asWorkspaceRelative(targetPath)} with the installed Draw.io editor.`,
+        meta: Object.freeze({
+          filePath: targetPath,
+          operation: "open_drawio_diagram",
+          providerId,
+        }),
+      });
+    }
+  } catch (error) {
+    params.appendLog(
+      "info",
+      `Falling back to text editor for ${params.asWorkspaceRelative(targetPath)} because Draw.io custom editor failed: ${String(error)}`,
+    );
+  }
+
+  const document = await vscode.workspace.openTextDocument(targetUri);
+  await vscode.window.showTextDocument(document, { preview: false });
+  const note = providerId
+    ? "Opened as XML text after the Draw.io custom editor failed."
+    : "Opened as XML text because no supported Draw.io VS Code extension is installed.";
+  params.appendLog(
+    "info",
+    `${note} (${params.asWorkspaceRelative(targetPath)})`,
+  );
+  return Object.freeze({
+    success: true,
+    content: `Opened Draw.io diagram ${params.asWorkspaceRelative(targetPath)}. ${note}`,
+    meta: Object.freeze({
+      filePath: targetPath,
+      operation: "open_drawio_diagram",
+      providerId: providerId ?? "",
+      fallbackToText: true,
+    }),
+  });
 }
 
 /** Reveal a file, optionally centering and selecting a requested line range. */

@@ -2,7 +2,7 @@
   "name": "galaxy-code-vscode",
   "displayName": "Galaxy Code",
   "description": "AI-powered coding assistant with a Galaxy chat experience for VS Code.",
-  "version": "0.1.57",
+  "version": "0.1.58",
   "publisher": "kevinbui",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -30,14 +30,7 @@
     "productivity"
   ],
   "activationEvents": [
-    "onView:galaxy-code.chatView",
-    "onCommand:galaxy-code.openChat",
-    "onCommand:galaxy-code.openChatRight",
-    "onCommand:galaxy-code.switchAgent",
-    "onCommand:galaxy-code.openLogs",
-    "onCommand:galaxy-code.openTelemetrySummary",
-    "onCommand:galaxy-code.toggleReview",
-    "onCommand:galaxy-code.toggleValidation"
+    "onCommand:galaxy-code.openChatRight"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -55,7 +48,8 @@
         {
           "id": "galaxy-code.chatView",
           "name": "Galaxy Code",
-          "type": "webview"
+          "type": "webview",
+          "icon": "resources/icon.svg"
         }
       ]
     },
@@ -66,8 +60,8 @@
         "category": "Galaxy Code"
       },
       {
-        "command": "galaxy-code.openChatRight",
-        "title": "Open Chat Right",
+        "command": "galaxy-code.openChatTab",
+        "title": "Open New Tab",
         "category": "Galaxy Code"
       },
       {
@@ -93,6 +87,21 @@
       {
         "command": "galaxy-code.openTelemetrySummary",
         "title": "Open Telemetry Summary",
+        "category": "Galaxy Code"
+      },
+      {
+        "command": "galaxy-code.openLocalPreview",
+        "title": "Open Local Frontend Preview",
+        "category": "Galaxy Code"
+      },
+      {
+        "command": "galaxy-code.startLocalPreviewSession",
+        "title": "Start Frontend Preview Session",
+        "category": "Galaxy Code"
+      },
+      {
+        "command": "galaxy-code.capturePreviewScreenshot",
+        "title": "Capture Frontend Preview Screenshot",
         "category": "Galaxy Code"
       },
       {
@@ -128,7 +137,7 @@
     },
     "keybindings": [
       {
-        "command": "galaxy-code.openChat",
+        "command": "galaxy-code.openChatTab",
         "key": "ctrl+shift+g",
         "mac": "cmd+shift+g"
       }
@@ -144,8 +153,8 @@
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
     "watch:webview": "vite build --watch",
     "package": "yarn run check-types && yarn run lint && node esbuild.js --production && vite build",
-    "compile-tests": "rm -rf out && tsc -p . --outDir out",
-    "watch-tests": "rm -rf out && tsc -p . -w --outDir out",
+    "compile-tests": "node -e \"require('node:fs').rmSync('out', { recursive: true, force: true });\" && tsc -p . --outDir out",
+    "watch-tests": "node -e \"require('node:fs').rmSync('out', { recursive: true, force: true });\" && tsc -p . -w --outDir out",
     "pretest": "yarn run compile-tests && yarn run compile && yarn run lint",
     "check-types": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.webview.json",
     "lint": "eslint src",
@@ -170,6 +179,7 @@
     "ollama": "^0.6.3",
     "openai": "^6.27.0",
     "pdf-parse": "^1.1.1",
+    "playwright-core": "^1.55.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^3.3.1",

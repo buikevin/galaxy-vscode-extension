@@ -11,6 +11,7 @@ import type { GalaxyConfig } from '../../shared/config';
 import { getConfigPath } from '../../config/manager';
 import type { AgentDriver, RuntimeMessage, StreamHandler } from '../../shared/runtime';
 import { buildDriverSystemPrompt } from './message-builders';
+import { buildClaudeImageContentBlocks } from './image-content';
 import { buildDriverErrorChunk, createDoneEmitter, parseToolArguments } from './stream-utils';
 import { getEnabledToolDefinitions } from '../../tools/file/definitions';
 
@@ -65,6 +66,17 @@ function buildMessages(messages: readonly RuntimeMessage[]) {
     }
 
     if (message.role !== 'tool') {
+      if (message.role === 'user' && message.images?.length) {
+        const blocks: Array<Record<string, unknown>> = [];
+        if (message.content) {
+          blocks.push({ type: 'text', text: message.content });
+        }
+        blocks.push(...buildClaudeImageContentBlocks(message.images));
+        apiMessages.push({ role: 'user', content: blocks });
+        index += 1;
+        continue;
+      }
+
       apiMessages.push({
         role: message.role === 'user' ? 'user' : 'assistant',
         content: message.content,

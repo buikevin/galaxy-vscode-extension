@@ -6,8 +6,8 @@
  * @desc Shared runtime entities reused across extension runtime modules, validation, and tool orchestration.
  */
 
-import type { AgentType, ChatMessage } from './protocol';
-import type { ToolCall } from '../tools/entities/file-tools';
+import type { AgentType, ChatMessage } from "./protocol";
+import type { ToolCall } from "../tools/entities/file-tools";
 
 /** Parsed direct command information used when the host bypasses shell parsing. */
 export type DirectCommand = Readonly<{
@@ -22,7 +22,7 @@ export type DirectCommand = Readonly<{
 }>;
 
 /** Shell families supported by the extension runtime. */
-export type ShellKind = 'posix' | 'powershell' | 'cmd';
+export type ShellKind = "posix" | "powershell" | "cmd";
 
 /** Resolved shell profile used to run or probe commands. */
 export type ShellProfile = Readonly<{
@@ -154,7 +154,7 @@ export type CommandTerminalRecord = Readonly<{
   /** User-facing terminal title shown in VS Code. */
   title: string;
   /** Live terminal handle used to reveal or dispose the tab. */
-  terminal: import('vscode').Terminal;
+  terminal: import("vscode").Terminal;
   /** Appends one output chunk into the buffered terminal transcript. */
   append: (chunk: string) => void;
   /** Finalizes the command transcript with the terminal completion summary. */
@@ -162,7 +162,7 @@ export type CommandTerminalRecord = Readonly<{
 }>;
 
 /** Scope bucket used to split a broad task into selective multi-agent subtasks. */
-export type SubtaskScope = 'backend' | 'frontend' | 'integration';
+export type SubtaskScope = "backend" | "frontend" | "integration";
 
 /** One scoped subtask emitted by the selective multi-agent planner. */
 export type SelectiveMultiAgentSubtask = Readonly<{
@@ -191,7 +191,7 @@ export type SelectiveMultiAgentPlan = Readonly<{
 /** Parsed review finding extracted from reviewer output. */
 export type RuntimeReviewFinding = Readonly<{
   /** Severity used to prioritize fixes. */
-  severity: 'critical' | 'warning' | 'info';
+  severity: "critical" | "warning" | "info";
   /** File or location string associated with the finding. */
   location: string;
   /** Human-readable finding message. */
@@ -217,7 +217,7 @@ export type RuntimeReviewResult = Readonly<{
 /** Reviewer chat message sent to the external review model. */
 export type ReviewMessage = Readonly<{
   /** Chat role used in the reviewer prompt exchange. */
-  role: 'system' | 'user';
+  role: "system" | "user";
   /** Prompt body content for this message. */
   content: string;
 }>;
@@ -234,6 +234,10 @@ export type PromptContextHints = Readonly<{
   hasBaseComponentProfile: boolean;
   /** Whether the turn appears related to Galaxy Design. */
   mentionsGalaxyDesign: boolean;
+  /** Whether the turn appears related to diagrams, Draw.io, or Mermaid. */
+  mentionsDiagrams: boolean;
+  /** Whether the turn appears related to local frontend preview or UI test flows. */
+  mentionsFrontendPreview: boolean;
   /** Whether the turn appears related to VS Code native or extension tool activation flows. */
   mentionsExtensionTools: boolean;
   /** Whether the prompt context includes review findings or review feedback. */
@@ -295,11 +299,11 @@ export type RuntimeMessage = ChatMessage;
 
 /** Stream chunk emitted by provider drivers during one chat turn. */
 export type StreamChunk =
-  | Readonly<{ type: 'text'; delta: string }>
-  | Readonly<{ type: 'thinking'; delta: string }>
-  | Readonly<{ type: 'tool_call'; call: ToolCall }>
-  | Readonly<{ type: 'done' }>
-  | Readonly<{ type: 'error'; message: string }>;
+  | Readonly<{ type: "text"; delta: string }>
+  | Readonly<{ type: "thinking"; delta: string }>
+  | Readonly<{ type: "tool_call"; call: ToolCall }>
+  | Readonly<{ type: "done" }>
+  | Readonly<{ type: "error"; message: string }>;
 
 /** Callback used by drivers to emit streamed text, tool calls, and terminal states. */
 export type StreamHandler = (chunk: StreamChunk) => void;
@@ -309,5 +313,8 @@ export interface AgentDriver {
   /** Provider type served by the driver. */
   readonly name: AgentType;
   /** Executes one chat turn and streams chunks back to the runtime. */
-  chat(messages: readonly RuntimeMessage[], onChunk: StreamHandler): Promise<void>;
+  chat(
+    messages: readonly RuntimeMessage[],
+    onChunk: StreamHandler,
+  ): Promise<void>;
 }

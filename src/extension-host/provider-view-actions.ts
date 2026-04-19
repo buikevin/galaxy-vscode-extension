@@ -31,17 +31,19 @@ export function createProviderViewActions(
       await bindings.executeRevealSidebar();
       bindings.getView()?.show?.(true);
     },
-    openChatRight: async () => {
+    openChatTab: async () => {
+      const targetColumn =
+        vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.Active;
       const activePanel = bindings.getPanel();
       if (activePanel) {
-        await activePanel.reveal(vscode.ViewColumn.Beside);
+        await activePanel.reveal(targetColumn);
         return;
       }
 
       const panel = vscode.window.createWebviewPanel(
         "galaxy-code.chatPanel",
         "Galaxy Code",
-        vscode.ViewColumn.Beside,
+        targetColumn,
         {
           enableScripts: true,
           retainContextWhenHidden: true,

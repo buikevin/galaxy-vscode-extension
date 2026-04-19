@@ -6,16 +6,27 @@
  * @desc Core helpers for resolving, validating, and classifying project commands in the VS Code runtime.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { findProjectCommand, getOrCreateProjectCommandProfile } from '../../context/project-command-store';
-import type { ProjectCommandDefinition } from '../../context/entities/project-command';
-import { tryResolveDirectCommand } from '../../runtime/direct-command';
-import { checkCommandAvailability } from '../../runtime/shell-resolver';
-import type { ToolResult } from '../entities/file-tools';
-import type { ManagedCommandRecord, ProjectCommandMeta, ResolvedProjectCommand } from '../entities/project-command';
-import { ASYNC_FINITE_COMMAND_PATTERNS, BACKGROUND_READY_PATTERNS, MAX_MANAGED_COMMANDS } from './constants';
-import { managedCommands } from './state';
+import fs from "node:fs";
+import path from "node:path";
+import {
+  findProjectCommand,
+  getOrCreateProjectCommandProfile,
+} from "../../context/project-command-store";
+import type { ProjectCommandDefinition } from "../../context/entities/project-command";
+import { tryResolveDirectCommand } from "../../runtime/direct-command";
+import { checkCommandAvailability } from "../../runtime/shell-resolver";
+import type { ToolResult } from "../entities/file-tools";
+import type {
+  ManagedCommandRecord,
+  ProjectCommandMeta,
+  ResolvedProjectCommand,
+} from "../entities/project-command";
+import {
+  ASYNC_FINITE_COMMAND_PATTERNS,
+  BACKGROUND_READY_PATTERNS,
+  MAX_MANAGED_COMMANDS,
+} from "./constants";
+import { managedCommands } from "./state";
 
 /**
  * Builds a random runtime id for one managed command instance.
@@ -33,8 +44,11 @@ export function createCommandId(): string {
  * @param maxChars Maximum number of characters to retain.
  * @returns Tail output buffer plus truncation metadata.
  */
-export function buildTailOutput(raw: string, maxChars: number): Readonly<{ tailOutput: string; truncated: boolean }> {
-  const normalized = raw.trim() || '(no output)';
+export function buildTailOutput(
+  raw: string,
+  maxChars: number,
+): Readonly<{ tailOutput: string; truncated: boolean }> {
+  const normalized = raw.trim() || "(no output)";
   const truncated = normalized.length > maxChars;
   return Object.freeze({
     tailOutput: truncated
@@ -71,7 +85,7 @@ export function pruneManagedCommands(): void {
  * @returns Leading binary token or an empty string.
  */
 export function getCommandBinary(command: string): string {
-  return command.trim().split(/\s+/)[0] ?? '';
+  return command.trim().split(/\s+/)[0] ?? "";
 }
 
 /**
@@ -82,8 +96,15 @@ export function getCommandBinary(command: string): string {
  * @returns True when the command can be launched.
  */
 export function commandExists(binary: string, cwd: string): boolean {
-  if (binary.startsWith('./') || binary.includes('/')) {
-    return fs.existsSync(path.resolve(cwd, binary));
+  if (
+    binary.startsWith("./") ||
+    binary.startsWith(".\\") ||
+    binary.includes("/") ||
+    binary.includes("\\")
+  ) {
+    return fs.existsSync(
+      path.resolve(cwd, binary.replace(/[\\/]+/g, path.sep)),
+    );
   }
   return checkCommandAvailability(binary, cwd);
 }
@@ -96,12 +117,14 @@ export function commandExists(binary: string, cwd: string): boolean {
  */
 export function isBackgroundCommand(commandText: string): boolean {
   const normalized = commandText.trim().toLowerCase();
-  return /\b(?:dev|serve|watch|start)\b/.test(normalized)
-    || normalized.includes('tauri dev')
-    || normalized.includes('vite')
-    || normalized.includes('next dev')
-    || normalized.includes('nuxt dev')
-    || normalized.includes('astro dev');
+  return (
+    /\b(?:dev|serve|watch|start)\b/.test(normalized) ||
+    normalized.includes("tauri dev") ||
+    normalized.includes("vite") ||
+    normalized.includes("next dev") ||
+    normalized.includes("nuxt dev") ||
+    normalized.includes("astro dev")
+  );
 }
 
 /**
@@ -125,7 +148,9 @@ export function isAsyncFiniteCommand(commandText: string): boolean {
   if (isBackgroundCommand(normalized)) {
     return false;
   }
-  return ASYNC_FINITE_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized));
+  return ASYNC_FINITE_COMMAND_PATTERNS.some((pattern) =>
+    pattern.test(normalized),
+  );
 }
 
 /**
@@ -134,7 +159,9 @@ export function isAsyncFiniteCommand(commandText: string): boolean {
  * @param workspacePath Absolute workspace root.
  * @returns Existing or newly created command profile.
  */
-export function getProjectCommandProfileTool(workspacePath: string): ReturnType<typeof getOrCreateProjectCommandProfile> {
+export function getProjectCommandProfileTool(
+  workspacePath: string,
+): ReturnType<typeof getOrCreateProjectCommandProfile> {
   return getOrCreateProjectCommandProfile(workspacePath);
 }
 
@@ -145,7 +172,10 @@ export function getProjectCommandProfileTool(workspacePath: string): ReturnType<
  * @param commandId Project command id.
  * @returns Matching command definition or null.
  */
-export function resolveProjectCommand(workspacePath: string, commandId: string): ProjectCommandDefinition | null {
+export function resolveProjectCommand(
+  workspacePath: string,
+  commandId: string,
+): ProjectCommandDefinition | null {
   return findProjectCommand(workspacePath, commandId);
 }
 
@@ -160,9 +190,11 @@ export function resolveCwd(workspacePath: string, rawCwd?: string): string {
   if (!rawCwd) {
     return workspacePath;
   }
-  const target = path.isAbsolute(rawCwd) ? path.resolve(rawCwd) : path.resolve(workspacePath, rawCwd);
+  const target = path.isAbsolute(rawCwd)
+    ? path.resolve(rawCwd)
+    : path.resolve(workspacePath, rawCwd);
   const relative = path.relative(workspacePath, target);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return workspacePath;
   }
   return target;
@@ -187,22 +219,22 @@ export function resolveProjectCommandExecution(
   const command = resolveProjectCommand(workspacePath, commandId);
   const commandText = command?.command ?? commandOrId.trim();
   const commandLabel = command?.label ?? commandText;
-  const commandCategory = command?.category ?? 'custom';
+  const commandCategory = command?.category ?? "custom";
   const commandCwd = command?.cwd ?? resolvedCwd;
   const directCommand = tryResolveDirectCommand(commandText, commandCwd);
   const effectiveCommandText = directCommand?.displayCommandText ?? commandText;
   if (!commandText) {
     return Object.freeze({
       success: false,
-      content: '',
-      error: 'Command is required.',
+      content: "",
+      error: "Command is required.",
     });
   }
   const binary = directCommand?.binary ?? getCommandBinary(commandText);
   if (!binary || !commandExists(binary, commandCwd)) {
     return Object.freeze({
       success: false,
-      content: '',
+      content: "",
       error: `Required command is not available: ${binary || commandText}`,
       meta: Object.freeze({
         commandId: command?.id ?? commandText,
@@ -256,7 +288,7 @@ export function buildManagedMeta(
     category: record.category,
     cwd: record.cwd,
     exitCode: record.exitCode ?? 0,
-    durationMs: record.durationMs ?? (Date.now() - record.startedAt),
+    durationMs: record.durationMs ?? Date.now() - record.startedAt,
     truncated,
     totalChars: record.totalChars,
     tailOutput,

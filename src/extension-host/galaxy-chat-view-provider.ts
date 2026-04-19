@@ -8,11 +8,20 @@
 
 import * as vscode from "vscode";
 import { loadConfig } from "../config/manager";
-import { DEFAULT_CONFIG, SELECTED_AGENT_STORAGE_KEY } from "../shared/constants";
+import {
+  DEFAULT_CONFIG,
+  SELECTED_AGENT_STORAGE_KEY,
+} from "../shared/constants";
 import { clearActionApprovals } from "../context/action-approval-store";
-import type { ApprovalRequestPayload, ToolApprovalDecision } from "../shared/protocol";
+import type {
+  ApprovalRequestPayload,
+  ToolApprovalDecision,
+} from "../shared/protocol";
 import type { HistoryManager } from "../context/entities/history-manager";
-import { ensureProjectStorage, saveProjectMeta } from "../context/project-store";
+import {
+  ensureProjectStorage,
+  saveProjectMeta,
+} from "../context/project-store";
 import type { ProjectStorageInfo } from "../context/entities/project-store";
 import { clearSession } from "../runtime/session-tracker";
 import { CommandTerminalRegistry } from "../runtime/command-terminal-registry";
@@ -26,10 +35,10 @@ import type {
 import type {
   AgentType,
   ChatMessage,
-  ChangeSummary,
   FileItem,
   ExtensionToolGroup,
   LogEntry,
+  LocalAttachmentPayload,
   PlanItem,
   QualityPreferences,
   ToolCapabilities,
@@ -59,7 +68,10 @@ import {
   runProviderSelectiveMultiAgentPlan,
   runProviderValidationAndReviewFlow,
 } from "./galaxy-chat-view-provider-runtime";
-import { initializeGalaxyChatViewProvider, type GalaxyChatViewProviderBootstrapTarget } from "./provider-bootstrap";
+import {
+  initializeGalaxyChatViewProvider,
+  type GalaxyChatViewProviderBootstrapTarget,
+} from "./provider-bootstrap";
 import { persistProjectMetaPatch as persistHostedProjectMetaPatch } from "./session-lifecycle";
 import { persistSelectedAgent as persistHostedSelectedAgent } from "./workbench-runtime";
 import { clearProviderPendingApprovalState } from "./galaxy-chat-view-provider-actions";
@@ -101,9 +113,9 @@ export class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       return false;
     }
 
-    void GalaxyChatViewProvider.currentProvider
-      .utilityActions
-      .handleFigmaImport(record);
+    void GalaxyChatViewProvider.currentProvider.utilityActions.handleFigmaImport(
+      record,
+    );
     return true;
   }
 
@@ -195,9 +207,25 @@ export class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
     await this.viewActions.reveal();
   }
 
-  /** Opens or focuses the secondary chat panel shown beside the editor. */
-  async openChatRight(): Promise<void> {
-    await this.viewActions.openChatRight();
+  /** Opens or focuses the Galaxy chat webview tab in the current editor group. */
+  async openChatTab(): Promise<void> {
+    await this.viewActions.openChatTab();
+  }
+
+  /** Surfaces one draft local attachment into the current composer or opens a chat tab that restores it. */
+  async surfaceDraftLocalAttachment(
+    attachment: LocalAttachmentPayload,
+  ): Promise<void> {
+    const hasLiveWebview = Boolean(this.view || this.panel);
+    if (!hasLiveWebview) {
+      await this.openChatTab();
+      return;
+    }
+
+    await this.sessionActions.postMessage({
+      type: "local-attachment-added",
+      payload: { attachment },
+    });
   }
 
   /** Mirrors current quality preferences into VS Code settings. */
@@ -261,12 +289,16 @@ export class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         this.progressReporter = null;
       },
       getEffectiveConfig: () => this.sessionActions.getEffectiveConfig(),
-      runSelectiveMultiAgentPlan: (opts) => this.runSelectiveMultiAgentPlan(opts),
+      runSelectiveMultiAgentPlan: (opts) =>
+        this.runSelectiveMultiAgentPlan(opts),
       getChatRuntimeCallbacks: () => this.chatRuntimeCallbacks,
-      runValidationAndReviewFlow: (agentType) => this.runValidationAndReviewFlow(agentType),
+      runValidationAndReviewFlow: (agentType) =>
+        this.runValidationAndReviewFlow(agentType),
       clearCurrentTurn: () => this.historyManager.clearCurrentTurn(),
-      postMessage: (hostMessage) => this.sessionActions.postMessage(hostMessage),
-      flushBackgroundCommandCompletions: () => this.commandActions.flushBackgroundCommandCompletions(),
+      postMessage: (hostMessage) =>
+        this.sessionActions.postMessage(hostMessage),
+      flushBackgroundCommandCompletions: () =>
+        this.commandActions.flushBackgroundCommandCompletions(),
     });
   }
 
@@ -311,7 +343,8 @@ export class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       setStatusText: (statusText) => {
         this.statusText = statusText;
       },
-      reportProgress: (statusText) => this.workbenchActions.reportProgress(statusText),
+      reportProgress: (statusText) =>
+        this.workbenchActions.reportProgress(statusText),
       postRunState: () => this.workbenchActions.postRunState(),
       appendLog: this.runtimeActions.appendLog,
       updateQualityDetails: this.runtimeActions.updateQualityDetails,
@@ -398,8 +431,10 @@ export class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
         },
         activeShellSessions: this.activeShellSessions,
         commandTerminalRegistry: this.commandTerminalRegistry,
-        clearStreamingBuffers: () => this.messageActions.clearStreamingBuffers(),
-        updateWorkbenchChrome: () => this.workbenchActions.updateWorkbenchChrome(),
+        clearStreamingBuffers: () =>
+          this.messageActions.clearStreamingBuffers(),
+        updateWorkbenchChrome: () =>
+          this.workbenchActions.updateWorkbenchChrome(),
       },
       opts,
     );
@@ -422,7 +457,8 @@ export class GalaxyChatViewProvider implements vscode.WebviewViewProvider {
       setPendingApprovalPayload: (payload: ApprovalRequestPayload | null) => {
         this.pendingApprovalPayload = payload;
       },
-      updateWorkbenchChrome: () => this.workbenchActions.updateWorkbenchChrome(),
+      updateWorkbenchChrome: () =>
+        this.workbenchActions.updateWorkbenchChrome(),
     });
   }
 }

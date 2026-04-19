@@ -15,7 +15,15 @@ import {
   MAX_ATTACHMENT_SNIPPETS,
   MAX_CONTEXT_ATTACHMENTS,
 } from '../shared/constants';
-import type { AttachmentRecord, AttachmentStorageKind, FigmaAttachment, FigmaImportRecord, LocalAttachmentPayload, MessageAttachment } from '../shared/attachments';
+import type {
+  AttachmentRecord,
+  AttachmentStorageKind,
+  FigmaAttachment,
+  FigmaImportRecord,
+  FrontendPreviewReviewContext,
+  LocalAttachmentPayload,
+  MessageAttachment,
+} from '../shared/attachments';
 import { extractAttachmentText, extractAttachmentTextFromBuffer, isTextAttachment, writePreviewAsset } from './extraction';
 import { resolveAttachmentStoredPath } from './lookup';
 import { queryAttachmentSemanticSnippets, truncateContent } from './semantic';
@@ -43,6 +51,7 @@ export async function createDraftLocalAttachment(opts: {
   name: string;
   mimeType: string;
   dataUrl: string;
+  frontendPreviewContext?: FrontendPreviewReviewContext;
 }): Promise<LocalAttachmentPayload> {
   const storage = getProjectStorageInfo(opts.workspacePath);
   ensureProjectStorage(storage);
@@ -80,6 +89,9 @@ export async function createDraftLocalAttachment(opts: {
     storageKind,
     mimeType: opts.mimeType || 'application/octet-stream',
     size: buffer.byteLength,
+    ...(opts.frontendPreviewContext
+      ? { frontendPreviewContext: opts.frontendPreviewContext }
+      : {}),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   });
@@ -214,6 +226,70 @@ export async function buildAttachmentContextNote(
   }));
 
   return sections.length > 0 ? `Attached files:\n${sections.join('\n\n')}` : '';
+}
+
+/**
+ * Lists all draft local attachments that should be restored into the composer on reload.
+ *
+ * @param workspacePath Workspace root owning the attachment store.
+ * @returns Webview-ready local attachment metadata for pending draft attachments.
+ */
+export function listDraftLocalAttachments(
+  workspacePath: string,
+): LocalAttachmentPayload[] {
+  return loadIndex(workspacePath)
+    .filter((record) => record.kind === 'file' && record.status === 'draft')
+    .map((record) => buildLocalAttachmentPayload(record));
+}
+
+/**
+ * Lists the most recent frontend preview screenshots available for multimodal review.
+ *
+ * @param workspacePath Workspace root owning the attachment store.
+ * @param limit Maximum number of preview screenshots to return.
+ * @returns Recent frontend preview screenshots with absolute image paths.
+ */
+export function listRecentFrontendPreviewImages(
+  workspacePath: string,
+  limit = 2,
+): ReadonlyArray<
+  Readonly<{
+    attachmentId: string;
+    name: string;
+    imagePath: string;
+    createdAt: number;
+    frontendPreviewContext?: FrontendPreviewReviewContext;
+  }>
+> {
+  return Object.freeze(
+    loadIndex(workspacePath)
+      .filter(
+        (record) =>
+          record.kind === 'file' &&
+          record.mimeType.startsWith('image/') &&
+          /^frontend-preview-/i.test(record.originalName),
+      )
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .flatMap((record) => {
+        const imagePath = record.previewPath ?? record.storedPath;
+        if (!imagePath || !fs.existsSync(imagePath)) {
+          return [];
+        }
+
+        return [
+          Object.freeze({
+            attachmentId: record.id,
+            name: record.originalName,
+            imagePath,
+            createdAt: record.createdAt,
+            ...(record.frontendPreviewContext
+              ? { frontendPreviewContext: record.frontendPreviewContext }
+              : {}),
+          }),
+        ];
+      })
+      .slice(0, Math.max(1, Math.floor(limit))),
+  );
 }
 
 export {

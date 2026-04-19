@@ -9,6 +9,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { listDraftLocalAttachments } from "../attachments/attachment-store";
 import { loadProjectMeta } from "../context/project-store";
 import type {
   FileItem,
@@ -146,6 +147,9 @@ export async function postSessionInit(
     extensionToolGroups: params.extensionToolGroups,
     extensionToolToggles: params.extensionToolToggles,
     changeSummary: params.changeSummary,
+    localAttachments: listDraftLocalAttachments(
+      params.projectStorage.workspacePath,
+    ),
     hasOlderMessages: params.hasOlderMessages,
     streamingAssistant: params.streamingAssistant,
     streamingThinking: params.streamingThinking,

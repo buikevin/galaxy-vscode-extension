@@ -8,16 +8,41 @@
 
 import * as vscode from "vscode";
 import { loadConfig } from "../config/manager";
-import { DEFAULT_CONFIG, GALAXY_VIEW_CONTAINER_ID, SELECTED_AGENT_STORAGE_KEY } from "../shared/constants";
-import type { ApprovalRequestPayload, AgentType, ChatMessage, ExtensionToolGroup, LogEntry, QualityDetails, QualityPreferences, ToolApprovalDecision, ToolCapabilities, ToolToggles, WebviewMessage } from "../shared/protocol";
+import {
+  DEFAULT_CONFIG,
+  GALAXY_VIEW_CONTAINER_ID,
+  SELECTED_AGENT_STORAGE_KEY,
+} from "../shared/constants";
+import type {
+  ApprovalRequestPayload,
+  AgentType,
+  ChatMessage,
+  ExtensionToolGroup,
+  LogEntry,
+  QualityDetails,
+  QualityPreferences,
+  ToolApprovalDecision,
+  ToolCapabilities,
+  ToolToggles,
+  WebviewMessage,
+} from "../shared/protocol";
 import { createHistoryManager } from "../context/history-manager";
 import { loadNotes } from "../context/notes";
-import { ensureProjectStorage, getProjectStorageInfo, loadProjectMeta, saveProjectMeta } from "../context/project-store";
+import {
+  ensureProjectStorage,
+  getProjectStorageInfo,
+  loadProjectMeta,
+  saveProjectMeta,
+} from "../context/project-store";
 import { CommandTerminalRegistry } from "../runtime/command-terminal-registry";
 import { getSessionChangeSummary } from "../runtime/session-tracker";
 import type { HistoryManager } from "../context/entities/history-manager";
 import type { ProjectStorageInfo } from "../context/entities/project-store";
-import type { BackgroundCommandCompletion, GalaxyWorkbenchChrome, NativeShellViews } from "../shared/extension-host";
+import type {
+  BackgroundCommandCompletion,
+  GalaxyWorkbenchChrome,
+  NativeShellViews,
+} from "../shared/extension-host";
 import type { ProviderCommandActions } from "../shared/provider-command-actions";
 import type { ProviderMessageActions } from "../shared/provider-message-actions";
 import type { ProviderQualityActions } from "../shared/quality-settings";
@@ -37,9 +62,19 @@ import {
   shouldGateAssistantFinalMessage as shouldHostedGateAssistantFinalMessage,
 } from "./chat-runtime-state";
 import { buildPhasePlanItems as buildHostedPhasePlanItems } from "./workbench-state";
-import { loadSelectedAgent as loadHostedSelectedAgent, persistSelectedAgent as persistHostedSelectedAgent } from "./workbench-runtime";
-import { asWorkspaceRelativePath as asHostedWorkspaceRelativePath, getWorkspaceName as getHostedWorkspaceName, resolveStorageWorkspacePath as resolveHostedStorageWorkspacePath } from "./session-sync";
-import { appendTranscriptMessage as appendHostedTranscriptMessage, persistProjectMetaPatch as persistHostedProjectMetaPatch } from "./session-lifecycle";
+import {
+  loadSelectedAgent as loadHostedSelectedAgent,
+  persistSelectedAgent as persistHostedSelectedAgent,
+} from "./workbench-runtime";
+import {
+  asWorkspaceRelativePath as asHostedWorkspaceRelativePath,
+  getWorkspaceName as getHostedWorkspaceName,
+  resolveStorageWorkspacePath as resolveHostedStorageWorkspacePath,
+} from "./session-sync";
+import {
+  appendTranscriptMessage as appendHostedTranscriptMessage,
+  persistProjectMetaPatch as persistHostedProjectMetaPatch,
+} from "./session-lifecycle";
 import { loadOlderTranscriptMessages as loadHostedOlderTranscriptMessages } from "./session-lifecycle";
 import { refreshProviderExtensionToolGroups as refreshHostedProviderExtensionToolGroups } from "./workspace-actions";
 import { createProviderWebviewActionCallbacks as createHostedProviderWebviewActionCallbacks } from "./webview-actions";
@@ -50,7 +85,11 @@ import {
   getWorkspaceToolCapabilities,
   getWorkspaceToolToggles,
 } from "./effective-config";
-import { createMessageId, isAgentType, sanitizeChatMessageForWebview } from "./utils";
+import {
+  createMessageId,
+  isAgentType,
+  sanitizeChatMessageForWebview,
+} from "./utils";
 import {
   buildProviderCommandActions,
   buildProviderMessageActions,
@@ -99,7 +138,10 @@ export type GalaxyChatViewProviderBootstrapTarget = {
   extensionToolToggles: Readonly<Record<string, boolean>>;
   view: vscode.WebviewView | null;
   panel: vscode.WebviewPanel | null;
-  activeShellSessions: Map<string, import("../shared/extension-host").ActiveShellSessionState>;
+  activeShellSessions: Map<
+    string,
+    import("../shared/extension-host").ActiveShellSessionState
+  >;
   commandTerminalRegistry: CommandTerminalRegistry;
   streamingAssistant: string;
   streamingThinking: string;
@@ -154,7 +196,9 @@ export function initializeGalaxyChatViewProvider(
     loadProjectMeta(provider.projectStorage),
   );
   const config = loadConfig();
-  provider.extensionToolGroups = refreshExtensionToolCatalog(context.extension.id);
+  provider.extensionToolGroups = refreshExtensionToolCatalog(
+    context.extension.id,
+  );
   provider.toolCapabilities = getWorkspaceToolCapabilities(config, projectMeta);
   provider.toolToggles = getWorkspaceToolToggles(config, projectMeta);
   provider.extensionToolToggles = getWorkspaceExtensionToolToggles(
@@ -245,13 +289,15 @@ export function initializeGalaxyChatViewProvider(
         provider.selectedAgent,
       );
     },
-    postSelectedAgentUpdate: () => provider.workbenchActions.postSelectedAgentUpdate(),
+    postSelectedAgentUpdate: () =>
+      provider.workbenchActions.postSelectedAgentUpdate(),
     applyQualityPreferences: provider.qualityActions.applyQualityPreferences,
     resetWorkspaceSession: (opts) => provider.resetWorkspaceSession(opts),
     setStatusText: (statusText) => {
       provider.statusText = statusText;
     },
-    updateWorkbenchChrome: () => provider.workbenchActions.updateWorkbenchChrome(),
+    updateWorkbenchChrome: () =>
+      provider.workbenchActions.updateWorkbenchChrome(),
     postInit: () => provider.sessionActions.postInit(),
     appendLog: (kind, text) => provider.runtimeActions.appendLog(kind, text),
   });
@@ -262,7 +308,8 @@ export function initializeGalaxyChatViewProvider(
     setExtensionToolGroups: (groups) => {
       provider.extensionToolGroups = groups;
     },
-    applyExtensionToolToggles: provider.qualityActions.applyExtensionToolToggles,
+    applyExtensionToolToggles:
+      provider.qualityActions.applyExtensionToolToggles,
     asWorkspaceRelative: asHostedWorkspaceRelativePath,
     appendLog: (kind, text) => provider.runtimeActions.appendLog(kind, text),
     postMessage: (message) => provider.sessionActions.postMessage(message),
@@ -272,7 +319,8 @@ export function initializeGalaxyChatViewProvider(
     projectStorage: provider.projectStorage,
     isRunning: () => provider.isRunning,
     postMessage: (message) => provider.sessionActions.postMessage(message),
-    clearStreamingBuffers: () => provider.messageActions.clearStreamingBuffers(),
+    clearStreamingBuffers: () =>
+      provider.messageActions.clearStreamingBuffers(),
     setRunningState: (isRunning, statusText) => {
       provider.isRunning = isRunning;
       provider.statusText = statusText;
@@ -287,7 +335,8 @@ export function initializeGalaxyChatViewProvider(
         mutate,
       });
     },
-    updateQualityDetails: (update) => provider.runtimeActions.updateQualityDetails(update),
+    updateQualityDetails: (update) =>
+      provider.runtimeActions.updateQualityDetails(update),
     runValidationAndReviewFlow: async (agentType) => {
       await provider.runValidationAndReviewFlow(agentType);
     },
@@ -295,7 +344,8 @@ export function initializeGalaxyChatViewProvider(
     asWorkspaceRelative: asHostedWorkspaceRelativePath,
     createMessageId,
     handleMessage: async (message) => provider.handleMessage(message),
-    refreshWorkspaceFiles: async () => provider.workspaceSyncActions.refreshWorkspaceFiles(),
+    refreshWorkspaceFiles: async () =>
+      provider.workspaceSyncActions.refreshWorkspaceFiles(),
   });
   provider.commandActions = buildProviderCommandActions({
     commandTerminalRegistry: provider.commandTerminalRegistry,
@@ -309,14 +359,16 @@ export function initializeGalaxyChatViewProvider(
     setBackgroundCompletionRunning: (value) => {
       provider.backgroundCompletionRunning = value;
     },
-    getPendingBackgroundCompletions: () => provider.pendingBackgroundCompletions,
+    getPendingBackgroundCompletions: () =>
+      provider.pendingBackgroundCompletions,
     setPendingBackgroundCompletions: (completions) => {
       provider.pendingBackgroundCompletions = [...completions];
     },
     setStatusText: (value) => {
       provider.statusText = value;
     },
-    reportProgress: (statusText) => provider.workbenchActions.reportProgress(statusText),
+    reportProgress: (statusText) =>
+      provider.workbenchActions.reportProgress(statusText),
     postRunState: () => provider.workbenchActions.postRunState(),
     getEffectiveConfig: () => provider.sessionActions.getEffectiveConfig(),
     getSelectedAgent: () => provider.selectedAgent,
@@ -340,7 +392,8 @@ export function initializeGalaxyChatViewProvider(
       provider.historyManager.recordExternalEvent(summaryText, filePaths);
     },
     addMessage: async (message) => provider.messageActions.addMessage(message),
-    refreshWorkspaceFiles: async () => provider.workspaceSyncActions.refreshWorkspaceFiles(),
+    refreshWorkspaceFiles: async () =>
+      provider.workspaceSyncActions.refreshWorkspaceFiles(),
     hasPendingApproval: () => provider.pendingApprovalResolver !== null,
     setPendingApprovalState: ({ requestId, title, payload, resolver }) => {
       provider.pendingApprovalRequestId = requestId;
@@ -350,7 +403,8 @@ export function initializeGalaxyChatViewProvider(
         provider.pendingApprovalResolver = resolver;
       }
     },
-    updateWorkbenchChrome: () => provider.workbenchActions.updateWorkbenchChrome(),
+    updateWorkbenchChrome: () =>
+      provider.workbenchActions.updateWorkbenchChrome(),
     clearPendingApprovalState: () => provider.clearPendingApprovalState(),
     reveal: () => provider.reveal(),
     showLogs: () => provider.chrome.outputChannel.show(true),
@@ -362,7 +416,8 @@ export function initializeGalaxyChatViewProvider(
   provider.sessionActions = buildProviderSessionActions({
     projectStorage: provider.projectStorage,
     selectedFiles: provider.selectedFiles,
-    updateWorkbenchChrome: () => provider.workbenchActions.updateWorkbenchChrome(),
+    updateWorkbenchChrome: () =>
+      provider.workbenchActions.updateWorkbenchChrome(),
     refreshExtensionToolGroups: () =>
       refreshHostedProviderExtensionToolGroups({
         extensionId: provider.context.extension.id,
@@ -370,9 +425,13 @@ export function initializeGalaxyChatViewProvider(
           provider.extensionToolGroups = groups;
         },
       }),
-    buildChangeSummaryPayload: () => provider.workspaceSyncActions.buildChangeSummaryPayload(),
+    buildChangeSummaryPayload: () =>
+      provider.workspaceSyncActions.buildChangeSummaryPayload(),
     refreshNativeShellViews: async (files, changeSummary) =>
-      provider.workspaceSyncActions.refreshNativeShellViews(files, changeSummary),
+      provider.workspaceSyncActions.refreshNativeShellViews(
+        files,
+        changeSummary,
+      ),
     getMessages: () => provider.messages,
     getHasOlderMessages: () => provider.hasOlderTranscriptHistory,
     getSelectedAgent: () => provider.selectedAgent,
@@ -390,7 +449,8 @@ export function initializeGalaxyChatViewProvider(
     getStreamingThinking: () => provider.streamingThinking,
     getActiveShellSessions: () => [...provider.activeShellSessions.values()],
     getApprovalRequest: () => provider.pendingApprovalPayload,
-    sanitizeChatMessageForWebview: (message) => sanitizeChatMessageForWebview(message),
+    sanitizeChatMessageForWebview: (message) =>
+      sanitizeChatMessageForWebview(message),
     getSidebarWebview: () => provider.view?.webview ?? null,
     getPanelWebview: () => provider.panel?.webview ?? null,
     asWorkspaceRelative: asHostedWorkspaceRelativePath,
@@ -473,10 +533,12 @@ export function initializeGalaxyChatViewProvider(
     applyQualityPreferences: provider.qualityActions.applyQualityPreferences,
     applyToolCapabilities: provider.qualityActions.applyToolCapabilities,
     applyToolToggles: provider.qualityActions.applyToolToggles,
-    applyExtensionToolToggles: provider.qualityActions.applyExtensionToolToggles,
+    applyExtensionToolToggles:
+      provider.qualityActions.applyExtensionToolToggles,
     handleComposerCommand: (commandId) =>
       provider.utilityActions.handleComposerCommand(commandId),
-    postMessage: (hostMessage) => provider.sessionActions.postMessage(hostMessage),
+    postMessage: (hostMessage) =>
+      provider.sessionActions.postMessage(hostMessage),
     openNativeReview: provider.reviewActions.openNativeReview,
     dismissReviewFinding: async (findingId) => {
       await provider.reviewActions.dismissReviewFindingTool(findingId);
@@ -495,45 +557,67 @@ export function initializeGalaxyChatViewProvider(
     setStatusText: (statusText) => {
       provider.statusText = statusText;
     },
-    reportProgress: (statusText) => provider.workbenchActions.reportProgress(statusText),
+    reportProgress: (statusText) =>
+      provider.workbenchActions.reportProgress(statusText),
     postRunState: () => provider.workbenchActions.postRunState(),
     postMessage: (message) => provider.sessionActions.postMessage(message),
-    emitAssistantStream: async (delta) => provider.messageActions.emitAssistantStream(delta),
-    emitAssistantThinking: async (delta) => provider.messageActions.emitAssistantThinking(delta),
-    debugChatMessage: (message) => provider.messageActions.debugChatMessage(message),
+    emitAssistantStream: async (delta) =>
+      provider.messageActions.emitAssistantStream(delta),
+    emitAssistantThinking: async (delta) =>
+      provider.messageActions.emitAssistantThinking(delta),
+    debugChatMessage: (message) =>
+      provider.messageActions.debugChatMessage(message),
     requestToolApproval: provider.runtimeActions.requestToolApproval,
-    showWorkbenchError: (message) => provider.workbenchActions.showWorkbenchError(message),
-    writeDebug: (scope, message) => provider.messageActions.writeDebug(scope, message),
-    writeDebugBlock: (scope, content) => provider.messageActions.writeDebugBlock(scope, content),
+    showWorkbenchError: (message) =>
+      provider.workbenchActions.showWorkbenchError(message),
+    writeDebug: (scope, message) =>
+      provider.messageActions.writeDebug(scope, message),
+    writeDebugBlock: (scope, content) =>
+      provider.messageActions.writeDebugBlock(scope, content),
     shouldGateAssistantFinalMessage: (filesWritten) =>
-      shouldHostedGateAssistantFinalMessage(provider.qualityPreferences, filesWritten),
+      shouldHostedGateAssistantFinalMessage(
+        provider.qualityPreferences,
+        filesWritten,
+      ),
     getEffectiveConfig: () => provider.sessionActions.getEffectiveConfig(),
     runValidationAndReviewFlow: async (agentType) =>
       provider.runValidationAndReviewFlow(agentType),
     hasStreamingBuffers: () =>
-      provider.streamingAssistant.length > 0 || provider.streamingThinking.length > 0,
-    clearStreamingBuffers: () => provider.messageActions.clearStreamingBuffers(),
+      provider.streamingAssistant.length > 0 ||
+      provider.streamingThinking.length > 0,
+    clearStreamingBuffers: () =>
+      provider.messageActions.clearStreamingBuffers(),
     postInit: () => provider.sessionActions.postInit(),
     buildContinueMessage: (opts) => buildHostedContinueMessage(opts),
     tools: {
       revealFile: provider.workspaceToolActions.revealFile,
-      refreshWorkspaceFiles: async () => provider.workspaceSyncActions.refreshWorkspaceFiles(),
+      refreshWorkspaceFiles: async () =>
+        provider.workspaceSyncActions.refreshWorkspaceFiles(),
       openTrackedDiff: provider.workspaceToolActions.openTrackedDiffTool,
+      startFrontendPreview:
+        provider.workspaceToolActions.startFrontendPreviewTool,
+      openDrawioDiagram: provider.workspaceToolActions.openDrawioDiagramTool,
       showProblems: provider.workspaceToolActions.showProblemsTool,
       workspaceSearch: provider.workspaceToolActions.workspaceSearchTool,
       findReferences: provider.workspaceToolActions.findReferencesTool,
-      executeExtensionCommand: provider.workspaceToolActions.executeExtensionCommandTool,
-      invokeLanguageModelTool: provider.workspaceToolActions.invokeLanguageModelToolTool,
-      searchExtensionTools: provider.workspaceToolActions.searchExtensionToolsTool,
-      activateExtensionTools: provider.workspaceToolActions.activateExtensionToolsTool,
+      executeExtensionCommand:
+        provider.workspaceToolActions.executeExtensionCommandTool,
+      invokeLanguageModelTool:
+        provider.workspaceToolActions.invokeLanguageModelToolTool,
+      searchExtensionTools:
+        provider.workspaceToolActions.searchExtensionToolsTool,
+      activateExtensionTools:
+        provider.workspaceToolActions.activateExtensionToolsTool,
       getLatestTestFailure: provider.reviewActions.getLatestTestFailureTool,
-      getLatestReviewFindings: provider.reviewActions.getLatestReviewFindingsTool,
+      getLatestReviewFindings:
+        provider.reviewActions.getLatestReviewFindingsTool,
       getNextReviewFinding: provider.reviewActions.getNextReviewFindingTool,
       dismissReviewFinding: provider.reviewActions.dismissReviewFindingTool,
       onProjectCommandStart: provider.commandActions.emitCommandStreamStart,
       onProjectCommandChunk: provider.commandActions.emitCommandStreamChunk,
       onProjectCommandEnd: provider.commandActions.emitCommandStreamEnd,
-      onProjectCommandComplete: provider.commandActions.handleBackgroundCommandCompletion,
+      onProjectCommandComplete:
+        provider.commandActions.handleBackgroundCommandCompletion,
     },
   });
   const initialTranscript = provider.sessionActions.loadInitialMessages();

@@ -37,6 +37,8 @@ function buildToolContext(
     revealFile: tools.revealFile,
     refreshWorkspaceFiles: async () => tools.refreshWorkspaceFiles(),
     openTrackedDiff: async (filePath) => tools.openTrackedDiff(filePath),
+    startFrontendPreview: tools.startFrontendPreview,
+    openDrawioDiagram: async (filePath) => tools.openDrawioDiagram(filePath),
     showProblems: async (filePath) => tools.showProblems(filePath),
     workspaceSearch: tools.workspaceSearch,
     findReferences: tools.findReferences,
@@ -110,7 +112,9 @@ export function buildEvidenceContextFingerprint(
  * @param payload Evidence context emitted by the runtime.
  * @returns Stable key for the manual-read-plan log line.
  */
-function buildManualReadPlanFingerprint(payload: EvidenceContextPayload): string {
+function buildManualReadPlanFingerprint(
+  payload: EvidenceContextPayload,
+): string {
   return JSON.stringify({
     manualPlanningContent: payload.manualPlanningContent ?? "",
     manualReadBatchItems: payload.manualReadBatchItems ?? [],
@@ -123,7 +127,9 @@ function buildManualReadPlanFingerprint(payload: EvidenceContextPayload): string
  * @param payload Evidence context emitted by the runtime.
  * @returns Stable key for the read-plan progress log line.
  */
-function buildReadPlanProgressFingerprint(payload: EvidenceContextPayload): string {
+function buildReadPlanProgressFingerprint(
+  payload: EvidenceContextPayload,
+): string {
   return JSON.stringify({
     confirmedReadCount: payload.confirmedReadCount ?? 0,
     readPlanProgressItems: payload.readPlanProgressItems ?? [],
@@ -142,7 +148,10 @@ export function createChatRuntimeCallbacks(
   const lastEvidenceContextByScope = new Map<"turn" | "repair-turn", string>();
   const lastManualReadPlanByScope = new Map<"turn" | "repair-turn", string>();
   const lastReadPlanProgressByScope = new Map<"turn" | "repair-turn", string>();
-  const lastDebugEvidenceContentByScope = new Map<"turn" | "repair-turn", string>();
+  const lastDebugEvidenceContentByScope = new Map<
+    "turn" | "repair-turn",
+    string
+  >();
 
   return {
     workspacePath: params.workspacePath,
@@ -194,7 +203,8 @@ export function createChatRuntimeCallbacks(
     onEvidenceContext: async (scope, payload) => {
       const fingerprint = buildEvidenceContextFingerprint(payload);
       const manualReadPlanFingerprint = buildManualReadPlanFingerprint(payload);
-      const readPlanProgressFingerprint = buildReadPlanProgressFingerprint(payload);
+      const readPlanProgressFingerprint =
+        buildReadPlanProgressFingerprint(payload);
       const debugContent = formatEvidenceContext(payload);
 
       if (scope === "turn") {

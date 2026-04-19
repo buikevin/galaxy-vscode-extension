@@ -47,6 +47,9 @@ export function buildSessionInitPayload(
     extensionToolGroups: params.extensionToolGroups,
     extensionToolToggles: params.extensionToolToggles,
     changeSummary: params.changeSummary,
+    ...(params.localAttachments && params.localAttachments.length > 0
+      ? { localAttachments: params.localAttachments }
+      : {}),
     ...(params.streamingAssistant
       ? { streamingAssistant: params.streamingAssistant }
       : {}),

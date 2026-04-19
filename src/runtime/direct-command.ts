@@ -6,10 +6,10 @@
  * @desc Parse shell-free commands so the host can execute simple binaries directly when shell parsing is unnecessary.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import type { DirectCommand } from '../shared/runtime';
-import { resolveCommandBinary } from './shell-resolver';
+import fs from "node:fs";
+import path from "node:path";
+import type { DirectCommand } from "../shared/runtime";
+import { resolveCommandBinary } from "./shell-resolver";
 
 /**
  * Checks whether a command string contains shell operators that require real shell parsing.
@@ -24,16 +24,16 @@ function containsShellOperators(commandText: string): boolean {
   }
 
   return (
-    normalized.includes('\n') ||
-    normalized.includes('\r') ||
-    normalized.includes('&&') ||
-    normalized.includes('||') ||
-    normalized.includes('|') ||
-    normalized.includes(';') ||
-    normalized.includes('>') ||
-    normalized.includes('<') ||
-    normalized.includes('`') ||
-    normalized.includes('$(')
+    normalized.includes("\n") ||
+    normalized.includes("\r") ||
+    normalized.includes("&&") ||
+    normalized.includes("||") ||
+    normalized.includes("|") ||
+    normalized.includes(";") ||
+    normalized.includes(">") ||
+    normalized.includes("<") ||
+    normalized.includes("`") ||
+    normalized.includes("$(")
   );
 }
 
@@ -59,19 +59,22 @@ function quoteArgForDisplay(arg: string): string {
  * @param commandText Raw command text to tokenize.
  * @returns Parsed tokens, or `null` when shell syntax makes direct execution unsafe.
  */
-export function tokenizeDirectCommandText(commandText: string): readonly string[] | null {
+export function tokenizeDirectCommandText(
+  commandText: string,
+): readonly string[] | null {
   const input = commandText.trim();
   if (!input || containsShellOperators(input)) {
     return null;
   }
 
   const tokens: string[] = [];
-  let current = '';
+  let current = "";
   let quote: '"' | "'" | null = null;
   let escaping = false;
 
   for (let index = 0; index < input.length; index += 1) {
     const char = input[index]!;
+    const nextChar = input[index + 1] ?? "";
 
     if (escaping) {
       current += char;
@@ -79,7 +82,14 @@ export function tokenizeDirectCommandText(commandText: string): readonly string[
       continue;
     }
 
-    if (char === '\\') {
+    if (char === "\\") {
+      const shouldEscape = quote
+        ? nextChar === quote || nextChar === "\\"
+        : nextChar === '"' || nextChar === "'" || nextChar === "\\";
+      if (!shouldEscape) {
+        current += char;
+        continue;
+      }
       escaping = true;
       continue;
     }
@@ -93,7 +103,7 @@ export function tokenizeDirectCommandText(commandText: string): readonly string[
       continue;
     }
 
-    if (char === '"' || char === '\'') {
+    if (char === '"' || char === "'") {
       quote = char;
       continue;
     }
@@ -101,7 +111,7 @@ export function tokenizeDirectCommandText(commandText: string): readonly string[
     if (/\s/u.test(char)) {
       if (current.length > 0) {
         tokens.push(current);
-        current = '';
+        current = "";
       }
       continue;
     }
@@ -127,16 +137,19 @@ export function tokenizeDirectCommandText(commandText: string): readonly string[
  * @param cwd Working directory used to resolve path-like checkout targets.
  * @returns Possibly normalized git argument list.
  */
-function normalizeGitCheckoutArgs(args: readonly string[], cwd: string): readonly string[] {
-  if (args[0] !== 'checkout') {
+function normalizeGitCheckoutArgs(
+  args: readonly string[],
+  cwd: string,
+): readonly string[] {
+  if (args[0] !== "checkout") {
     return args;
   }
 
   const checkoutArgs = args.slice(1);
   if (
     checkoutArgs.length === 0 ||
-    checkoutArgs.includes('--') ||
-    checkoutArgs.some((item) => item.startsWith('-'))
+    checkoutArgs.includes("--") ||
+    checkoutArgs.some((item) => item.startsWith("-"))
   ) {
     return args;
   }
@@ -147,7 +160,7 @@ function normalizeGitCheckoutArgs(args: readonly string[], cwd: string): readonl
   });
 
   return allLookLikeExistingPaths
-    ? Object.freeze(['checkout', '--', ...checkoutArgs])
+    ? Object.freeze(["checkout", "--", ...checkoutArgs])
     : args;
 }
 
@@ -158,16 +171,18 @@ function normalizeGitCheckoutArgs(args: readonly string[], cwd: string): readonl
  * @param cwd Working directory used for path resolution.
  * @returns Direct command metadata, or `null` when the command must stay on the shell path.
  */
-export function tryResolveDirectCommand(commandText: string, cwd: string): DirectCommand | null {
+export function tryResolveDirectCommand(
+  commandText: string,
+  cwd: string,
+): DirectCommand | null {
   const tokens = tokenizeDirectCommandText(commandText);
   if (!tokens || tokens.length === 0) {
     return null;
   }
 
   const [binary, ...rawArgs] = tokens;
-  const args = binary === 'git'
-    ? normalizeGitCheckoutArgs(rawArgs, cwd)
-    : rawArgs;
+  const args =
+    binary === "git" ? normalizeGitCheckoutArgs(rawArgs, cwd) : rawArgs;
   const resolvedBinary = resolveCommandBinary(binary, cwd);
   if (!resolvedBinary) {
     return null;
@@ -177,6 +192,8 @@ export function tryResolveDirectCommand(commandText: string, cwd: string): Direc
     binary,
     args: Object.freeze([...args]),
     resolvedBinary,
-    displayCommandText: [binary, ...args].map((part) => quoteArgForDisplay(part)).join(' '),
+    displayCommandText: [binary, ...args]
+      .map((part) => quoteArgForDisplay(part))
+      .join(" "),
   });
 }

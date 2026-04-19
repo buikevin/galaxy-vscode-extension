@@ -10,6 +10,7 @@ import type {
   ProviderWorkspaceToolActionBindings,
   ProviderWorkspaceToolActions,
 } from "../shared/workspace-tooling";
+import { startFrontendPreviewSession } from "./frontend-preview";
 import {
   activateExtensionToolsTool,
   refreshExtensionToolGroups,
@@ -19,6 +20,7 @@ import {
   executeExtensionCommandTool,
   findReferencesTool,
   invokeLanguageModelToolTool,
+  openDrawioDiagramTool,
   openTrackedDiff,
   openTrackedDiffTool,
   openWorkspaceFile,
@@ -59,6 +61,51 @@ export function createProviderWorkspaceToolActions(
         asWorkspaceRelative: bindings.asWorkspaceRelative,
         openTrackedDiff: openProviderTrackedDiff,
       }),
+    startFrontendPreviewTool: async (options) => {
+      try {
+        const candidate = await startFrontendPreviewSession(
+          bindings.workspacePath,
+          {
+            interactive: false,
+            query: options?.query,
+          },
+        );
+        if (!candidate) {
+          return Object.freeze({
+            success: false,
+            content: "",
+            error: "Frontend preview startup was cancelled.",
+          });
+        }
+        return Object.freeze({
+          success: true,
+          content:
+            `Started frontend preview for ${candidate.label} at ${candidate.previewUrl} using ${candidate.commandText} in ${candidate.relativePath}.`,
+          meta: Object.freeze({
+            label: candidate.label,
+            relativePath: candidate.relativePath,
+            previewUrl: candidate.previewUrl,
+            commandText: candidate.commandText,
+            packageManager: candidate.packageManager,
+            scriptName: candidate.scriptName,
+            operation: "frontend_preview_start",
+          }),
+        });
+      } catch (error) {
+        return Object.freeze({
+          success: false,
+          content: "",
+          error: `Frontend preview failed: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+    },
+    openDrawioDiagramTool: async (filePath) =>
+      openDrawioDiagramTool(
+        bindings.workspacePath,
+        filePath,
+        bindings.asWorkspaceRelative,
+        bindings.appendLog,
+      ),
     showProblemsTool: async (filePath) =>
       showProblemsTool({
         workspacePath: bindings.workspacePath,

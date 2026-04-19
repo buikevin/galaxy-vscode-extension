@@ -6,22 +6,55 @@
  * @desc Write and targeted-edit helpers for VS Code file tools.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { captureOriginal, trackFileWrite } from '../../runtime/session-tracker';
+import fs from "node:fs";
+import path from "node:path";
+import { captureOriginal, trackFileWrite } from "../../runtime/session-tracker";
 import type {
   EditFileRangeRequest,
   InsertFileAtLineRequest,
   MultiEditFileRange,
   ToolResult,
-} from '../entities/file-tools';
-import { resolveWorkspacePath, toDisplayPath } from './path-read';
+} from "../entities/file-tools";
+import { resolveWorkspacePath, toDisplayPath } from "./path-read";
 import {
   resolveInsertionLine,
   resolveRangeEditLocation,
   validateAnchoredRangeEdit,
   validateTargetedEditPreconditions,
-} from './targeted-edit';
+} from "./targeted-edit";
+
+function detectLineEnding(content: string): "\n" | "\r\n" {
+  return content.includes("\r\n") ? "\r\n" : "\n";
+}
+
+function normalizeLineEndings(content: string): string {
+  return content.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+}
+
+function splitLogicalLines(content: string): string[] {
+  if (content.length === 0) {
+    return [];
+  }
+  return normalizeLineEndings(content).split("\n");
+}
+
+function joinLogicalLines(
+  lines: readonly string[],
+  lineEnding: "\n" | "\r\n",
+): string {
+  return lines.join(lineEnding);
+}
+
+function normalizeSnapshotText(value: string | undefined): string | undefined {
+  return typeof value === "string" ? normalizeLineEndings(value) : undefined;
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) {
+    return 0;
+  }
+  return haystack.split(needle).length - 1;
+}
 
 /**
  * Counts total logical lines in a text payload.
@@ -30,7 +63,7 @@ import {
  * @returns Total number of newline-delimited lines.
  */
 function countLines(content: string): number {
-  return content.length === 0 ? 0 : content.split('\n').length;
+  return splitLogicalLines(content).length;
 }
 
 /**
@@ -41,34 +74,38 @@ function countLines(content: string): number {
  * @param content Full file content to write.
  * @returns Tool result describing the created file or the failure reason.
  */
-export function writeFileTool(workspaceRoot: string, rawPath: string, content: string): ToolResult {
+export function writeFileTool(
+  workspaceRoot: string,
+  rawPath: string,
+  content: string,
+): ToolResult {
   try {
     const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
     const existedBefore = fs.existsSync(resolved);
     if (existedBefore) {
       return Object.freeze({
         success: false,
-        content: '',
+        content: "",
         error: `Refusing to overwrite existing file ${rawPath} with write_file. Use edit_file_range or multi_edit_file_ranges instead.`,
       });
     }
     captureOriginal(resolved);
     fs.mkdirSync(path.dirname(resolved), { recursive: true });
-    fs.writeFileSync(resolved, content, 'utf-8');
+    fs.writeFileSync(resolved, content, "utf-8");
     trackFileWrite(resolved);
 
     return Object.freeze({
       success: true,
-      content: `Written ${Buffer.byteLength(content, 'utf-8')} bytes to ${toDisplayPath(resolved, workspaceRoot)}`,
+      content: `Written ${Buffer.byteLength(content, "utf-8")} bytes to ${toDisplayPath(resolved, workspaceRoot)}`,
       meta: Object.freeze({
         filePath: resolved,
-        operation: existedBefore ? 'overwrite' : 'create',
+        operation: existedBefore ? "overwrite" : "create",
         existedBefore,
         lineCount: countLines(content),
       }),
     });
   } catch (error) {
-    return Object.freeze({ success: false, content: '', error: String(error) });
+    return Object.freeze({ success: false, content: "", error: String(error) });
   }
 }
 
@@ -92,46 +129,81 @@ export function editFileTool(
   try {
     const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
     if (!fs.existsSync(resolved)) {
-      return Object.freeze({ success: false, content: '', error: `File not found: ${rawPath}` });
+      return Object.freeze({
+        success: false,
+        content: "",
+        error: `File not found: ${rawPath}`,
+      });
     }
 
     captureOriginal(resolved);
-    const original = fs.readFileSync(resolved, 'utf-8');
-    if (!original.includes(oldString)) {
+    const original = fs.readFileSync(resolved, "utf-8");
+    const lineEnding = detectLineEnding(original);
+    const normalizedOriginal = normalizeLineEndings(original);
+    const normalizedOldString = normalizeLineEndings(oldString);
+    const normalizedNewString = normalizeLineEndings(newString);
+    const hasExactMatch = original.includes(oldString);
+    const hasNormalizedMatch = normalizedOriginal.includes(normalizedOldString);
+    if (!hasExactMatch && !hasNormalizedMatch) {
       return Object.freeze({
         success: false,
-        content: '',
+        content: "",
         error: `old_string not found in ${rawPath}. It must match exactly, including whitespace.`,
       });
     }
 
-    const occurrences = original.split(oldString).length - 1;
+    const occurrences = hasExactMatch
+      ? countOccurrences(original, oldString)
+      : countOccurrences(normalizedOriginal, normalizedOldString);
     if (occurrences > 1 && !replaceAll) {
       return Object.freeze({
         success: false,
-        content: '',
+        content: "",
         error: `old_string appears ${occurrences} times in ${rawPath}. Use replace_all=true or provide more context.`,
       });
     }
 
-    const updated = replaceAll ? original.split(oldString).join(newString) : original.replace(oldString, newString);
-    fs.writeFileSync(resolved, updated, 'utf-8');
+    const updatedNormalized = hasExactMatch
+      ? normalizeLineEndings(
+          replaceAll
+            ? original.split(oldString).join(newString)
+            : original.replace(oldString, newString),
+        )
+      : replaceAll
+        ? normalizedOriginal
+            .split(normalizedOldString)
+            .join(normalizedNewString)
+        : normalizedOriginal.replace(normalizedOldString, normalizedNewString);
+    const updated =
+      updatedNormalized.length > 0
+        ? updatedNormalized.replace(/\n/g, lineEnding)
+        : "";
+    fs.writeFileSync(resolved, updated, "utf-8");
     trackFileWrite(resolved);
 
-    const originalLines = original.split('\n');
-    const updatedLines = updated.split('\n');
-    const changedAt = originalLines.findIndex((line, index) => line !== updatedLines[index]);
-    const changedLineCount = Math.max(oldString.split('\n').length, newString.split('\n').length, 1);
-    const changedRange = changedAt >= 0
-      ? Object.freeze([{ startLine: changedAt + 1, endLine: changedAt + changedLineCount }])
-      : Object.freeze([]);
+    const originalLines = splitLogicalLines(original);
+    const updatedLines = splitLogicalLines(updated);
+    const changedAt = originalLines.findIndex(
+      (line, index) => line !== updatedLines[index],
+    );
+    const changedLineCount = Math.max(
+      splitLogicalLines(oldString).length,
+      splitLogicalLines(newString).length,
+      1,
+    );
+    const changedRange =
+      changedAt >= 0
+        ? Object.freeze([
+            { startLine: changedAt + 1, endLine: changedAt + changedLineCount },
+          ])
+        : Object.freeze([]);
 
     return Object.freeze({
       success: true,
-      content: `Edited ${toDisplayPath(resolved, workspaceRoot)}${changedAt >= 0 ? ` starting at line ${changedAt + 1}` : ''}`,
+      content: `Edited ${toDisplayPath(resolved, workspaceRoot)}${changedAt >= 0 ? ` starting at line ${changedAt + 1}` : ""}`,
       meta: Object.freeze({
         filePath: resolved,
-        operation: 'edit',
+        operation: "edit",
         existedBefore: true,
         replaceAll,
         occurrencesChanged: replaceAll ? occurrences : 1,
@@ -139,7 +211,7 @@ export function editFileTool(
       }),
     });
   } catch (error) {
-    return Object.freeze({ success: false, content: '', error: String(error) });
+    return Object.freeze({ success: false, content: "", error: String(error) });
   }
 }
 
@@ -158,78 +230,121 @@ export function editFileRangeTool(
 ): ToolResult {
   try {
     const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
-    const { startLine, endLine, newContent, expectedTotalLines, expectedRangeContent, anchorBefore, anchorAfter } = request;
+    const {
+      startLine,
+      endLine,
+      newContent,
+      expectedTotalLines,
+      expectedRangeContent,
+      anchorBefore,
+      anchorAfter,
+    } = request;
     if (!fs.existsSync(resolved)) {
-      return Object.freeze({ success: false, content: '', error: `File not found: ${rawPath}` });
-    }
-    if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || startLine < 1 || endLine < startLine) {
       return Object.freeze({
         success: false,
-        content: '',
+        content: "",
+        error: `File not found: ${rawPath}`,
+      });
+    }
+    if (
+      !Number.isFinite(startLine) ||
+      !Number.isFinite(endLine) ||
+      startLine < 1 ||
+      endLine < startLine
+    ) {
+      return Object.freeze({
+        success: false,
+        content: "",
         error: `Invalid line range for ${rawPath}. start_line and end_line must be 1-based and end_line >= start_line.`,
       });
     }
 
-    const preconditionError = validateTargetedEditPreconditions(rawPath, 'range-edit', expectedTotalLines, {
-      expectedRangeContent,
-      expectedRangeContentProvided: typeof expectedRangeContent === 'string',
-      anchorBefore,
-      anchorAfter,
-    });
+    const preconditionError = validateTargetedEditPreconditions(
+      rawPath,
+      "range-edit",
+      expectedTotalLines,
+      {
+        expectedRangeContent,
+        expectedRangeContentProvided: typeof expectedRangeContent === "string",
+        anchorBefore,
+        anchorAfter,
+      },
+    );
     if (preconditionError) {
-      return Object.freeze({ success: false, content: '', error: preconditionError });
+      return Object.freeze({
+        success: false,
+        content: "",
+        error: preconditionError,
+      });
     }
 
     captureOriginal(resolved);
-    const original = fs.readFileSync(resolved, 'utf-8');
-    const originalLines = original.split('\n');
+    const original = fs.readFileSync(resolved, "utf-8");
+    const lineEnding = detectLineEnding(original);
+    const originalLines = splitLogicalLines(original);
+    const normalizedExpectedRangeContent =
+      normalizeSnapshotText(expectedRangeContent);
+    const normalizedAnchorBefore = normalizeSnapshotText(anchorBefore);
+    const normalizedAnchorAfter = normalizeSnapshotText(anchorAfter);
     if (startLine > originalLines.length) {
       return Object.freeze({
         success: false,
-        content: '',
+        content: "",
         error: `start_line ${startLine} is outside ${rawPath} (${originalLines.length} lines). Use insert_file_at_line for insertions.`,
       });
     }
     if (endLine > originalLines.length) {
       return Object.freeze({
         success: false,
-        content: '',
+        content: "",
         error: `end_line ${endLine} is outside ${rawPath} (${originalLines.length} lines). Read the file again before editing.`,
       });
     }
 
-    const anchorError = validateAnchoredRangeEdit(rawPath, originalLines, startLine, endLine, {
-      expectedRangeContent,
-      expectedRangeContentProvided: typeof expectedRangeContent === 'string',
-      anchorBefore,
-      anchorAfter,
-    });
+    const anchorError = validateAnchoredRangeEdit(
+      rawPath,
+      originalLines,
+      startLine,
+      endLine,
+      {
+        expectedRangeContent: normalizedExpectedRangeContent,
+        expectedRangeContentProvided: typeof expectedRangeContent === "string",
+        anchorBefore: normalizedAnchorBefore,
+        anchorAfter: normalizedAnchorAfter,
+      },
+    );
     if (anchorError) {
-      return Object.freeze({ success: false, content: '', error: anchorError });
+      return Object.freeze({ success: false, content: "", error: anchorError });
     }
 
-    const resolvedRange = resolveRangeEditLocation(originalLines, startLine, endLine, {
-      expectedRangeContent,
-      expectedRangeContentProvided: typeof expectedRangeContent === 'string',
-      anchorBefore,
-      anchorAfter,
-    });
+    const resolvedRange = resolveRangeEditLocation(
+      originalLines,
+      startLine,
+      endLine,
+      {
+        expectedRangeContent: normalizedExpectedRangeContent,
+        expectedRangeContentProvided: typeof expectedRangeContent === "string",
+        anchorBefore: normalizedAnchorBefore,
+        anchorAfter: normalizedAnchorAfter,
+      },
+    );
     if (!resolvedRange) {
       return Object.freeze({
         success: false,
-        content: '',
+        content: "",
         error: `Target range in ${rawPath} no longer matches the last read snapshot. Read the file again before editing.`,
       });
     }
 
-    const replacementLines = newContent.split('\n');
-    const updated = [
+    const replacementLines = splitLogicalLines(newContent);
+    const updatedLines = [
       ...originalLines.slice(0, resolvedRange.startLine - 1),
       ...replacementLines,
       ...originalLines.slice(resolvedRange.endLine),
-    ].join('\n');
+    ];
+    const updated = joinLogicalLines(updatedLines, lineEnding);
 
-    fs.writeFileSync(resolved, updated, 'utf-8');
+    fs.writeFileSync(resolved, updated, "utf-8");
     trackFileWrite(resolved);
 
     return Object.freeze({
@@ -237,27 +352,42 @@ export function editFileRangeTool(
       content: `Edited ${toDisplayPath(resolved, workspaceRoot)} lines ${resolvedRange.startLine}-${resolvedRange.endLine}`,
       meta: Object.freeze({
         filePath: resolved,
-        operation: 'edit',
+        operation: "edit",
         existedBefore: true,
         changedLineRanges: Object.freeze([
           Object.freeze({
             startLine: resolvedRange.startLine,
-            endLine: Math.max(resolvedRange.startLine, resolvedRange.startLine + replacementLines.length - 1),
+            endLine: Math.max(
+              resolvedRange.startLine,
+              resolvedRange.startLine + replacementLines.length - 1,
+            ),
           }),
         ]),
         rangeEdit: true,
         startLine: resolvedRange.startLine,
         endLine: resolvedRange.endLine,
         relocated:
-          resolvedRange.startLine !== startLine || resolvedRange.endLine !== endLine,
-        ...(Number.isFinite(expectedTotalLines) && expectedTotalLines! > 0 ? { expectedTotalLines } : {}),
-        ...(typeof expectedRangeContent === 'string' && expectedRangeContent.length > 0 ? { expectedRangeContent } : {}),
-        ...(typeof anchorBefore === 'string' && anchorBefore.length > 0 ? { anchorBefore } : {}),
-        ...(typeof anchorAfter === 'string' && anchorAfter.length > 0 ? { anchorAfter } : {}),
+          resolvedRange.startLine !== startLine ||
+          resolvedRange.endLine !== endLine,
+        ...(Number.isFinite(expectedTotalLines) && expectedTotalLines! > 0
+          ? { expectedTotalLines }
+          : {}),
+        ...(typeof normalizedExpectedRangeContent === "string" &&
+        normalizedExpectedRangeContent.length > 0
+          ? { expectedRangeContent: normalizedExpectedRangeContent }
+          : {}),
+        ...(typeof normalizedAnchorBefore === "string" &&
+        normalizedAnchorBefore.length > 0
+          ? { anchorBefore: normalizedAnchorBefore }
+          : {}),
+        ...(typeof normalizedAnchorAfter === "string" &&
+        normalizedAnchorAfter.length > 0
+          ? { anchorAfter: normalizedAnchorAfter }
+          : {}),
       }),
     });
   } catch (error) {
-    return Object.freeze({ success: false, content: '', error: String(error) });
+    return Object.freeze({ success: false, content: "", error: String(error) });
   }
 }
 
@@ -276,44 +406,78 @@ export function insertFileAtLineTool(
 ): ToolResult {
   try {
     const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
-    const { line, contentToInsert, expectedTotalLines, anchorBefore, anchorAfter } = request;
-    if (!fs.existsSync(resolved)) {
-      return Object.freeze({ success: false, content: '', error: `File not found: ${rawPath}` });
-    }
-    if (!Number.isFinite(line) || line < 1) {
-      return Object.freeze({ success: false, content: '', error: `Invalid line for ${rawPath}. line must be 1-based and >= 1.` });
-    }
-
-    const preconditionError = validateTargetedEditPreconditions(rawPath, 'insert', expectedTotalLines, {
+    const {
+      line,
+      contentToInsert,
+      expectedTotalLines,
       anchorBefore,
       anchorAfter,
-    });
+    } = request;
+    if (!fs.existsSync(resolved)) {
+      return Object.freeze({
+        success: false,
+        content: "",
+        error: `File not found: ${rawPath}`,
+      });
+    }
+    if (!Number.isFinite(line) || line < 1) {
+      return Object.freeze({
+        success: false,
+        content: "",
+        error: `Invalid line for ${rawPath}. line must be 1-based and >= 1.`,
+      });
+    }
+
+    const preconditionError = validateTargetedEditPreconditions(
+      rawPath,
+      "insert",
+      expectedTotalLines,
+      {
+        anchorBefore,
+        anchorAfter,
+      },
+    );
     if (preconditionError) {
-      return Object.freeze({ success: false, content: '', error: preconditionError });
+      return Object.freeze({
+        success: false,
+        content: "",
+        error: preconditionError,
+      });
     }
 
     captureOriginal(resolved);
-    const original = fs.readFileSync(resolved, 'utf-8');
-    const originalLines = original.split('\n');
+    const original = fs.readFileSync(resolved, "utf-8");
+    const lineEnding = detectLineEnding(original);
+    const originalLines = splitLogicalLines(original);
+    const normalizedAnchorBefore = normalizeSnapshotText(anchorBefore);
+    const normalizedAnchorAfter = normalizeSnapshotText(anchorAfter);
     if (line > originalLines.length + 1) {
-      return Object.freeze({ success: false, content: '', error: `line ${line} is outside ${rawPath} (${originalLines.length} lines).` });
+      return Object.freeze({
+        success: false,
+        content: "",
+        error: `line ${line} is outside ${rawPath} (${originalLines.length} lines).`,
+      });
     }
     const resolvedLine = resolveInsertionLine(originalLines, line, {
-      anchorBefore,
-      anchorAfter,
+      anchorBefore: normalizedAnchorBefore,
+      anchorAfter: normalizedAnchorAfter,
     });
     if (!resolvedLine) {
       return Object.freeze({
         success: false,
-        content: '',
+        content: "",
         error: `Insertion point in ${rawPath} no longer matches the last read snapshot. Read the file again before inserting.`,
       });
     }
 
-    const insertedLines = contentToInsert.split('\n');
+    const insertedLines = splitLogicalLines(contentToInsert);
     const updatedLines = [...originalLines];
     updatedLines.splice(resolvedLine - 1, 0, ...insertedLines);
-    fs.writeFileSync(resolved, updatedLines.join('\n'), 'utf-8');
+    fs.writeFileSync(
+      resolved,
+      joinLogicalLines(updatedLines, lineEnding),
+      "utf-8",
+    );
     trackFileWrite(resolved);
 
     return Object.freeze({
@@ -321,23 +485,32 @@ export function insertFileAtLineTool(
       content: `Inserted content into ${toDisplayPath(resolved, workspaceRoot)} before line ${resolvedLine}`,
       meta: Object.freeze({
         filePath: resolved,
-        operation: 'edit',
+        operation: "edit",
         existedBefore: true,
         changedLineRanges: Object.freeze([
           Object.freeze({
             startLine: resolvedLine,
-            endLine: Math.max(resolvedLine, resolvedLine + insertedLines.length - 1),
+            endLine: Math.max(
+              resolvedLine,
+              resolvedLine + insertedLines.length - 1,
+            ),
           }),
         ]),
         insertEdit: true,
         startLine: resolvedLine,
         relocated: resolvedLine !== line,
-        ...(typeof anchorBefore === 'string' && anchorBefore.length > 0 ? { anchorBefore } : {}),
-        ...(typeof anchorAfter === 'string' && anchorAfter.length > 0 ? { anchorAfter } : {}),
+        ...(typeof normalizedAnchorBefore === "string" &&
+        normalizedAnchorBefore.length > 0
+          ? { anchorBefore: normalizedAnchorBefore }
+          : {}),
+        ...(typeof normalizedAnchorAfter === "string" &&
+        normalizedAnchorAfter.length > 0
+          ? { anchorAfter: normalizedAnchorAfter }
+          : {}),
       }),
     });
   } catch (error) {
-    return Object.freeze({ success: false, content: '', error: String(error) });
+    return Object.freeze({ success: false, content: "", error: String(error) });
   }
 }
 
@@ -350,44 +523,81 @@ export function multiEditFileRangesTool(
   try {
     const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
     if (!fs.existsSync(resolved)) {
-      return Object.freeze({ success: false, content: '', error: `File not found: ${rawPath}` });
+      return Object.freeze({
+        success: false,
+        content: "",
+        error: `File not found: ${rawPath}`,
+      });
     }
     if (!Array.isArray(edits) || edits.length === 0) {
-      return Object.freeze({ success: false, content: '', error: `No edits provided for ${rawPath}.` });
+      return Object.freeze({
+        success: false,
+        content: "",
+        error: `No edits provided for ${rawPath}.`,
+      });
     }
 
     captureOriginal(resolved);
-    const original = fs.readFileSync(resolved, 'utf-8');
-    const originalLines = original.split('\n');
+    const original = fs.readFileSync(resolved, "utf-8");
+    const lineEnding = detectLineEnding(original);
+    const originalLines = splitLogicalLines(original);
     const normalizedEdits = edits.map((edit, index) => {
       const startLine = Number(edit.start_line);
       const endLine = Number(edit.end_line);
-      if (!Number.isFinite(startLine) || !Number.isFinite(endLine) || startLine < 1 || endLine < startLine) {
-        throw new Error(`Invalid range for edit ${index + 1} in ${rawPath}. start_line and end_line must be 1-based and end_line >= start_line.`);
+      if (
+        !Number.isFinite(startLine) ||
+        !Number.isFinite(endLine) ||
+        startLine < 1 ||
+        endLine < startLine
+      ) {
+        throw new Error(
+          `Invalid range for edit ${index + 1} in ${rawPath}. start_line and end_line must be 1-based and end_line >= start_line.`,
+        );
       }
       if (startLine > originalLines.length + 1) {
-        throw new Error(`start_line ${startLine} is outside ${rawPath} (${originalLines.length} lines).`);
+        throw new Error(
+          `start_line ${startLine} is outside ${rawPath} (${originalLines.length} lines).`,
+        );
       }
       return Object.freeze({
         startLine,
         endLine,
-        newContent: String(edit.new_content ?? ''),
-        expectedRangeContent: typeof edit.expected_range_content === 'string' ? edit.expected_range_content : '',
-        expectedRangeContentProvided: Object.prototype.hasOwnProperty.call(edit, 'expected_range_content'),
-        anchorBefore: typeof edit.anchor_before === 'string' ? edit.anchor_before : '',
-        anchorAfter: typeof edit.anchor_after === 'string' ? edit.anchor_after : '',
+        newContent: normalizeLineEndings(String(edit.new_content ?? "")),
+        expectedRangeContent:
+          typeof edit.expected_range_content === "string"
+            ? normalizeLineEndings(edit.expected_range_content)
+            : "",
+        expectedRangeContentProvided: Object.prototype.hasOwnProperty.call(
+          edit,
+          "expected_range_content",
+        ),
+        anchorBefore:
+          typeof edit.anchor_before === "string"
+            ? normalizeLineEndings(edit.anchor_before)
+            : "",
+        anchorAfter:
+          typeof edit.anchor_after === "string"
+            ? normalizeLineEndings(edit.anchor_after)
+            : "",
       });
     });
 
     const resolvedEdits = normalizedEdits.map((edit) => {
-      const resolvedRange = resolveRangeEditLocation(originalLines, edit.startLine, edit.endLine, {
-        expectedRangeContent: edit.expectedRangeContent,
-        expectedRangeContentProvided: edit.expectedRangeContentProvided,
-        anchorBefore: edit.anchorBefore,
-        anchorAfter: edit.anchorAfter,
-      });
+      const resolvedRange = resolveRangeEditLocation(
+        originalLines,
+        edit.startLine,
+        edit.endLine,
+        {
+          expectedRangeContent: edit.expectedRangeContent,
+          expectedRangeContentProvided: edit.expectedRangeContentProvided,
+          anchorBefore: edit.anchorBefore,
+          anchorAfter: edit.anchorAfter,
+        },
+      );
       if (!resolvedRange) {
-        throw new Error(`Target range in ${rawPath} no longer matches the last read snapshot. Read the file again before editing.`);
+        throw new Error(
+          `Target range in ${rawPath} no longer matches the last read snapshot. Read the file again before editing.`,
+        );
       }
       return Object.freeze({
         ...edit,
@@ -396,50 +606,82 @@ export function multiEditFileRangesTool(
       });
     });
 
-    const sorted = [...resolvedEdits].sort((left, right) => right.resolvedStartLine - left.resolvedStartLine);
+    const sorted = [...resolvedEdits].sort(
+      (left, right) => right.resolvedStartLine - left.resolvedStartLine,
+    );
     for (let index = 0; index < sorted.length - 1; index += 1) {
       const current = sorted[index];
       const next = sorted[index + 1];
       if (next.resolvedEndLine >= current.resolvedStartLine) {
-        return Object.freeze({ success: false, content: '', error: `Overlapping edit ranges detected in ${rawPath}.` });
+        return Object.freeze({
+          success: false,
+          content: "",
+          error: `Overlapping edit ranges detected in ${rawPath}.`,
+        });
       }
     }
 
     let updatedLines = [...originalLines];
     for (const edit of sorted) {
-      const preconditionError = validateTargetedEditPreconditions(rawPath, 'multi-range-edit', expectedTotalLines, {
-        expectedRangeContent: edit.expectedRangeContent,
-        expectedRangeContentProvided: edit.expectedRangeContentProvided,
-        anchorBefore: edit.anchorBefore,
-        anchorAfter: edit.anchorAfter,
-      });
+      const preconditionError = validateTargetedEditPreconditions(
+        rawPath,
+        "multi-range-edit",
+        expectedTotalLines,
+        {
+          expectedRangeContent: edit.expectedRangeContent,
+          expectedRangeContentProvided: edit.expectedRangeContentProvided,
+          anchorBefore: edit.anchorBefore,
+          anchorAfter: edit.anchorAfter,
+        },
+      );
       if (preconditionError) {
-        return Object.freeze({ success: false, content: '', error: preconditionError });
-      }
-      if (edit.resolvedStartLine > originalLines.length || edit.resolvedEndLine > originalLines.length) {
         return Object.freeze({
           success: false,
-          content: '',
+          content: "",
+          error: preconditionError,
+        });
+      }
+      if (
+        edit.resolvedStartLine > originalLines.length ||
+        edit.resolvedEndLine > originalLines.length
+      ) {
+        return Object.freeze({
+          success: false,
+          content: "",
           error: `Edit range ${edit.resolvedStartLine}-${edit.resolvedEndLine} is outside ${rawPath} (${originalLines.length} lines). Use insert_file_at_line for insertions.`,
         });
       }
-      const anchorError = validateAnchoredRangeEdit(rawPath, updatedLines, edit.resolvedStartLine, edit.resolvedEndLine, {
-        expectedRangeContent: edit.expectedRangeContent,
-        expectedRangeContentProvided: edit.expectedRangeContentProvided,
-        anchorBefore: edit.anchorBefore,
-        anchorAfter: edit.anchorAfter,
-      });
+      const anchorError = validateAnchoredRangeEdit(
+        rawPath,
+        updatedLines,
+        edit.resolvedStartLine,
+        edit.resolvedEndLine,
+        {
+          expectedRangeContent: edit.expectedRangeContent,
+          expectedRangeContentProvided: edit.expectedRangeContentProvided,
+          anchorBefore: edit.anchorBefore,
+          anchorAfter: edit.anchorAfter,
+        },
+      );
       if (anchorError) {
-        return Object.freeze({ success: false, content: '', error: anchorError });
+        return Object.freeze({
+          success: false,
+          content: "",
+          error: anchorError,
+        });
       }
       updatedLines = [
         ...updatedLines.slice(0, edit.resolvedStartLine - 1),
-        ...edit.newContent.split('\n'),
+        ...splitLogicalLines(edit.newContent),
         ...updatedLines.slice(edit.resolvedEndLine),
       ];
     }
 
-    fs.writeFileSync(resolved, updatedLines.join('\n'), 'utf-8');
+    fs.writeFileSync(
+      resolved,
+      joinLogicalLines(updatedLines, lineEnding),
+      "utf-8",
+    );
     trackFileWrite(resolved);
 
     return Object.freeze({
@@ -447,19 +689,28 @@ export function multiEditFileRangesTool(
       content: `Edited ${toDisplayPath(resolved, workspaceRoot)} with ${normalizedEdits.length} targeted range edit(s)`,
       meta: Object.freeze({
         filePath: resolved,
-        operation: 'edit',
+        operation: "edit",
         existedBefore: true,
         multiRangeEdit: true,
         changedLineRanges: Object.freeze(
-          resolvedEdits.map((edit) => Object.freeze({
-            startLine: edit.resolvedStartLine,
-            endLine: Math.max(edit.resolvedStartLine, edit.resolvedStartLine + edit.newContent.split('\n').length - 1),
-          })),
+          resolvedEdits.map((edit) =>
+            Object.freeze({
+              startLine: edit.resolvedStartLine,
+              endLine: Math.max(
+                edit.resolvedStartLine,
+                edit.resolvedStartLine +
+                  splitLogicalLines(edit.newContent).length -
+                  1,
+              ),
+            }),
+          ),
         ),
-        ...(Number.isFinite(expectedTotalLines) && expectedTotalLines! > 0 ? { expectedTotalLines } : {}),
+        ...(Number.isFinite(expectedTotalLines) && expectedTotalLines! > 0
+          ? { expectedTotalLines }
+          : {}),
       }),
     });
   } catch (error) {
-    return Object.freeze({ success: false, content: '', error: String(error) });
+    return Object.freeze({ success: false, content: "", error: String(error) });
   }
 }

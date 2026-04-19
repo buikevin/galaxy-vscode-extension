@@ -9,13 +9,14 @@
 import type * as vscode from "vscode";
 import type { FigmaImportRecord } from "./figma";
 import type { GalaxyWorkbenchChrome } from "./extension-host";
+import type { LocalAttachmentPayload } from "./protocol";
 
 /** Provider surface required by extension activation command wiring. */
 export type SidebarProviderLifecycle = vscode.WebviewViewProvider & {
   /** Reveals the sidebar-hosted Galaxy chat view. */
   reveal(): Promise<void>;
-  /** Opens the secondary chat panel beside the active editor. */
-  openChatRight(): Promise<void>;
+  /** Opens the Galaxy chat webview tab in the current editor group. */
+  openChatTab(): Promise<void>;
   /** Mirrors the current quality preferences into VS Code settings. */
   syncQualityPreferencesToVsCodeSettings(): Promise<void>;
   /** Reacts to external VS Code settings changes affecting quality preferences. */
@@ -30,6 +31,10 @@ export type SidebarProviderLifecycle = vscode.WebviewViewProvider & {
   openRuntimeLogs(): Promise<void>;
   /** Opens the telemetry summary view. */
   openTelemetrySummary(): Promise<void>;
+  /** Surfaces one draft local attachment into the active composer. */
+  surfaceDraftLocalAttachment(
+    attachment: LocalAttachmentPayload,
+  ): Promise<void>;
 };
 
 /** Callback used when a Figma import is surfaced back into the provider. */

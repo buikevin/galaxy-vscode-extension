@@ -375,6 +375,8 @@ export type BuildSessionInitPayloadParams = Readonly<{
   extensionToolToggles: Readonly<Record<string, boolean>>;
   /** Current workspace diff/change summary. */
   changeSummary: ChangeSummary;
+  /** Draft local attachments that should be restored into the composer. */
+  localAttachments?: SessionInitPayload["localAttachments"];
   /** Whether older transcript history exists beyond the currently loaded batch. */
   hasOlderMessages: boolean;
   /** Optional in-flight assistant stream text. */

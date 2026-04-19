@@ -10,6 +10,7 @@ import type { GalaxyConfig } from '../../shared/config';
 import { getConfigPath } from '../../config/manager';
 import type { AgentDriver, RuntimeMessage, StreamHandler } from '../../shared/runtime';
 import { buildGeminiFunctionDeclarations } from './tool-schemas';
+import { buildGeminiImageContentParts } from './image-content';
 import { buildDriverSystemPrompt } from './message-builders';
 import { buildDriverErrorChunk, createDoneEmitter } from './stream-utils';
 
@@ -65,6 +66,17 @@ function buildContents(messages: readonly RuntimeMessage[]) {
     }
 
     if (message.role !== 'tool') {
+      if (message.role === 'user' && message.images?.length) {
+        const parts: unknown[] = [];
+        if (message.content) {
+          parts.push({ text: message.content });
+        }
+        parts.push(...buildGeminiImageContentParts(message.images));
+        contents.push({ role: 'user', parts });
+        index += 1;
+        continue;
+      }
+
       contents.push({
         role: message.role === 'user' ? 'user' : 'model',
         parts: [{ text: message.content }],

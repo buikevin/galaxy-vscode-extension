@@ -18,6 +18,33 @@ export type AttachmentStatus = 'draft' | 'committed' | 'removed';
 /** Physical storage mode used for one attachment payload. */
 export type AttachmentStorageKind = 'binary' | 'text-cache';
 
+/** Viewport preset ids used for FE preview screenshot capture. */
+export type FrontendPreviewViewportId = 'desktop' | 'tablet' | 'mobile';
+
+/** FE preview diagnostics captured alongside one screenshot attachment. */
+export type FrontendPreviewReviewContext = Readonly<{
+  /** Original preview URL used to load the page. */
+  previewUrl: string;
+  /** Final page URL after redirects and navigation. */
+  finalUrl: string;
+  /** Optional page title captured after the page settled. */
+  pageTitle?: string;
+  /** Named viewport preset used for this screenshot. */
+  viewportId: FrontendPreviewViewportId;
+  /** Human-readable viewport label. */
+  viewportLabel: string;
+  /** Screenshot viewport width in CSS pixels. */
+  width: number;
+  /** Screenshot viewport height in CSS pixels. */
+  height: number;
+  /** Console warnings/errors collected during capture. */
+  consoleMessages?: readonly string[];
+  /** Uncaught page errors collected during capture. */
+  pageErrors?: readonly string[];
+  /** Failed requests and HTTP error responses collected during capture. */
+  failedRequests?: readonly string[];
+}>;
+
 /** One persisted attachment record stored in the attachment index. */
 export type AttachmentRecord = Readonly<{
   /** Stable attachment identifier used across transcript and storage. */
@@ -42,6 +69,8 @@ export type AttachmentRecord = Readonly<{
   previewPath?: string;
   /** Optional linked Figma import id for Figma-backed attachments. */
   figmaImportId?: string;
+  /** Optional FE preview diagnostics for screenshot-driven visual review. */
+  frontendPreviewContext?: FrontendPreviewReviewContext;
   /** Unix timestamp in milliseconds when the record was created. */
   createdAt: number;
   /** Unix timestamp in milliseconds when the record was last updated. */

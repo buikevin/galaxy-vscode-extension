@@ -2,208 +2,24 @@
  * @author Bùi Trọng Hiếu
  * @email kevinbui210191@gmail.com
  * @create date 2026-03-23
- * @modify date 2026-03-23
- * @desc Summary card for session file changes with keep, revert, and Galaxy Diff actions.
+ * @modify date 2026-04-03
+ * @desc Compact summary card for tracked workspace changes shown above the composer.
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Check, ChevronRight, ExternalLink, FileText, Sparkles, Undo2, X } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ExternalLink,
+  FileText,
+  Sparkles,
+  Undo2,
+  X,
+} from "lucide-react";
 import type { ChangeSummary, ReviewFinding } from "@shared/protocol";
 import type { WebviewMessage } from "@shared/protocol";
 import { postHostMessage } from "@webview/vscode";
 
-type PreviewRow =
-  | Readonly<{ type: "collapsed"; count: number }>
-  | Readonly<{
-      type: "line";
-      kind: "unchanged" | "modified" | "deleted" | "added";
-      leftNumber: number | null;
-      rightNumber: number | null;
-      leftText: string;
-      rightText: string;
-    }>;
-
-function buildPreviewRows(file: ChangeSummary["files"][number]): readonly PreviewRow[] {
-  const originalLines = (file.originalContent ?? "").split("\n");
-  const currentLines = (file.currentContent ?? "").split("\n");
-
-  if (file.wasNew) {
-    return Object.freeze(
-      currentLines.map(
-        (line, index): PreviewRow =>
-          Object.freeze({
-            type: "line",
-            kind: "added",
-            leftNumber: null,
-            rightNumber: index + 1,
-            leftText: "",
-            rightText: line,
-          })
-      )
-    );
-  }
-
-  let prefix = 0;
-  while (
-    prefix < originalLines.length &&
-    prefix < currentLines.length &&
-    originalLines[prefix] === currentLines[prefix]
-  ) {
-    prefix += 1;
-  }
-
-  let suffix = 0;
-  while (
-    suffix < originalLines.length - prefix &&
-    suffix < currentLines.length - prefix &&
-    originalLines[originalLines.length - 1 - suffix] ===
-      currentLines[currentLines.length - 1 - suffix]
-  ) {
-    suffix += 1;
-  }
-
-  const rows: PreviewRow[] = [];
-  if (prefix > 0) {
-    rows.push(Object.freeze({ type: "collapsed", count: prefix }));
-  }
-
-  const originalChanged = originalLines.slice(prefix, originalLines.length - suffix);
-  const currentChanged = currentLines.slice(prefix, currentLines.length - suffix);
-  const maxChanged = Math.max(originalChanged.length, currentChanged.length);
-
-  for (let index = 0; index < maxChanged; index += 1) {
-    const leftText = originalChanged[index];
-    const rightText = currentChanged[index];
-    rows.push(
-      Object.freeze({
-        type: "line",
-        kind:
-          typeof leftText === "string" && typeof rightText === "string"
-            ? "modified"
-            : typeof leftText === "string"
-              ? "deleted"
-              : "added",
-        leftNumber: typeof leftText === "string" ? prefix + index + 1 : null,
-        rightNumber: typeof rightText === "string" ? prefix + index + 1 : null,
-        leftText: leftText ?? "",
-        rightText: rightText ?? "",
-      })
-    );
-  }
-
-  if (suffix > 0) {
-    rows.push(Object.freeze({ type: "collapsed", count: suffix }));
-  }
-
-  if (rows.length === 0) {
-    rows.push(
-      Object.freeze({
-        type: "line",
-        kind: "unchanged",
-        leftNumber: 1,
-        rightNumber: 1,
-        leftText: originalLines[0] ?? "",
-        rightText: currentLines[0] ?? "",
-      })
-    );
-  }
-
-  return Object.freeze(rows);
-}
-
-function getVisiblePreviewRows(rows: readonly PreviewRow[], maxRows = 10): readonly PreviewRow[] {
-  if (rows.length <= maxRows) {
-    return rows;
-  }
-
-  const visible = rows.slice(0, maxRows - 1);
-  const hiddenCount = rows.length - visible.length;
-  return Object.freeze([
-    ...visible,
-    Object.freeze({ type: "collapsed", count: hiddenCount }),
-  ]);
-}
-
-function renderPreviewLine(
-  row: Extract<PreviewRow, { type: "line" }>,
-  key: string
-) {
-  if (row.kind === "unchanged") {
-    return (
-      <div
-        key={key}
-        className="grid grid-cols-[40px_12px_minmax(0,1fr)] items-start gap-0 font-mono text-[12px] leading-6 text-[color:var(--gc-muted)]"
-      >
-        <div className="select-none px-3 text-right text-[color:color-mix(in_srgb,var(--gc-muted)_70%,transparent)]">
-          {row.rightNumber ?? row.leftNumber ?? ""}
-        </div>
-        <div className="select-none text-center"> </div>
-        <div className="min-w-0 overflow-hidden px-3 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-          {row.rightText || row.leftText}
-        </div>
-      </div>
-    );
-  }
-
-  if (row.kind === "modified") {
-    return (
-      <div key={key} className="space-y-px">
-        <div className="grid grid-cols-[40px_12px_minmax(0,1fr)] items-start gap-0 bg-rose-500/8 font-mono text-[12px] leading-6 text-rose-200">
-          <div className="select-none px-3 text-right text-rose-300/80">
-            {row.leftNumber ?? ""}
-          </div>
-          <div className="select-none text-center text-rose-300">-</div>
-          <div className="min-w-0 overflow-hidden px-3 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-            {row.leftText}
-          </div>
-        </div>
-        <div className="grid grid-cols-[40px_12px_minmax(0,1fr)] items-start gap-0 bg-emerald-500/10 font-mono text-[12px] leading-6 text-emerald-200">
-          <div className="select-none px-3 text-right text-emerald-300/80">
-            {row.rightNumber ?? ""}
-          </div>
-          <div className="select-none text-center text-emerald-300">+</div>
-          <div className="min-w-0 overflow-hidden px-3 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-            {row.rightText}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const isAdded = row.kind === "added";
-  return (
-    <div
-      key={key}
-      className={`grid grid-cols-[40px_12px_minmax(0,1fr)] items-start gap-0 font-mono text-[12px] leading-6 ${
-        isAdded
-          ? "bg-emerald-500/10 text-emerald-200"
-          : "bg-rose-500/8 text-rose-200"
-      }`}
-    >
-      <div
-        className={`select-none px-3 text-right ${
-          isAdded ? "text-emerald-300/80" : "text-rose-300/80"
-        }`}
-      >
-        {isAdded ? (row.rightNumber ?? "") : (row.leftNumber ?? "")}
-      </div>
-      <div
-        className={`select-none text-center ${
-          isAdded ? "text-emerald-300" : "text-rose-300"
-        }`}
-      >
-        {isAdded ? "+" : "-"}
-      </div>
-      <div className="min-w-0 overflow-hidden px-3 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-        {isAdded ? row.rightText : row.leftText}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Props for the change summary action card.
- */
 type ChangeSummaryCardProps = Readonly<{
   /** Current aggregate change summary from the host. */
   summary: ChangeSummary;
@@ -221,10 +37,29 @@ type ChangeSummaryCardProps = Readonly<{
   onApplyReviewFinding: (findingId: string) => void;
 }>;
 
-/**
- * Render the change summary box shown above the composer.
- */
+function formatSummaryLabel(summary: ChangeSummary): string {
+  return summary.createdCount > 0
+    ? `${summary.fileCount} file thay đổi • ${summary.createdCount} file mới`
+    : `${summary.fileCount} file thay đổi`;
+}
+
+function getFileDisplayLabel(file: ChangeSummary["files"][number]): string {
+  return file.label || file.filePath.split(/[\\/]/).pop() || file.filePath;
+}
+
+function getFileSecondaryLabel(file: ChangeSummary["files"][number]): string {
+  const label = file.label || file.filePath;
+  const segments = label.split("/");
+  if (segments.length <= 1) {
+    return "";
+  }
+  return segments.slice(0, -1).join("/");
+}
+
 export function ChangeSummaryCard(props: ChangeSummaryCardProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [keptFilePaths, setKeptFilePaths] = useState<string[]>([]);
+
   const openFindings = useMemo(
     () =>
       (props.reviewFindings ?? []).filter(
@@ -235,6 +70,10 @@ export function ChangeSummaryCard(props: ChangeSummaryCardProps) {
   const [activeFindingIndex, setActiveFindingIndex] = useState(0);
 
   useEffect(() => {
+    setKeptFilePaths([]);
+  }, [props.summary]);
+
+  useEffect(() => {
     if (openFindings.length === 0) {
       setActiveFindingIndex(0);
       return;
@@ -243,6 +82,30 @@ export function ChangeSummaryCard(props: ChangeSummaryCardProps) {
       setActiveFindingIndex(0);
     }
   }, [activeFindingIndex, openFindings.length]);
+
+  const visibleFiles = useMemo(
+    () =>
+      props.summary.files.filter((file) => !keptFilePaths.includes(file.filePath)),
+    [keptFilePaths, props.summary.files]
+  );
+
+  const visibleSummary = useMemo<ChangeSummary>(
+    () => ({
+      ...props.summary,
+      fileCount: visibleFiles.length,
+      createdCount: visibleFiles.filter((file) => file.wasNew).length,
+      addedLines: visibleFiles.reduce((total, file) => total + file.addedLines, 0),
+      deletedLines: visibleFiles.reduce((total, file) => total + file.deletedLines, 0),
+      files: visibleFiles,
+    }),
+    [props.summary, visibleFiles]
+  );
+
+  useEffect(() => {
+    if (props.summary.fileCount > 0 && visibleFiles.length === 0) {
+      props.onKeep();
+    }
+  }, [props, visibleFiles.length]);
 
   const activeFinding =
     openFindings.length > 0 ? openFindings[activeFindingIndex] : null;
@@ -261,106 +124,130 @@ export function ChangeSummaryCard(props: ChangeSummaryCardProps) {
     } satisfies WebviewMessage);
   }
 
+  function revertFile(filePath: string): void {
+    postHostMessage({
+      type: "revert-file-change",
+      payload: { filePath },
+    } satisfies WebviewMessage);
+  }
+
+  function keepFile(filePath: string): void {
+    setKeptFilePaths((current) =>
+      current.includes(filePath) ? current : [...current, filePath]
+    );
+  }
+
   return (
-    <div className="space-y-3 rounded-xl border border-[color:var(--gc-border)] bg-[var(--gc-surface)] px-4 py-3">
-      <div className="flex items-center justify-between gap-4">
-        <div className="space-y-1">
-          <div className="text-sm font-medium text-[color:var(--gc-foreground)]">
-            {props.summary.createdCount > 0
-              ? `${props.summary.fileCount} file thay đổi • ${props.summary.createdCount} file mới`
-              : `${props.summary.fileCount} file thay đổi`}
+    <div className="space-y-3 rounded-2xl border border-[color:var(--gc-border)] bg-[var(--gc-surface)] px-3 py-3">
+      <div className="flex items-start justify-between gap-3">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          onClick={() => setCollapsed((current) => !current)}
+        >
+          <ChevronDown
+            className={`h-4 w-4 shrink-0 text-[color:var(--gc-muted)] transition-transform ${
+              collapsed ? "-rotate-90" : "rotate-0"
+            }`}
+          />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-[color:var(--gc-foreground)]">
+              <span>{formatSummaryLabel(visibleSummary)}</span>
+              <span className="text-emerald-400">+{visibleSummary.addedLines}</span>
+              <span className="text-rose-400">-{visibleSummary.deletedLines}</span>
+            </div>
           </div>
-          <div className="text-xs text-[color:var(--gc-muted)]">
-            <span className="text-emerald-400">+{props.summary.addedLines}</span>
-            <span className="mx-2 text-rose-400">-{props.summary.deletedLines}</span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
+        </button>
+
+        <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded-full border border-[color:var(--gc-border)] bg-transparent px-2.5 py-1 text-sm text-[color:var(--gc-foreground)] transition-colors hover:bg-[var(--gc-surface-elevated)]"
+            className="inline-flex h-8 items-center rounded-lg border border-[color:var(--gc-border)] px-2.5 text-sm text-[color:var(--gc-foreground)] transition-colors hover:bg-[var(--gc-surface-elevated)]"
             onClick={props.onKeep}
+            title="Giữ thay đổi hiện tại"
           >
-            <Check className="h-4 w-4" />
-            <span>Keep</span>
+            Keep
           </button>
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded-full border border-[color:var(--gc-border)] bg-transparent px-2.5 py-1 text-sm text-[color:var(--gc-foreground)] transition-colors hover:bg-[var(--gc-surface-elevated)]"
+            className="inline-flex h-8 items-center rounded-lg border border-[color:var(--gc-border)] px-2.5 text-sm text-[color:var(--gc-foreground)] transition-colors hover:bg-[var(--gc-surface-elevated)]"
             onClick={props.onRevertAll}
+            title="Hoàn tác toàn bộ thay đổi"
           >
-            <Undo2 className="h-4 w-4" />
-            <span>Revert</span>
+            Undo
           </button>
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded-full border border-[color:var(--gc-border)] bg-transparent px-2.5 py-1 text-sm text-[color:var(--gc-foreground)] transition-colors hover:bg-[var(--gc-surface-elevated)]"
+            className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[color:var(--gc-border)] text-[color:var(--gc-muted)] transition-colors hover:bg-[var(--gc-surface-elevated)] hover:text-[color:var(--gc-foreground)]"
             onClick={props.onReview}
+            title="Mở Galaxy Diff"
           >
-            <span>Galaxy Diff</span>
             <ExternalLink className="h-4 w-4" />
           </button>
         </div>
       </div>
 
-      {props.summary.files.length > 0 ? (
-        <div className="space-y-1">
-          {props.summary.files.slice(0, 8).map((file) => (
-            <div
-              key={file.filePath}
-              className="overflow-hidden rounded-xl bg-[color:color-mix(in_srgb,var(--gc-surface-elevated)_90%,transparent)]"
-            >
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-[color:color-mix(in_srgb,var(--gc-border)_70%,transparent)] px-3 py-2">
-                <div className="min-w-0">
-                  <div
-                    className="truncate text-sm font-medium text-[color:var(--gc-foreground)]"
-                    title={file.label}
-                  >
-                    {file.label}
+      {!collapsed && visibleSummary.files.length > 0 ? (
+        <div className="overflow-hidden rounded-xl border border-[color:color-mix(in_srgb,var(--gc-border)_70%,transparent)] bg-[color:color-mix(in_srgb,var(--gc-surface-elevated)_86%,transparent)]">
+          <div className="max-h-[248px] overflow-y-auto">
+            {visibleSummary.files.map((file) => (
+              <button
+                key={file.filePath}
+                type="button"
+                className="group flex w-full items-center gap-3 border-b border-[color:color-mix(in_srgb,var(--gc-border)_60%,transparent)] px-3 py-2.5 text-left last:border-b-0 hover:bg-[color:color-mix(in_srgb,var(--gc-surface)_92%,transparent)]"
+                onClick={() =>
+                  file.wasNew ? openFile(file.filePath) : openNativeDiff(file.filePath)
+                }
+                title={file.filePath}
+              >
+                <div className="flex min-w-0 flex-1 items-center gap-3">
+                  <FileText className="h-4 w-4 shrink-0 text-[color:var(--gc-muted)]" />
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-[color:var(--gc-foreground)]">
+                      {getFileDisplayLabel(file)}
+                    </div>
+                    {getFileSecondaryLabel(file) ? (
+                      <div className="truncate text-xs text-[color:var(--gc-muted)]">
+                        {getFileSecondaryLabel(file)}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
-                <div className="shrink-0 text-xs text-[color:var(--gc-muted)]">
+
+                <div className="shrink-0 text-sm tabular-nums">
                   <span className="text-emerald-400">+{file.addedLines}</span>
                   {!file.wasNew ? (
-                    <span className="mx-1 text-rose-400">-{file.deletedLines}</span>
+                    <span className="ml-2 text-rose-400">-{file.deletedLines}</span>
                   ) : null}
                 </div>
-                <button
-                  type="button"
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-full text-[color:var(--gc-muted)] transition-colors hover:bg-[var(--gc-surface)] hover:text-[color:var(--gc-foreground)]"
-                  onClick={() =>
-                    file.wasNew ? openFile(file.filePath) : openNativeDiff(file.filePath)
-                  }
-                  title={file.wasNew ? "Mở file" : "Mở diff native"}
-                >
-                  {file.wasNew ? (
-                    <FileText className="h-4 w-4" />
-                  ) : (
-                    <ExternalLink className="h-4 w-4" />
-                  )}
-                </button>
-              </div>
-              <div className="overflow-hidden bg-[#111214]">
-                {getVisiblePreviewRows(buildPreviewRows(file)).map((row, index) =>
-                  row.type === "collapsed" ? (
-                    <div
-                      key={`${file.filePath}-collapsed-${index}`}
-                      className="px-3 py-2 text-xs text-[color:var(--gc-muted)]"
-                    >
-                      {row.count} dòng khác không đổi
-                    </div>
-                  ) : (
-                    renderPreviewLine(row, `${file.filePath}-line-${index}`)
-                  )
-                )}
-              </div>
-            </div>
-          ))}
-          {props.summary.files.length > 8 ? (
-            <div className="px-2 pt-1 text-xs text-[color:var(--gc-muted)]">
-              +{props.summary.files.length - 8} file nữa
-            </div>
-          ) : null}
+
+                <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                  <button
+                    type="button"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[color:var(--gc-muted)] transition-colors hover:bg-[var(--gc-surface)] hover:text-emerald-300"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      keepFile(file.filePath);
+                    }}
+                    title="Giữ file này"
+                  >
+                    <Check className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[color:var(--gc-muted)] transition-colors hover:bg-[var(--gc-surface)] hover:text-rose-300"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      revertFile(file.filePath);
+                    }}
+                    title="Hoàn tác file này"
+                  >
+                    <Undo2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
       ) : null}
 
@@ -381,10 +268,10 @@ export function ChangeSummaryCard(props: ChangeSummaryCardProps) {
                 {activeFinding.message}
               </div>
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex shrink-0 items-center gap-2">
               <button
                 type="button"
-                className="inline-flex items-center gap-1 rounded-full border border-[color:var(--gc-border)] bg-transparent px-2 py-1 text-sm text-[color:var(--gc-foreground)] transition-colors hover:bg-[var(--gc-surface-elevated)]"
+                className="inline-flex h-8 items-center rounded-lg border border-[color:var(--gc-border)] px-2.5 text-sm text-[color:var(--gc-foreground)] transition-colors hover:bg-[var(--gc-surface-elevated)]"
                 onClick={() =>
                   setActiveFindingIndex((current) =>
                     openFindings.length === 0
@@ -393,24 +280,23 @@ export function ChangeSummaryCard(props: ChangeSummaryCardProps) {
                   )
                 }
               >
-                <span>Next</span>
-                <ChevronRight className="h-4 w-4" />
+                Next
               </button>
               <button
                 type="button"
-                className="inline-flex items-center gap-1 rounded-full border border-[color:var(--gc-border)] bg-transparent px-2 py-1 text-sm text-[color:var(--gc-foreground)] transition-colors hover:bg-[var(--gc-surface-elevated)]"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[color:var(--gc-border)] text-[color:var(--gc-muted)] transition-colors hover:bg-[var(--gc-surface-elevated)] hover:text-[color:var(--gc-foreground)]"
                 onClick={() => props.onDismissReviewFinding(activeFinding.id)}
+                title="Bỏ qua finding này"
               >
                 <X className="h-4 w-4" />
-                <span>Dismiss</span>
               </button>
               <button
                 type="button"
-                className="inline-flex items-center gap-1 rounded-full border border-[color:var(--gc-accent)]/30 bg-[var(--gc-accent-soft)] px-2 py-1 text-sm text-[color:var(--gc-accent)] transition-colors hover:opacity-90"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--gc-accent)]/30 bg-[var(--gc-accent-soft)] text-[color:var(--gc-accent)] transition-colors hover:opacity-90"
                 onClick={() => props.onApplyReviewFinding(activeFinding.id)}
+                title="Áp dụng finding này"
               >
                 <Sparkles className="h-4 w-4" />
-                <span>Apply</span>
               </button>
             </div>
           </div>

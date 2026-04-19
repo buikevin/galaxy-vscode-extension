@@ -35,6 +35,6 @@ export type ProviderViewActions = Readonly<{
   resolveWebviewView: (webviewView: vscode.WebviewView) => Promise<void>;
   /** Reveals the Galaxy sidebar and focuses the sidebar-hosted webview. */
   reveal: () => Promise<void>;
-  /** Opens or reveals the secondary chat panel beside the active editor. */
-  openChatRight: () => Promise<void>;
+  /** Opens or reveals the Galaxy chat webview tab in the current editor group. */
+  openChatTab: () => Promise<void>;
 }>;

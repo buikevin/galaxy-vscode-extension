@@ -14,6 +14,33 @@ import { getCachedReadResult, storeReadCache } from '../../context/rag-metadata/
 import { GREP_INCLUDE_EXTS, MAX_GREP_HITS, MAX_LIST_DIR_DEPTH, MAX_LIST_DIR_ENTRIES } from './constants';
 import type { GrepToolOptions, ListDirToolOptions, ReadFileToolOptions, ToolResult } from '../entities/file-tools';
 
+const LIST_DIR_SUMMARY_ENTRY_LIMIT = 40;
+
+function shouldSkipDirectoryEntry(entry: fs.Dirent): boolean {
+  return entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist' || entry.name === 'out';
+}
+
+function compareDirectoryEntries(left: fs.Dirent, right: fs.Dirent): number {
+  if (left.isDirectory() !== right.isDirectory()) {
+    return left.isDirectory() ? -1 : 1;
+  }
+  return left.name.localeCompare(right.name, undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  });
+}
+
+function readVisibleDirectoryEntries(dirPath: string): fs.Dirent[] {
+  return fs
+    .readdirSync(dirPath, { withFileTypes: true })
+    .filter((entry) => !shouldSkipDirectoryEntry(entry))
+    .sort(compareDirectoryEntries);
+}
+
+function formatDirectoryEntryName(entry: fs.Dirent): string {
+  return `${entry.name}${entry.isDirectory() ? '/' : ''}`;
+}
+
 /**
  * Converts an absolute workspace path into a short display path.
  *
@@ -484,13 +511,24 @@ export function listDirTool(workspaceRoot: string, rawPath: string, options?: Li
     const entries: Array<Readonly<{ name: string; path: string; kind: 'file' | 'dir' }>> = [];
     const depth = Number(options?.depth ?? 0);
     const normalizedDepth = Math.min(MAX_LIST_DIR_DEPTH, Math.max(0, Math.floor(Number.isFinite(depth) ? depth : 0)));
+    const topLevelEntries = readVisibleDirectoryEntries(resolved);
+
+    const topLevelSummary = normalizedDepth > 0 && topLevelEntries.length > 0
+      ? (() => {
+          const visibleEntries = topLevelEntries
+            .slice(0, LIST_DIR_SUMMARY_ENTRY_LIMIT)
+            .map(formatDirectoryEntryName)
+            .join(', ');
+          const remainingCount = topLevelEntries.length - LIST_DIR_SUMMARY_ENTRY_LIMIT;
+          return remainingCount > 0
+            ? `Top-level entries: ${visibleEntries}, ... (+${remainingCount} more)`
+            : `Top-level entries: ${visibleEntries}`;
+        })()
+      : '';
 
     const walk = (dirPath: string, prefix = '', currentDepth = 0): void => {
-      const dirEntries = fs.readdirSync(dirPath, { withFileTypes: true });
+      const dirEntries = readVisibleDirectoryEntries(dirPath);
       for (const entry of dirEntries) {
-        if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist' || entry.name === 'out') {
-          continue;
-        }
         if (entries.length >= MAX_LIST_DIR_ENTRIES) {
           return;
         }
@@ -506,14 +544,23 @@ export function listDirTool(workspaceRoot: string, rawPath: string, options?: Li
 
     walk(resolved);
 
+    const truncated = entries.length >= MAX_LIST_DIR_ENTRIES;
+    const contentParts = [
+      ...(topLevelSummary ? [topLevelSummary, ''] : []),
+      lines.join('\n') || '(empty directory)',
+      ...(truncated
+        ? ['', `... [truncated after ${MAX_LIST_DIR_ENTRIES} entries; narrow the path or reduce depth]`]
+        : []),
+    ];
+
     return Object.freeze({
       success: true,
-      content: lines.join('\n') || '(empty directory)',
+      content: contentParts.join('\n'),
       meta: Object.freeze({
         directoryPath: resolved,
         entryCount: entries.length,
         depth: normalizedDepth,
-        truncated: entries.length >= MAX_LIST_DIR_ENTRIES,
+        truncated,
         entries: Object.freeze(entries),
       }),
     });

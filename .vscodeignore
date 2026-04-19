@@ -4,6 +4,7 @@
 documents/**
 out/**
 node_modules/**
+!node_modules/playwright-core/**
 src/**
 webview/**
 .gitignore

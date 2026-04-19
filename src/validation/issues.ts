@@ -6,8 +6,8 @@
  * @desc Validation issue parsing helpers for the VS Code runtime.
  */
 
-import path from 'node:path';
-import type { ValidationIssue } from '../shared/validation';
+import path from "node:path";
+import type { ValidationIssue } from "../shared/validation";
 
 /**
  * Resolves relative validation file paths against the command cwd.
@@ -17,8 +17,12 @@ import type { ValidationIssue } from '../shared/validation';
  * @returns Absolute file path when possible.
  */
 function maybeResolvePath(cwd: string, filePath: string): string {
-  if (!filePath) {return filePath;}
-  if (path.isAbsolute(filePath)) {return filePath;}
+  if (!filePath) {
+    return filePath;
+  }
+  if (path.isAbsolute(filePath)) {
+    return filePath;
+  }
   return path.resolve(cwd, filePath);
 }
 
@@ -37,16 +41,25 @@ function pushIssue(
   source: string,
   message: string,
   cwd: string,
-  opts?: { filePath?: string; line?: number; column?: number; severity?: 'error' | 'warning' },
+  opts?: {
+    filePath?: string;
+    line?: number;
+    column?: number;
+    severity?: "error" | "warning";
+  },
 ): void {
-  issues.push(Object.freeze({
-    source,
-    severity: opts?.severity ?? 'error',
-    message,
-    ...(opts?.filePath ? { filePath: maybeResolvePath(cwd, opts.filePath) } : {}),
-    ...(typeof opts?.line === 'number' ? { line: opts.line } : {}),
-    ...(typeof opts?.column === 'number' ? { column: opts.column } : {}),
-  }));
+  issues.push(
+    Object.freeze({
+      source,
+      severity: opts?.severity ?? "error",
+      message,
+      ...(opts?.filePath
+        ? { filePath: maybeResolvePath(cwd, opts.filePath) }
+        : {}),
+      ...(typeof opts?.line === "number" ? { line: opts.line } : {}),
+      ...(typeof opts?.column === "number" ? { column: opts.column } : {}),
+    }),
+  );
 }
 
 /**
@@ -57,8 +70,16 @@ function pushIssue(
  * @param cwd Absolute working directory for the validation command.
  * @returns Immutable list of parsed validation issues.
  */
-export function parseIssuesWithCwd(output: string, source: string, cwd: string): readonly ValidationIssue[] {
-  const lines = output.split('\n').map((line) => line.trim()).filter(Boolean).slice(0, 100);
+export function parseIssuesWithCwd(
+  output: string,
+  source: string,
+  cwd: string,
+): readonly ValidationIssue[] {
+  const lines = output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 100);
   const issues: ValidationIssue[] = [];
   for (const line of lines) {
     let match =
@@ -68,7 +89,7 @@ export function parseIssuesWithCwd(output: string, source: string, cwd: string):
       pushIssue(issues, source, match[4] ?? line, cwd, {
         line: Number(match[2]),
         column: Number(match[3]),
-        severity: /warning/i.test(line) ? 'warning' : 'error',
+        severity: /warning/i.test(line) ? "warning" : "error",
         ...(match[1] ? { filePath: match[1] } : {}),
       });
       continue;
@@ -80,13 +101,14 @@ export function parseIssuesWithCwd(output: string, source: string, cwd: string):
       pushIssue(issues, source, match[5] ?? line, cwd, {
         line: Number(match[2]),
         column: Number(match[3]),
-        severity: String(match[4]).toLowerCase() === 'warning' ? 'warning' : 'error',
+        severity:
+          String(match[4]).toLowerCase() === "warning" ? "warning" : "error",
         ...(match[1] ? { filePath: match[1] } : {}),
       });
       continue;
     }
     match = line.match(/^(.*?):(\d+):\s*(.*)$/);
-    if (match && !line.startsWith('Error:')) {
+    if (match && !line.startsWith("Error:")) {
       pushIssue(issues, source, match[3] ?? line, cwd, {
         line: Number(match[2]),
         ...(match[1] ? { filePath: match[1] } : {}),
@@ -95,7 +117,7 @@ export function parseIssuesWithCwd(output: string, source: string, cwd: string):
     }
     match = line.match(/^-->\s+(.*?):(\d+):(\d+)$/);
     if (match) {
-      pushIssue(issues, source, 'Validation location', cwd, {
+      pushIssue(issues, source, "Validation location", cwd, {
         line: Number(match[2]),
         column: Number(match[3]),
         ...(match[1] ? { filePath: match[1] } : {}),
@@ -103,7 +125,12 @@ export function parseIssuesWithCwd(output: string, source: string, cwd: string):
       continue;
     }
     match = line.match(/^(.+?):(\d+)\s+(.*)$/);
-    if (match && (match[1]?.includes('.') || match[1]?.includes('/'))) {
+    if (
+      match &&
+      (match[1]?.includes(".") ||
+        match[1]?.includes("/") ||
+        match[1]?.includes("\\"))
+    ) {
       pushIssue(issues, source, match[3] ?? line, cwd, {
         filePath: match[1],
         line: Number(match[2]),

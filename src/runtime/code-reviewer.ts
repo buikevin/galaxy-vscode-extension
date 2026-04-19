@@ -9,8 +9,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { Ollama } from 'ollama';
+import { listRecentFrontendPreviewImages } from '../attachments/attachment-store';
+import type { FrontendPreviewReviewContext } from '../shared/attachments';
 import type { GalaxyConfig } from '../shared/config';
 import type { AgentType } from '../shared/protocol';
+import { createDriver } from './driver-factory';
 import {
   REVIEWER_API_KEY,
   REVIEWER_HOST,
@@ -28,9 +31,252 @@ import type {
   ReviewMessage,
   RuntimeReviewFinding,
   RuntimeReviewResult,
+  RuntimeMessage,
   TrackedFile,
 } from '../shared/runtime';
 import type { ToolResult } from '../tools/entities/file-tools';
+
+const VISUAL_REVIEW_MAX_IMAGES = 3;
+
+function buildVisualEvidenceLines(
+  imageName: string,
+  reviewContext?: FrontendPreviewReviewContext,
+): string[] {
+  if (!reviewContext) {
+    return [`- ${imageName}`];
+  }
+
+  const lines = [
+    `- ${imageName}`,
+    `  viewport: ${reviewContext.viewportLabel} (${reviewContext.width}x${reviewContext.height})`,
+    `  final URL: ${reviewContext.finalUrl}`,
+  ];
+
+  if (reviewContext.pageTitle?.trim()) {
+    lines.push(`  title: ${reviewContext.pageTitle.trim()}`);
+  }
+  if (reviewContext.consoleMessages && reviewContext.consoleMessages.length > 0) {
+    lines.push(
+      `  console signals: ${reviewContext.consoleMessages.slice(0, 4).join(' | ')}`,
+    );
+  }
+  if (reviewContext.pageErrors && reviewContext.pageErrors.length > 0) {
+    lines.push(
+      `  page errors: ${reviewContext.pageErrors.slice(0, 4).join(' | ')}`,
+    );
+  }
+  if (reviewContext.failedRequests && reviewContext.failedRequests.length > 0) {
+    lines.push(
+      `  failed network: ${reviewContext.failedRequests.slice(0, 4).join(' | ')}`,
+    );
+  }
+
+  return lines;
+}
+
+function buildReadOnlyReviewConfig(config: GalaxyConfig): GalaxyConfig {
+  return Object.freeze({
+    ...config,
+    toolCapabilities: Object.freeze({
+      readProject: false,
+      editFiles: false,
+      runCommands: false,
+      webResearch: false,
+      validation: false,
+      review: false,
+      vscodeNative: false,
+      galaxyDesign: false,
+    }),
+    toolToggles: Object.freeze(
+      Object.fromEntries(
+        Object.keys(config.toolToggles).map((key) => [key, false]),
+      ) as typeof config.toolToggles,
+    ),
+    extensionToolToggles: Object.freeze(
+      Object.fromEntries(
+        Object.keys(config.extensionToolToggles).map((key) => [key, false]),
+      ),
+    ),
+  });
+}
+
+async function collectDriverReviewText(opts: {
+  config: GalaxyConfig;
+  agentType: AgentType;
+  messages: readonly RuntimeMessage[];
+}): Promise<RuntimeReviewResult> {
+  const driver = createDriver(
+    buildReadOnlyReviewConfig(opts.config),
+    opts.agentType,
+    false,
+  );
+  let reviewText = '';
+  let errorMessage = '';
+
+  await driver.chat(opts.messages, (chunk) => {
+    if (chunk.type === 'text') {
+      reviewText += chunk.delta;
+      return;
+    }
+
+    if (chunk.type === 'error') {
+      errorMessage = chunk.message;
+    }
+  });
+
+  if (errorMessage || !reviewText.trim()) {
+    return Object.freeze({
+      success: false,
+      review:
+        errorMessage ||
+        `Visual reviewer returned no content for ${opts.agentType}.`,
+      filesReviewed: 0,
+      hadCritical: false,
+      hadWarnings: false,
+      findings: Object.freeze([]),
+    });
+  }
+
+  const findings = parseReviewFindings(reviewText);
+  return Object.freeze({
+    success: true,
+    review: reviewText.trim(),
+    filesReviewed: 0,
+    hadCritical: reviewText.includes('[CRITICAL]'),
+    hadWarnings: reviewText.includes('[WARNING]'),
+    findings,
+  });
+}
+
+function buildVisualReviewPrompt(opts: {
+  sessionFiles: readonly TrackedFile[];
+  validationSummary?: string;
+  previewImages: ReadonlyArray<
+    Readonly<{
+      name: string;
+      frontendPreviewContext?: FrontendPreviewReviewContext;
+    }>
+  >;
+}): string {
+  const changedFiles = opts.sessionFiles
+    .map((tracked) => path.relative(process.cwd(), tracked.filePath))
+    .slice(0, 16);
+  const validationBlock = opts.validationSummary?.trim()
+    ? `Validation summary before visual review:\n${opts.validationSummary.trim().slice(0, REVIEWER_MAX_VALIDATION_SUMMARY_CHARS)}\n\n`
+    : '';
+
+  return [
+    'Review the attached frontend preview screenshots.',
+    'Only report issues that are directly visible in the screenshots or clearly implied by the validation summary and FE diagnostics.',
+    'Focus on layout breakage, overflow, missing content, spacing, hierarchy, readability, responsiveness problems across viewports, and broken visual states.',
+    'Treat console errors, uncaught page errors, and failed requests as supporting evidence when they explain a visible FE problem.',
+    'Do not speculate about hidden interactions or backend behavior.',
+    'If you cannot map an issue to a source file, use a screenshot location like `frontend-preview:<image-name>`.',
+    'Output format:',
+    '- [CRITICAL] `location` - Clear description and how to fix',
+    '- [WARNING] `location` - Clear description and suggestion',
+    '- [INFO] `location` - General observation or improvement',
+    '',
+    validationBlock,
+    changedFiles.length > 0
+      ? `Recently changed files:\n${changedFiles.map((filePath) => `- ${filePath}`).join('\n')}`
+      : 'Recently changed files: none captured.',
+    '',
+    `Attached screenshots and FE evidence:\n${opts.previewImages
+      .flatMap((image) =>
+        buildVisualEvidenceLines(image.name, image.frontendPreviewContext),
+      )
+      .join('\n')}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+async function runVisualReview(opts: {
+  workspacePath?: string;
+  sessionFiles: readonly TrackedFile[];
+  config: GalaxyConfig;
+  agentType: AgentType;
+  validationSummary?: string;
+}): Promise<RuntimeReviewResult | null> {
+  if (!opts.workspacePath) {
+    return null;
+  }
+
+  const previewImages = listRecentFrontendPreviewImages(
+    opts.workspacePath,
+    VISUAL_REVIEW_MAX_IMAGES,
+  );
+  if (previewImages.length === 0) {
+    return null;
+  }
+
+  const visualReview = await collectDriverReviewText({
+    config: opts.config,
+    agentType: opts.agentType,
+    messages: [
+      Object.freeze({
+        id: `visual-review-${Date.now()}`,
+        role: 'user',
+        content: buildVisualReviewPrompt({
+          sessionFiles: opts.sessionFiles,
+          validationSummary: opts.validationSummary,
+          previewImages,
+        }),
+        images: Object.freeze(
+          previewImages.map((image) => image.imagePath),
+        ),
+        timestamp: Date.now(),
+      }),
+    ],
+  });
+
+  return Object.freeze({
+    ...visualReview,
+    filesReviewed: previewImages.length,
+  });
+}
+
+export function mergeReviewResults(opts: {
+  codeReview: RuntimeReviewResult | null;
+  visualReview: RuntimeReviewResult | null;
+}): RuntimeReviewResult | null {
+  if (!opts.codeReview && !opts.visualReview) {
+    return null;
+  }
+
+  if (opts.codeReview && !opts.codeReview.success) {
+    return opts.codeReview;
+  }
+  if (opts.visualReview && !opts.visualReview.success) {
+    return opts.visualReview;
+  }
+
+  const sections: string[] = [];
+  const findings: RuntimeReviewFinding[] = [];
+  let filesReviewed = 0;
+
+  if (opts.codeReview) {
+    sections.push(`### Code Review\n${opts.codeReview.review.trim()}`);
+    findings.push(...opts.codeReview.findings);
+    filesReviewed += opts.codeReview.filesReviewed;
+  }
+  if (opts.visualReview) {
+    sections.push(`### Visual Review\n${opts.visualReview.review.trim()}`);
+    findings.push(...opts.visualReview.findings);
+    filesReviewed += opts.visualReview.filesReviewed;
+  }
+
+  return Object.freeze({
+    success: true,
+    review: sections.join('\n\n').trim(),
+    filesReviewed,
+    hadCritical: findings.some((finding) => finding.severity === 'critical'),
+    hadWarnings: findings.some((finding) => finding.severity === 'warning'),
+    findings: Object.freeze(findings),
+  });
+}
 
 /**
  * Builds reviewer prompt batches from the files changed in the current session.
@@ -113,7 +359,7 @@ function buildReviewRequests(opts: {
  * @param reviewText Raw reviewer response text.
  * @returns Structured review findings derived from the response.
  */
-function parseReviewFindings(reviewText: string): readonly RuntimeReviewFinding[] {
+export function parseReviewFindings(reviewText: string): readonly RuntimeReviewFinding[] {
   const findings: RuntimeReviewFinding[] = [];
   const pattern = /^- \[(CRITICAL|WARNING|INFO)\]\s+`([^`]+)`\s+-\s+(.+)$/gm;
 
@@ -253,12 +499,20 @@ async function runReviewer(opts: {
  * @returns Structured review result or `null` when nothing can be reviewed.
  */
 export async function runCodeReview(opts: {
+  workspacePath?: string;
   sessionFiles: readonly TrackedFile[];
   config: GalaxyConfig;
   agentType: AgentType;
   validationSummary?: string;
 }): Promise<RuntimeReviewResult | null> {
-  return runReviewer(opts);
+  const [codeReview, visualReview] = await Promise.all([
+    runReviewer(opts),
+    runVisualReview(opts),
+  ]);
+  return mergeReviewResults({
+    codeReview,
+    visualReview,
+  });
 }
 
 /**
@@ -268,17 +522,18 @@ export async function runCodeReview(opts: {
  * @returns Tool result wrapping the reviewer output.
  */
 export async function runCodeReviewTool(opts: {
+  workspacePath?: string;
   sessionFiles: readonly TrackedFile[];
   config: GalaxyConfig;
   agentType: AgentType;
   validationSummary?: string;
 }): Promise<ToolResult> {
-  const result = await runReviewer(opts);
+  const result = await runCodeReview(opts);
   if (!result) {
     return Object.freeze({
       success: false,
       content: '',
-      error: 'No files available for code review in this session.',
+      error: 'No files or FE screenshots available for review in this session.',
     });
   }
 
@@ -299,7 +554,7 @@ export async function runCodeReviewTool(opts: {
   return Object.freeze({
     success: true,
     content: [
-      `Code Reviewer completed for ${result.filesReviewed} file(s).`,
+      `Review completed for ${result.filesReviewed} input(s).`,
       statusLine,
       '',
       result.review,
@@ -325,9 +580,13 @@ export function formatReviewSummary(result: RuntimeReviewResult): string {
       ? 'Warnings found'
       : 'LGTM';
 
+  const reviewLabel = result.review.includes('### Visual Review')
+    ? 'Review'
+    : 'Code Review';
+
   return [
     '---',
-    `Code Review (${result.filesReviewed} files)`,
+    `${reviewLabel} (${result.filesReviewed} inputs)`,
     '',
     statusLine,
     '',
