@@ -6,10 +6,18 @@
  * @desc Attachment storage helpers for reading and updating the workspace attachment index.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { ensureProjectStorage, getProjectStorageInfo } from '../context/project-store';
-import type { AttachmentRecord, AttachmentStorageKind, LocalAttachmentPayload, MessageAttachment } from '../shared/attachments';
+import fs from "node:fs";
+import path from "node:path";
+import {
+  ensureProjectStorage,
+  getProjectStorageInfo,
+} from "../context/project-store";
+import type {
+  AttachmentRecord,
+  AttachmentStorageKind,
+  LocalAttachmentPayload,
+  MessageAttachment,
+} from "../shared/attachments";
 
 /**
  * Sanitizes a user-provided file name for safe on-disk storage.
@@ -18,7 +26,12 @@ import type { AttachmentRecord, AttachmentStorageKind, LocalAttachmentPayload, M
  * @returns File-system-safe base name.
  */
 export function sanitizeFileName(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'attachment';
+  return (
+    value
+      .replace(/[^a-zA-Z0-9._-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "") || "attachment"
+  );
 }
 
 /**
@@ -31,7 +44,7 @@ export function loadIndex(workspacePath: string): AttachmentRecord[] {
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);
   try {
-    const raw = fs.readFileSync(storage.attachmentsIndexPath, 'utf-8');
+    const raw = fs.readFileSync(storage.attachmentsIndexPath, "utf-8");
     const parsed = JSON.parse(raw) as AttachmentRecord[];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -45,10 +58,17 @@ export function loadIndex(workspacePath: string): AttachmentRecord[] {
  * @param workspacePath Workspace root owning the attachment store.
  * @param records Attachment records to persist.
  */
-export function saveIndex(workspacePath: string, records: readonly AttachmentRecord[]): void {
+export function saveIndex(
+  workspacePath: string,
+  records: readonly AttachmentRecord[],
+): void {
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);
-  fs.writeFileSync(storage.attachmentsIndexPath, JSON.stringify(records, null, 2), 'utf-8');
+  fs.writeFileSync(
+    storage.attachmentsIndexPath,
+    JSON.stringify(records, null, 2),
+    "utf-8",
+  );
 }
 
 /**
@@ -57,8 +77,13 @@ export function saveIndex(workspacePath: string, records: readonly AttachmentRec
  * @param workspacePath Workspace root owning the attachment store.
  * @param record Attachment record to upsert.
  */
-export function upsertRecord(workspacePath: string, record: AttachmentRecord): void {
-  const existing = loadIndex(workspacePath).filter((item) => item.id !== record.id);
+export function upsertRecord(
+  workspacePath: string,
+  record: AttachmentRecord,
+): void {
+  const existing = loadIndex(workspacePath).filter(
+    (item) => item.id !== record.id,
+  );
   existing.push(record);
   saveIndex(workspacePath, existing);
 }
@@ -69,8 +94,10 @@ export function upsertRecord(workspacePath: string, record: AttachmentRecord): v
  * @param record Attachment record being inspected.
  * @returns Concrete storage kind used by downstream helpers.
  */
-export function getAttachmentStorageKind(record: AttachmentRecord): AttachmentStorageKind {
-  return record.storageKind === 'text-cache' ? 'text-cache' : 'binary';
+export function getAttachmentStorageKind(
+  record: AttachmentRecord,
+): AttachmentStorageKind {
+  return record.storageKind === "text-cache" ? "text-cache" : "binary";
 }
 
 /**
@@ -79,13 +106,19 @@ export function getAttachmentStorageKind(record: AttachmentRecord): AttachmentSt
  * @param record Attachment record being rendered.
  * @returns Data URL for the preview asset when available.
  */
-export function readPreviewDataUrl(record: AttachmentRecord): string | undefined {
+export function readPreviewDataUrl(
+  record: AttachmentRecord,
+): string | undefined {
   const targetPath = record.previewPath ?? record.storedPath;
-  if (!targetPath || !fs.existsSync(targetPath) || !record.mimeType.startsWith('image/')) {
+  if (
+    !targetPath ||
+    !fs.existsSync(targetPath) ||
+    !record.mimeType.startsWith("image/")
+  ) {
     return undefined;
   }
 
-  const contentBase64 = fs.readFileSync(targetPath).toString('base64');
+  const contentBase64 = fs.readFileSync(targetPath).toString("base64");
   return `data:${record.mimeType};base64,${contentBase64}`;
 }
 
@@ -95,13 +128,15 @@ export function readPreviewDataUrl(record: AttachmentRecord): string | undefined
  * @param record Attachment record being surfaced to the UI.
  * @returns Webview-ready attachment payload.
  */
-export function buildLocalAttachmentPayload(record: AttachmentRecord): LocalAttachmentPayload {
+export function buildLocalAttachmentPayload(
+  record: AttachmentRecord,
+): LocalAttachmentPayload {
   const previewDataUrl = readPreviewDataUrl(record);
   return Object.freeze({
     attachmentId: record.id,
     name: record.originalName,
     mimeType: record.mimeType,
-    isImage: record.mimeType.startsWith('image/'),
+    isImage: record.mimeType.startsWith("image/"),
     ...(previewDataUrl ? { previewDataUrl } : {}),
   });
 }
@@ -112,12 +147,19 @@ export function buildLocalAttachmentPayload(record: AttachmentRecord): LocalAtta
  * @param record Attachment record being attached to a message.
  * @returns Transcript attachment descriptor.
  */
-export function buildMessageAttachment(record: AttachmentRecord): MessageAttachment {
+export function buildMessageAttachment(
+  record: AttachmentRecord,
+): MessageAttachment {
   const previewDataUrl = readPreviewDataUrl(record);
   return Object.freeze({
     attachmentId: record.id,
-    kind: record.kind === 'figma' ? 'figma' : record.mimeType.startsWith('image/') ? 'image' : 'file',
-    label: record.kind === 'figma' ? 'Design By Figma' : record.originalName,
+    kind:
+      record.kind === "figma"
+        ? "figma"
+        : record.mimeType.startsWith("image/")
+          ? "image"
+          : "file",
+    label: record.kind === "figma" ? "Design By Figma" : record.originalName,
     ...(previewDataUrl ? { previewDataUrl } : {}),
     ...(record.figmaImportId ? { importId: record.figmaImportId } : {}),
   });
@@ -130,21 +172,31 @@ export function buildMessageAttachment(record: AttachmentRecord): MessageAttachm
  * @param attachmentId Attachment id to remove.
  * @returns `true` when the draft attachment existed and was removed.
  */
-export function removeDraftAttachment(workspacePath: string, attachmentId: string): boolean {
+export function removeDraftAttachment(
+  workspacePath: string,
+  attachmentId: string,
+): boolean {
   const records = loadIndex(workspacePath);
   const target = records.find((record) => record.id === attachmentId);
-  if (!target || target.status !== 'draft') {
+  if (!target || target.status !== "draft") {
     return false;
   }
 
   if (fs.existsSync(target.storedPath)) {
     fs.unlinkSync(target.storedPath);
   }
-  if (target.previewPath && target.previewPath !== target.storedPath && fs.existsSync(target.previewPath)) {
+  if (
+    target.previewPath &&
+    target.previewPath !== target.storedPath &&
+    fs.existsSync(target.previewPath)
+  ) {
     fs.unlinkSync(target.previewPath);
   }
 
-  saveIndex(workspacePath, records.filter((record) => record.id !== attachmentId));
+  saveIndex(
+    workspacePath,
+    records.filter((record) => record.id !== attachmentId),
+  );
   return true;
 }
 
@@ -155,21 +207,25 @@ export function removeDraftAttachment(workspacePath: string, attachmentId: strin
  * @param attachmentIds Attachment ids to mark as committed.
  * @param messageId Transcript message id that owns the attachments.
  */
-export function commitAttachments(workspacePath: string, attachmentIds: readonly string[], messageId: string): void {
+export function commitAttachments(
+  workspacePath: string,
+  attachmentIds: readonly string[],
+  messageId: string,
+): void {
   if (attachmentIds.length === 0) {
     return;
   }
 
-  const updated = loadIndex(workspacePath).map((record) => (
+  const updated = loadIndex(workspacePath).map((record) =>
     attachmentIds.includes(record.id)
       ? Object.freeze({
           ...record,
-          status: 'committed' as const,
+          status: "committed" as const,
           messageId,
           updatedAt: Date.now(),
         })
-      : record
-  ));
+      : record,
+  );
   saveIndex(workspacePath, updated);
 }
 
@@ -180,7 +236,10 @@ export function commitAttachments(workspacePath: string, attachmentIds: readonly
  * @param attachmentIds Attachment ids attached to the current message.
  * @returns Transcript attachment descriptors in index order.
  */
-export function buildMessageAttachments(workspacePath: string, attachmentIds: readonly string[]): MessageAttachment[] {
+export function buildMessageAttachments(
+  workspacePath: string,
+  attachmentIds: readonly string[],
+): MessageAttachment[] {
   if (attachmentIds.length === 0) {
     return [];
   }
@@ -198,7 +257,10 @@ export function buildMessageAttachments(workspacePath: string, attachmentIds: re
  * @param attachmentIds Attachment ids attached to the current message.
  * @returns Absolute image paths for previewable attachments.
  */
-export function buildAttachmentImagePaths(workspacePath: string, attachmentIds: readonly string[]): string[] {
+export function buildAttachmentImagePaths(
+  workspacePath: string,
+  attachmentIds: readonly string[],
+): string[] {
   if (attachmentIds.length === 0) {
     return [];
   }
@@ -207,11 +269,23 @@ export function buildAttachmentImagePaths(workspacePath: string, attachmentIds: 
   return loadIndex(workspacePath)
     .filter((record) => idSet.has(record.id))
     .flatMap((record) => {
-      if (record.kind === 'figma' && record.previewPath && fs.existsSync(record.previewPath)) {
+      if (
+        record.kind === "figma" &&
+        record.previewPath &&
+        fs.existsSync(record.previewPath)
+      ) {
         return [record.previewPath];
       }
-      if (record.mimeType.startsWith('image/') && fs.existsSync(record.storedPath)) {
+      if (
+        record.mimeType.startsWith("image/") &&
+        fs.existsSync(record.storedPath)
+      ) {
         return [record.storedPath];
+      }
+      if (record.extractedImagePaths?.length) {
+        return record.extractedImagePaths.filter((imagePath) =>
+          fs.existsSync(imagePath),
+        );
       }
       return [];
     });

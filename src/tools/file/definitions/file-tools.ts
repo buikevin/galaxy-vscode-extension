@@ -185,6 +185,140 @@ export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
     }),
   }),
   Object.freeze({
+    name: "export_workflow_drawio_diagram",
+    description:
+      "Export an editable Draw.io workflow diagram from the current workspace graph. Use this to create shareable architecture or feature-flow diagrams from an entry node, route, file, or lexical workflow query.",
+    parameters: Object.freeze({
+      type: "object",
+      properties: Object.freeze({
+        path: Object.freeze({
+          type: "string",
+          description:
+            "Workspace output path for the Draw.io file. If no supported extension is provided, .drawio is appended automatically.",
+        }),
+        format: Object.freeze({
+          type: "string",
+          description:
+            "Optional editable Draw.io output format: drawio or dio. Default is drawio.",
+        }),
+        title: Object.freeze({
+          type: "string",
+          description: "Optional diagram title override.",
+        }),
+        entry_node_id: Object.freeze({
+          type: "string",
+          description: "Optional workflow entry node id to render directly.",
+        }),
+        route_path: Object.freeze({
+          type: "string",
+          description:
+            "Optional route path to resolve into a workflow subgraph.",
+        }),
+        file_path: Object.freeze({
+          type: "string",
+          description:
+            "Optional source file path to resolve into a workflow subgraph.",
+        }),
+        query: Object.freeze({
+          type: "string",
+          description:
+            "Optional lexical workflow query used to pick the best graph entrypoint when exact ids are unknown.",
+        }),
+        max_hops: Object.freeze({
+          type: "number",
+          description: "Optional maximum traversal depth for the subgraph.",
+        }),
+        max_nodes: Object.freeze({
+          type: "number",
+          description: "Optional maximum node count retained in the graph.",
+        }),
+        include_incoming: Object.freeze({
+          type: "boolean",
+          description:
+            "Whether incoming edges should be included during expansion.",
+        }),
+        include_external: Object.freeze({
+          type: "boolean",
+          description:
+            "Whether external dependency nodes should remain in the rendered graph.",
+        }),
+        open: Object.freeze({
+          type: "boolean",
+          description:
+            "Whether to open the generated Draw.io diagram immediately. Default true.",
+        }),
+      }),
+      required: Object.freeze(["path"]),
+    }),
+  }),
+  Object.freeze({
+    name: "export_workflow_mermaid_diagram",
+    description:
+      "Export a Mermaid workflow diagram from the current workspace graph. Use this to create docs-friendly flowcharts from an entry node, route, file, or lexical workflow query.",
+    parameters: Object.freeze({
+      type: "object",
+      properties: Object.freeze({
+        path: Object.freeze({
+          type: "string",
+          description:
+            "Workspace output path for the Mermaid file. If no supported extension is provided, .md is appended automatically.",
+        }),
+        format: Object.freeze({
+          type: "string",
+          description:
+            "Optional output format: markdown, md, mmd, mermaid, or raw. Default is markdown.",
+        }),
+        title: Object.freeze({
+          type: "string",
+          description: "Optional document title override for markdown output.",
+        }),
+        entry_node_id: Object.freeze({
+          type: "string",
+          description: "Optional workflow entry node id to render directly.",
+        }),
+        route_path: Object.freeze({
+          type: "string",
+          description:
+            "Optional route path to resolve into a workflow subgraph.",
+        }),
+        file_path: Object.freeze({
+          type: "string",
+          description:
+            "Optional source file path to resolve into a workflow subgraph.",
+        }),
+        query: Object.freeze({
+          type: "string",
+          description:
+            "Optional lexical workflow query used to pick the best graph entrypoint when exact ids are unknown.",
+        }),
+        max_hops: Object.freeze({
+          type: "number",
+          description: "Optional maximum traversal depth for the subgraph.",
+        }),
+        max_nodes: Object.freeze({
+          type: "number",
+          description: "Optional maximum node count retained in the graph.",
+        }),
+        include_incoming: Object.freeze({
+          type: "boolean",
+          description:
+            "Whether incoming edges should be included during expansion.",
+        }),
+        include_external: Object.freeze({
+          type: "boolean",
+          description:
+            "Whether external dependency nodes should remain in the rendered graph.",
+        }),
+        open: Object.freeze({
+          type: "boolean",
+          description:
+            "Whether to reveal the created Mermaid file immediately. Default true.",
+        }),
+      }),
+      required: Object.freeze(["path"]),
+    }),
+  }),
+  Object.freeze({
     name: "insert_file_at_line",
     description:
       "Insert content before a specific line in an existing file. Prefer this for adding imports, props, or small blocks without rewriting a whole range. Provide anchor_before and/or anchor_after from a recent read_file result so the tool can relocate the insertion point safely if line numbers shift.",

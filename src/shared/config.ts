@@ -88,6 +88,8 @@ export interface ValidationPreferencesConfig {
 export interface GalaxyConfig {
   /** Agent provider configurations available to the extension. */
   agent: AgentConfig[];
+  /** Whether subagent orchestration is enabled. */
+  subagent: boolean;
   /** Quality-gate preferences. */
   quality: QualityConfig;
   /** Tool-safety preferences. */

@@ -16,6 +16,8 @@ import {
   normalizeDrawioTargetFormat,
   normalizeEditableDrawioPath,
 } from "./drawio";
+import { createWorkflowDrawioDiagramTool } from "./workflow-drawio";
+import { createWorkflowMermaidDiagramTool } from "./workflow-mermaid";
 import {
   editFileRangeTool as executeEditFileRangeTool,
   editFileTool as executeEditFileTool,
@@ -420,6 +422,118 @@ export async function executeToolAsync(
               ...result.meta,
               opened: true,
               fallbackToText: openResult.meta?.fallbackToText === true,
+            }),
+          });
+        }
+      }
+      return result;
+    }
+    case "export_workflow_drawio_diagram": {
+      const result = await createWorkflowDrawioDiagramTool(
+        toolContext.workspaceRoot,
+        p(call, "path"),
+        {
+          ...(typeof call.params.format === "string"
+            ? { format: String(call.params.format) }
+            : {}),
+          ...(typeof call.params.title === "string"
+            ? { title: String(call.params.title) }
+            : {}),
+          ...(typeof call.params.entry_node_id === "string"
+            ? { entryNodeId: String(call.params.entry_node_id) }
+            : {}),
+          ...(typeof call.params.route_path === "string"
+            ? { routePath: String(call.params.route_path) }
+            : {}),
+          ...(typeof call.params.file_path === "string"
+            ? { filePath: String(call.params.file_path) }
+            : {}),
+          ...(typeof call.params.query === "string"
+            ? { query: String(call.params.query) }
+            : {}),
+          ...(typeof call.params.max_hops === "number"
+            ? { maxHops: Number(call.params.max_hops) }
+            : {}),
+          ...(typeof call.params.max_nodes === "number"
+            ? { maxNodes: Number(call.params.max_nodes) }
+            : {}),
+          ...(typeof call.params.include_incoming === "boolean"
+            ? { includeIncoming: Boolean(call.params.include_incoming) }
+            : {}),
+          ...(typeof call.params.include_external === "boolean"
+            ? { includeExternal: Boolean(call.params.include_external) }
+            : {}),
+        },
+      );
+      if (result.success && typeof result.meta?.filePath === "string") {
+        await toolContext.refreshWorkspaceFiles();
+        if (call.params.open !== false && toolContext.openDrawioDiagram) {
+          const openResult = await toolContext.openDrawioDiagram(
+            result.meta.filePath as string,
+          );
+          return Object.freeze({
+            success: true,
+            content: `${result.content}\n${openResult.content}`,
+            meta: Object.freeze({
+              ...result.meta,
+              opened: true,
+              fallbackToText: openResult.meta?.fallbackToText === true,
+            }),
+          });
+        }
+      }
+      return result;
+    }
+    case "export_workflow_mermaid_diagram": {
+      const result = await createWorkflowMermaidDiagramTool(
+        toolContext.workspaceRoot,
+        p(call, "path"),
+        {
+          ...(typeof call.params.format === "string"
+            ? { format: String(call.params.format) }
+            : {}),
+          ...(typeof call.params.title === "string"
+            ? { title: String(call.params.title) }
+            : {}),
+          ...(typeof call.params.entry_node_id === "string"
+            ? { entryNodeId: String(call.params.entry_node_id) }
+            : {}),
+          ...(typeof call.params.route_path === "string"
+            ? { routePath: String(call.params.route_path) }
+            : {}),
+          ...(typeof call.params.file_path === "string"
+            ? { filePath: String(call.params.file_path) }
+            : {}),
+          ...(typeof call.params.query === "string"
+            ? { query: String(call.params.query) }
+            : {}),
+          ...(typeof call.params.max_hops === "number"
+            ? { maxHops: Number(call.params.max_hops) }
+            : {}),
+          ...(typeof call.params.max_nodes === "number"
+            ? { maxNodes: Number(call.params.max_nodes) }
+            : {}),
+          ...(typeof call.params.include_incoming === "boolean"
+            ? { includeIncoming: Boolean(call.params.include_incoming) }
+            : {}),
+          ...(typeof call.params.include_external === "boolean"
+            ? { includeExternal: Boolean(call.params.include_external) }
+            : {}),
+        },
+      );
+      if (result.success && typeof result.meta?.filePath === "string") {
+        await toolContext.refreshWorkspaceFiles();
+        if (call.params.open !== false) {
+          await toolContext.revealFile(result.meta.filePath as string);
+          return Object.freeze({
+            success: true,
+            content: `${result.content}\nOpened ${toDisplayPath(
+              result.meta.filePath as string,
+              toolContext.workspaceRoot,
+            )}.`,
+            meta: Object.freeze({
+              ...result.meta,
+              opened: true,
             }),
           });
         }

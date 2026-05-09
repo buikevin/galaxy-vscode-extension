@@ -6,20 +6,24 @@
  * @desc Shared attachment entities used by attachment storage, prompt context, and semantic retrieval.
  */
 
-import type { FigmaImportRecord } from './figma';
-import type { FigmaAttachment, LocalAttachmentPayload, MessageAttachment } from './protocol';
+import type { FigmaImportRecord } from "./figma";
+import type {
+  FigmaAttachment,
+  LocalAttachmentPayload,
+  MessageAttachment,
+} from "./protocol";
 
 /** Persisted attachment category stored in workspace metadata. */
-export type AttachmentKind = 'file' | 'figma';
+export type AttachmentKind = "file" | "figma";
 
 /** Lifecycle state of one stored attachment. */
-export type AttachmentStatus = 'draft' | 'committed' | 'removed';
+export type AttachmentStatus = "draft" | "committed" | "removed";
 
 /** Physical storage mode used for one attachment payload. */
-export type AttachmentStorageKind = 'binary' | 'text-cache';
+export type AttachmentStorageKind = "binary" | "text-cache";
 
 /** Viewport preset ids used for FE preview screenshot capture. */
-export type FrontendPreviewViewportId = 'desktop' | 'tablet' | 'mobile';
+export type FrontendPreviewViewportId = "desktop" | "tablet" | "mobile";
 
 /** FE preview diagnostics captured alongside one screenshot attachment. */
 export type FrontendPreviewReviewContext = Readonly<{
@@ -67,6 +71,8 @@ export type AttachmentRecord = Readonly<{
   size: number;
   /** Optional preview asset path for images and Figma previews. */
   previewPath?: string;
+  /** Optional rendered/embedded image paths produced from the document for vision models. */
+  extractedImagePaths?: readonly string[];
   /** Optional linked Figma import id for Figma-backed attachments. */
   figmaImportId?: string;
   /** Optional FE preview diagnostics for screenshot-driven visual review. */

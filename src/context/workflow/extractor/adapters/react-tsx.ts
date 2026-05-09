@@ -9,7 +9,18 @@
 import type { WorkflowExtractorAdapter, WorkflowGraphContribution } from '../../entities/extractor';
 import type { WorkflowEdgeRecord } from '../../entities/graph';
 import { visitJsxCompositionUnit } from '../execution';
-import { buildTypeScriptWorkflowExtractionContext } from '../generic-facts';
+import { buildSingleFileTypeScriptWorkflowExtractionContext, buildTypeScriptWorkflowExtractionContext } from '../generic-facts';
+
+/**
+ * Returns true when the file is a React/TSX source the adapter can process per-file.
+ *
+ * @param relativePath Workspace-relative path.
+ * @returns True when the file extension is `.tsx` or `.jsx`.
+ */
+function isReactTsxSourceFile(relativePath: string): boolean {
+  const lower = relativePath.toLowerCase();
+  return lower.endsWith('.tsx') || lower.endsWith('.jsx');
+}
 
 /**
  * Builds React-specific composition edges from TSX and JSX units.
@@ -34,10 +45,42 @@ async function extractReactTsxWorkflowGraph(workspacePath: string): Promise<Work
 }
 
 /**
+ * Builds React-specific composition edges scoped to a single TSX/JSX file.
+ *
+ * @param workspacePath Absolute workspace root path.
+ * @param relativePath Workspace-relative path of the target file.
+ * @returns Workflow contribution containing only edges discovered in the file.
+ */
+async function extractReactTsxWorkflowGraphFromFile(
+  workspacePath: string,
+  relativePath: string,
+): Promise<WorkflowGraphContribution> {
+  if (!isReactTsxSourceFile(relativePath)) {
+    return Object.freeze({ nodes: Object.freeze([]), edges: Object.freeze([]) });
+  }
+  const context = buildSingleFileTypeScriptWorkflowExtractionContext(workspacePath, relativePath);
+  if (!context) {
+    return Object.freeze({ nodes: Object.freeze([]), edges: Object.freeze([]) });
+  }
+  const edges = new Map<string, WorkflowEdgeRecord>();
+  context.parsedFiles.forEach((parsedFile) => {
+    parsedFile.units.forEach((unit) => {
+      visitJsxCompositionUnit(unit, parsedFile, edges, context.exportedSymbolsByFile);
+    });
+  });
+  return Object.freeze({
+    nodes: Object.freeze([]),
+    edges: Object.freeze([...edges.values()].sort((a, b) => a.id.localeCompare(b.id))),
+  });
+}
+
+/**
  * Framework adapter for React-style JSX composition flow extraction.
  */
 export const reactTsxWorkflowExtractorAdapter: WorkflowExtractorAdapter = Object.freeze({
   id: 'react-tsx',
   label: 'React / TSX',
   extract: extractReactTsxWorkflowGraph,
+  supportsFile: isReactTsxSourceFile,
+  extractFromFile: extractReactTsxWorkflowGraphFromFile,
 });

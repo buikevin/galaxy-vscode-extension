@@ -115,6 +115,8 @@ export function createToolDigest(message: ChatMessage): ToolDigest {
     [
       "write_file",
       "create_drawio_diagram",
+      "export_workflow_drawio_diagram",
+      "export_workflow_mermaid_diagram",
       "edit_file",
       "edit_file_range",
       "multi_edit_file_ranges",
@@ -141,6 +143,8 @@ export function createToolDigest(message: ChatMessage): ToolDigest {
     create_drawio_diagram: `Created Draw.io diagram ${pathParam || "file"}`,
     convert_drawio_diagram: `Triggered Draw.io convert for ${pathParam || "diagram"}`,
     export_drawio_diagram: `Triggered Draw.io export for ${pathParam || "diagram"}`,
+    export_workflow_drawio_diagram: `Exported workflow Draw.io diagram ${pathParam || "file"}`,
+    export_workflow_mermaid_diagram: `Exported workflow Mermaid diagram ${pathParam || "file"}`,
     edit_file: `Edited ${pathParam || "file"}`,
     edit_file_range: `Edited ${pathParam || "file"} by line range`,
     multi_edit_file_ranges: `Edited ${pathParam || "file"} with multiple line ranges`,
@@ -290,6 +294,8 @@ export function inferTaskMemoryTurnKind(
     toolNames.has("create_drawio_diagram") ||
     toolNames.has("convert_drawio_diagram") ||
     toolNames.has("export_drawio_diagram") ||
+    toolNames.has("export_workflow_drawio_diagram") ||
+    toolNames.has("export_workflow_mermaid_diagram") ||
     toolNames.has("edit_file")
   ) {
     return lowerAssistantText.includes("fix") ||

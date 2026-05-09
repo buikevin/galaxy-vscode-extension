@@ -6,18 +6,36 @@
  * @desc Path resolution and read/list/grep helpers for VS Code file tools.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import { resolveAttachmentStoredPath } from '../../attachments/attachment-store';
-import { getProjectStorageInfo } from '../../context/project-store';
-import { getCachedReadResult, storeReadCache } from '../../context/rag-metadata/read-cache';
-import { GREP_INCLUDE_EXTS, MAX_GREP_HITS, MAX_LIST_DIR_DEPTH, MAX_LIST_DIR_ENTRIES } from './constants';
-import type { GrepToolOptions, ListDirToolOptions, ReadFileToolOptions, ToolResult } from '../entities/file-tools';
+import fs from "node:fs";
+import path from "node:path";
+import { resolveAttachmentStoredPath } from "../../attachments/attachment-store";
+import { getProjectStorageInfo } from "../../context/project-store";
+import {
+  getCachedReadResult,
+  storeReadCache,
+} from "../../context/rag-metadata/read-cache";
+import {
+  GREP_INCLUDE_EXTS,
+  MAX_GREP_HITS,
+  MAX_LIST_DIR_DEPTH,
+  MAX_LIST_DIR_ENTRIES,
+} from "./constants";
+import type {
+  GrepToolOptions,
+  ListDirToolOptions,
+  ReadFileToolOptions,
+  ToolResult,
+} from "../entities/file-tools";
 
 const LIST_DIR_SUMMARY_ENTRY_LIMIT = 40;
 
 function shouldSkipDirectoryEntry(entry: fs.Dirent): boolean {
-  return entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist' || entry.name === 'out';
+  return (
+    entry.name.startsWith(".") ||
+    entry.name === "node_modules" ||
+    entry.name === "dist" ||
+    entry.name === "out"
+  );
 }
 
 function compareDirectoryEntries(left: fs.Dirent, right: fs.Dirent): number {
@@ -26,7 +44,7 @@ function compareDirectoryEntries(left: fs.Dirent, right: fs.Dirent): number {
   }
   return left.name.localeCompare(right.name, undefined, {
     numeric: true,
-    sensitivity: 'base',
+    sensitivity: "base",
   });
 }
 
@@ -38,7 +56,7 @@ function readVisibleDirectoryEntries(dirPath: string): fs.Dirent[] {
 }
 
 function formatDirectoryEntryName(entry: fs.Dirent): string {
-  return `${entry.name}${entry.isDirectory() ? '/' : ''}`;
+  return `${entry.name}${entry.isDirectory() ? "/" : ""}`;
 }
 
 /**
@@ -59,9 +77,15 @@ export function toDisplayPath(filePath: string, workspaceRoot: string): string {
  * @param workspaceRoot Absolute workspace root.
  * @returns True when the path does not escape the workspace.
  */
-export function isWithinWorkspace(targetPath: string, workspaceRoot: string): boolean {
+export function isWithinWorkspace(
+  targetPath: string,
+  workspaceRoot: string,
+): boolean {
   const relative = path.relative(workspaceRoot, targetPath);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return (
+    relative === "" ||
+    (!relative.startsWith("..") && !path.isAbsolute(relative))
+  );
 }
 
 /**
@@ -72,10 +96,10 @@ export function isWithinWorkspace(targetPath: string, workspaceRoot: string): bo
  */
 function normalizeLookupKey(value: string): string {
   return value
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/\\/g, '/')
-    .replace(/[^a-zA-Z0-9]+/g, '')
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\\/g, "/")
+    .replace(/[^a-zA-Z0-9]+/g, "")
     .toLowerCase()
     .trim();
 }
@@ -98,7 +122,10 @@ function computeEditDistance(left: string, right: string): number {
     return left.length;
   }
 
-  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  const previous = Array.from(
+    { length: right.length + 1 },
+    (_, index) => index,
+  );
   const current = new Array<number>(right.length + 1);
 
   for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
@@ -142,7 +169,10 @@ function computeCommonPrefixLength(left: string, right: string): number {
  * @param rawPath User-provided path or basename.
  * @returns Best matching absolute path or null when the match is ambiguous.
  */
-function findWorkspacePathByApproximateName(workspaceRoot: string, rawPath: string): string | null {
+function findWorkspacePathByApproximateName(
+  workspaceRoot: string,
+  rawPath: string,
+): string | null {
   const targetBase = path.basename(rawPath);
   const targetKey = normalizeLookupKey(targetBase);
   if (!targetKey) {
@@ -150,16 +180,16 @@ function findWorkspacePathByApproximateName(workspaceRoot: string, rawPath: stri
   }
 
   const skipDirs = new Set([
-    '.git',
-    'node_modules',
-    'dist',
-    'build',
-    'coverage',
-    '.next',
-    '.nuxt',
-    '.turbo',
-    'target',
-    '.galaxy',
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    "coverage",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    "target",
+    ".galaxy",
   ]);
 
   const stack = [workspaceRoot];
@@ -185,7 +215,9 @@ function findWorkspacePathByApproximateName(workspaceRoot: string, rawPath: stri
       }
       visited += 1;
       const baseKey = normalizeLookupKey(entry.name);
-      const relKey = normalizeLookupKey(path.relative(workspaceRoot, entryPath));
+      const relKey = normalizeLookupKey(
+        path.relative(workspaceRoot, entryPath),
+      );
       if (!baseKey && !relKey) {
         continue;
       }
@@ -199,16 +231,23 @@ function findWorkspacePathByApproximateName(workspaceRoot: string, rawPath: stri
           score = Math.max(score, 100);
           continue;
         }
-        if (targetKey.length >= 8 && (candidate.includes(targetKey) || targetKey.includes(candidate))) {
+        if (
+          targetKey.length >= 8 &&
+          (candidate.includes(targetKey) || targetKey.includes(candidate))
+        ) {
           score = Math.max(score, 84);
         }
         const prefixLength = computeCommonPrefixLength(candidate, targetKey);
-        const prefixRatio = prefixLength / Math.max(candidate.length, targetKey.length, 1);
+        const prefixRatio =
+          prefixLength / Math.max(candidate.length, targetKey.length, 1);
         if (prefixRatio >= 0.82) {
           score = Math.max(score, 72 + Math.round(prefixRatio * 10));
         }
         const distance = computeEditDistance(candidate, targetKey);
-        if (Math.max(candidate.length, targetKey.length) >= 8 && distance <= 3) {
+        if (
+          Math.max(candidate.length, targetKey.length) >= 8 &&
+          distance <= 3
+        ) {
           score = Math.max(score, 78 - distance * 8);
         }
       }
@@ -219,7 +258,10 @@ function findWorkspacePathByApproximateName(workspaceRoot: string, rawPath: stri
     }
   }
 
-  candidates.sort((left, right) => right.score - left.score || left.filePath.localeCompare(right.filePath));
+  candidates.sort(
+    (left, right) =>
+      right.score - left.score || left.filePath.localeCompare(right.filePath),
+  );
   const [bestMatch, secondMatch] = candidates;
   if (!bestMatch) {
     return null;
@@ -237,7 +279,10 @@ function findWorkspacePathByApproximateName(workspaceRoot: string, rawPath: stri
  * @param rawPath User-provided path.
  * @returns Absolute path inside the workspace.
  */
-export function resolveWorkspacePath(workspaceRoot: string, rawPath: string): string {
+export function resolveWorkspacePath(
+  workspaceRoot: string,
+  rawPath: string,
+): string {
   const candidate = path.isAbsolute(rawPath)
     ? path.resolve(rawPath)
     : path.resolve(workspaceRoot, rawPath);
@@ -256,21 +301,26 @@ export function resolveWorkspacePath(workspaceRoot: string, rawPath: string): st
  * @param rawPath User-provided path.
  * @returns Absolute readable path.
  */
-export function resolveReadablePath(workspaceRoot: string, rawPath: string): string {
+export function resolveReadablePath(
+  workspaceRoot: string,
+  rawPath: string,
+): string {
   try {
     const workspacePath = resolveWorkspacePath(workspaceRoot, rawPath);
     if (fs.existsSync(workspacePath)) {
       return workspacePath;
     }
-  } catch {
-  }
+  } catch {}
 
   const attachmentPath = resolveAttachmentStoredPath(workspaceRoot, rawPath);
   if (attachmentPath) {
     return attachmentPath;
   }
 
-  const fallbackWorkspacePath = findWorkspacePathByApproximateName(workspaceRoot, rawPath);
+  const fallbackWorkspacePath = findWorkspacePathByApproximateName(
+    workspaceRoot,
+    rawPath,
+  );
   if (fallbackWorkspacePath) {
     return fallbackWorkspacePath;
   }
@@ -300,7 +350,12 @@ function collectTextFiles(dirPath: string, results: string[], depth = 0): void {
   }
 
   for (const entry of entries) {
-    if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist' || entry.name === 'out') {
+    if (
+      entry.name.startsWith(".") ||
+      entry.name === "node_modules" ||
+      entry.name === "dist" ||
+      entry.name === "out"
+    ) {
       continue;
     }
 
@@ -328,27 +383,35 @@ function grepInFile(
   filePath: string,
   regex: RegExp,
   contextLines: number,
-): Array<Readonly<{ file: string; lineNo: number; line: string; context: string[] }>> {
-  let content = '';
+): Array<
+  Readonly<{ file: string; lineNo: number; line: string; context: string[] }>
+> {
+  let content = "";
   try {
-    content = fs.readFileSync(filePath, 'utf-8');
+    content = fs.readFileSync(filePath, "utf-8");
   } catch {
     return [];
   }
 
-  const lines = content.split('\n');
-  const hits: Array<Readonly<{ file: string; lineNo: number; line: string; context: string[] }>> = [];
+  const lines = content.split("\n");
+  const hits: Array<
+    Readonly<{ file: string; lineNo: number; line: string; context: string[] }>
+  > = [];
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? '';
+    const line = lines[index] ?? "";
     if (regex.test(line)) {
       const start = Math.max(0, index - contextLines);
       const end = Math.min(lines.length - 1, index + contextLines);
       const context: string[] = [];
       for (let contextIndex = start; contextIndex <= end; contextIndex += 1) {
-        const prefix = contextIndex === index ? '>' : ' ';
-        context.push(`${prefix} ${contextIndex + 1}: ${lines[contextIndex] ?? ''}`);
+        const prefix = contextIndex === index ? ">" : " ";
+        context.push(
+          `${prefix} ${contextIndex + 1}: ${lines[contextIndex] ?? ""}`,
+        );
       }
-      hits.push(Object.freeze({ file: filePath, lineNo: index + 1, line, context }));
+      hits.push(
+        Object.freeze({ file: filePath, lineNo: index + 1, line, context }),
+      );
     }
   }
   return hits;
@@ -361,7 +424,7 @@ function grepInFile(
  * @returns Compiled regex instance.
  */
 function createRegex(pattern: string): RegExp {
-  return new RegExp(pattern, 'g');
+  return new RegExp(pattern, "g");
 }
 
 /**
@@ -372,22 +435,33 @@ function createRegex(pattern: string): RegExp {
  * @param options Optional pagination settings for file reads.
  * @returns Tool result containing file text or directory entries.
  */
-export function readFileTool(workspaceRoot: string, rawPath: string, options?: ReadFileToolOptions): ToolResult {
+export function readFileTool(
+  workspaceRoot: string,
+  rawPath: string,
+  options?: ReadFileToolOptions,
+): ToolResult {
   try {
     const resolved = resolveReadablePath(workspaceRoot, rawPath);
     if (!fs.existsSync(resolved)) {
-      return Object.freeze({ success: false, content: '', error: `File not found: ${rawPath}` });
+      return Object.freeze({
+        success: false,
+        content: "",
+        error: `File not found: ${rawPath}`,
+      });
     }
 
     const stat = fs.statSync(resolved);
     if (stat.isDirectory()) {
-      const entries = fs.readdirSync(resolved, { withFileTypes: true }).map((entry) =>
-        `${entry.name}${entry.isDirectory() ? '/' : ''}`,
-      );
+      const entries = fs
+        .readdirSync(resolved, { withFileTypes: true })
+        .map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`);
       return Object.freeze({
         success: true,
-        content: entries.join('\n'),
-        meta: Object.freeze({ directoryPath: resolved, entryCount: entries.length }),
+        content: entries.join("\n"),
+        meta: Object.freeze({
+          directoryPath: resolved,
+          entryCount: entries.length,
+        }),
       });
     }
 
@@ -397,7 +471,7 @@ export function readFileTool(workspaceRoot: string, rawPath: string, options?: R
       filePath: resolved,
       mtimeMs: stat.mtimeMs,
       sizeBytes: stat.size,
-      readMode: 'file_lines',
+      readMode: "file_lines",
       offset,
       limit: maxLines,
     });
@@ -405,19 +479,23 @@ export function readFileTool(workspaceRoot: string, rawPath: string, options?: R
       return Object.freeze({
         success: true,
         content: cached.content,
-        ...(cached.meta ? { meta: Object.freeze({ ...cached.meta, cacheHit: true }) } : {}),
+        ...(cached.meta
+          ? { meta: Object.freeze({ ...cached.meta, cacheHit: true }) }
+          : {}),
       });
     }
 
-    const raw = fs.readFileSync(resolved, 'utf-8');
-    const lines = raw.split('\n');
+    const raw = fs.readFileSync(resolved, "utf-8");
+    const lines = raw.split("\n");
     const slice = lines.slice(offset, offset + maxLines);
-    const content = slice.join('\n');
+    const content = slice.join("\n");
     const truncated = lines.length > offset + maxLines;
-    const finalContent = truncated ? `${content}\n[... ${lines.length - offset - maxLines} more lines]` : content;
+    const finalContent = truncated
+      ? `${content}\n[... ${lines.length - offset - maxLines} more lines]`
+      : content;
     const meta = Object.freeze({
       filePath: resolved,
-      readMode: offset > 0 || maxLines < lines.length ? 'partial' : 'full',
+      readMode: offset > 0 || maxLines < lines.length ? "partial" : "full",
       startLine: offset + 1,
       endLine: offset + slice.length,
       totalLines: lines.length,
@@ -429,7 +507,7 @@ export function readFileTool(workspaceRoot: string, rawPath: string, options?: R
       filePath: resolved,
       mtimeMs: stat.mtimeMs,
       sizeBytes: stat.size,
-      readMode: 'file_lines',
+      readMode: "file_lines",
       offset,
       limit: maxLines,
       content: finalContent,
@@ -438,7 +516,7 @@ export function readFileTool(workspaceRoot: string, rawPath: string, options?: R
 
     return Object.freeze({ success: true, content: finalContent, meta });
   } catch (error) {
-    return Object.freeze({ success: false, content: '', error: String(error) });
+    return Object.freeze({ success: false, content: "", error: String(error) });
   }
 }
 
@@ -458,9 +536,13 @@ export function grepTool(
   options?: GrepToolOptions,
 ): ToolResult {
   try {
-    const resolved = resolveWorkspacePath(workspaceRoot, rawPath || '.');
+    const resolved = resolveWorkspacePath(workspaceRoot, rawPath || ".");
     if (!fs.existsSync(resolved)) {
-      return Object.freeze({ success: false, content: '', error: `Path not found: ${rawPath}` });
+      return Object.freeze({
+        success: false,
+        content: "",
+        error: `Path not found: ${rawPath}`,
+      });
     }
 
     const regex = createRegex(pattern);
@@ -472,23 +554,34 @@ export function grepTool(
     }
 
     const contextLines = Math.max(0, Number(options?.contextLines ?? 2));
-    const hits = files.flatMap((filePath) => grepInFile(filePath, regex, contextLines)).slice(0, MAX_GREP_HITS);
+    const hits = files
+      .flatMap((filePath) => grepInFile(filePath, regex, contextLines))
+      .slice(0, MAX_GREP_HITS);
     if (hits.length === 0) {
       return Object.freeze({
         success: true,
-        content: '(no matches)',
+        content: "(no matches)",
         meta: Object.freeze({ pattern, targetPath: resolved, matches: 0 }),
       });
     }
 
-    const content = hits.map((hit) => `${toDisplayPath(hit.file, workspaceRoot)}:${hit.lineNo}\n${hit.context.join('\n')}`).join('\n\n');
+    const content = hits
+      .map(
+        (hit) =>
+          `${toDisplayPath(hit.file, workspaceRoot)}:${hit.lineNo}\n${hit.context.join("\n")}`,
+      )
+      .join("\n\n");
     return Object.freeze({
       success: true,
       content,
-      meta: Object.freeze({ pattern, targetPath: resolved, matches: hits.length }),
+      meta: Object.freeze({
+        pattern,
+        targetPath: resolved,
+        matches: hits.length,
+      }),
     });
   } catch (error) {
-    return Object.freeze({ success: false, content: '', error: String(error) });
+    return Object.freeze({ success: false, content: "", error: String(error) });
   }
 }
 
@@ -500,43 +593,58 @@ export function grepTool(
  * @param options Optional depth settings.
  * @returns Tool result containing a compact tree listing.
  */
-export function listDirTool(workspaceRoot: string, rawPath: string, options?: ListDirToolOptions): ToolResult {
+export function listDirTool(
+  workspaceRoot: string,
+  rawPath: string,
+  options?: ListDirToolOptions,
+): ToolResult {
   try {
-    const resolved = resolveWorkspacePath(workspaceRoot, rawPath || '.');
+    const resolved = resolveWorkspacePath(workspaceRoot, rawPath || ".");
     if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
-      return Object.freeze({ success: false, content: '', error: `Directory not found: ${rawPath}` });
+      return Object.freeze({
+        success: false,
+        content: "",
+        error: `Directory not found: ${rawPath}`,
+      });
     }
 
     const lines: string[] = [];
-    const entries: Array<Readonly<{ name: string; path: string; kind: 'file' | 'dir' }>> = [];
+    const entries: Array<
+      Readonly<{ name: string; path: string; kind: "file" | "dir" }>
+    > = [];
     const depth = Number(options?.depth ?? 0);
-    const normalizedDepth = Math.min(MAX_LIST_DIR_DEPTH, Math.max(0, Math.floor(Number.isFinite(depth) ? depth : 0)));
+    const normalizedDepth = Math.min(
+      MAX_LIST_DIR_DEPTH,
+      Math.max(0, Math.floor(Number.isFinite(depth) ? depth : 0)),
+    );
     const topLevelEntries = readVisibleDirectoryEntries(resolved);
 
-    const topLevelSummary = normalizedDepth > 0 && topLevelEntries.length > 0
-      ? (() => {
-          const visibleEntries = topLevelEntries
-            .slice(0, LIST_DIR_SUMMARY_ENTRY_LIMIT)
-            .map(formatDirectoryEntryName)
-            .join(', ');
-          const remainingCount = topLevelEntries.length - LIST_DIR_SUMMARY_ENTRY_LIMIT;
-          return remainingCount > 0
-            ? `Top-level entries: ${visibleEntries}, ... (+${remainingCount} more)`
-            : `Top-level entries: ${visibleEntries}`;
-        })()
-      : '';
+    const topLevelSummary =
+      normalizedDepth > 0 && topLevelEntries.length > 0
+        ? (() => {
+            const visibleEntries = topLevelEntries
+              .slice(0, LIST_DIR_SUMMARY_ENTRY_LIMIT)
+              .map(formatDirectoryEntryName)
+              .join(", ");
+            const remainingCount =
+              topLevelEntries.length - LIST_DIR_SUMMARY_ENTRY_LIMIT;
+            return remainingCount > 0
+              ? `Top-level entries: ${visibleEntries}, ... (+${remainingCount} more)`
+              : `Top-level entries: ${visibleEntries}`;
+          })()
+        : "";
 
-    const walk = (dirPath: string, prefix = '', currentDepth = 0): void => {
+    const walk = (dirPath: string, prefix = "", currentDepth = 0): void => {
       const dirEntries = readVisibleDirectoryEntries(dirPath);
       for (const entry of dirEntries) {
         if (entries.length >= MAX_LIST_DIR_ENTRIES) {
           return;
         }
         const fullPath = path.join(dirPath, entry.name);
-        const kind = entry.isDirectory() ? 'dir' : 'file';
-        lines.push(`${prefix}${entry.name}${kind === 'dir' ? '/' : ''}`);
+        const kind = entry.isDirectory() ? "dir" : "file";
+        lines.push(`${prefix}${entry.name}${kind === "dir" ? "/" : ""}`);
         entries.push(Object.freeze({ name: entry.name, path: fullPath, kind }));
-        if (kind === 'dir' && currentDepth < normalizedDepth) {
+        if (kind === "dir" && currentDepth < normalizedDepth) {
           walk(fullPath, `${prefix}  `, currentDepth + 1);
         }
       }
@@ -546,16 +654,19 @@ export function listDirTool(workspaceRoot: string, rawPath: string, options?: Li
 
     const truncated = entries.length >= MAX_LIST_DIR_ENTRIES;
     const contentParts = [
-      ...(topLevelSummary ? [topLevelSummary, ''] : []),
-      lines.join('\n') || '(empty directory)',
+      ...(topLevelSummary ? [topLevelSummary, ""] : []),
+      lines.join("\n") || "(empty directory)",
       ...(truncated
-        ? ['', `... [truncated after ${MAX_LIST_DIR_ENTRIES} entries; narrow the path or reduce depth]`]
+        ? [
+            "",
+            `... [truncated after ${MAX_LIST_DIR_ENTRIES} entries; narrow the path or reduce depth]`,
+          ]
         : []),
     ];
 
     return Object.freeze({
       success: true,
-      content: contentParts.join('\n'),
+      content: contentParts.join("\n"),
       meta: Object.freeze({
         directoryPath: resolved,
         entryCount: entries.length,
@@ -565,7 +676,7 @@ export function listDirTool(workspaceRoot: string, rawPath: string, options?: Li
       }),
     });
   } catch (error) {
-    return Object.freeze({ success: false, content: '', error: String(error) });
+    return Object.freeze({ success: false, content: "", error: String(error) });
   }
 }
 
@@ -577,8 +688,15 @@ export function listDirTool(workspaceRoot: string, rawPath: string, options?: Li
  * @param lines Maximum number of lines to return.
  * @returns Tool result containing the head of the file.
  */
-export function headTool(workspaceRoot: string, rawPath: string, lines = 50): ToolResult {
-  return readFileTool(workspaceRoot, rawPath, { maxLines: Math.max(1, lines), offset: 0 });
+export function headTool(
+  workspaceRoot: string,
+  rawPath: string,
+  lines = 50,
+): ToolResult {
+  return readFileTool(workspaceRoot, rawPath, {
+    maxLines: Math.max(1, lines),
+    offset: 0,
+  });
 }
 
 /**
@@ -589,19 +707,25 @@ export function headTool(workspaceRoot: string, rawPath: string, lines = 50): To
  * @param lines Maximum number of lines to return.
  * @returns Tool result containing the tail of the file.
  */
-export function tailTool(workspaceRoot: string, rawPath: string, lines = 50): ToolResult {
+export function tailTool(
+  workspaceRoot: string,
+  rawPath: string,
+  lines = 50,
+): ToolResult {
   try {
     const resolved = resolveWorkspacePath(workspaceRoot, rawPath);
-    const raw = fs.readFileSync(resolved, 'utf-8');
-    const allLines = raw.split('\n');
+    const raw = fs.readFileSync(resolved, "utf-8");
+    const allLines = raw.split("\n");
     const lineCount = Math.max(1, lines);
-    const result = allLines.slice(Math.max(0, allLines.length - lineCount)).join('\n');
+    const result = allLines
+      .slice(Math.max(0, allLines.length - lineCount))
+      .join("\n");
     return Object.freeze({
       success: true,
       content: result,
       meta: Object.freeze({
         filePath: resolved,
-        readMode: 'tail',
+        readMode: "tail",
         startLine: Math.max(1, allLines.length - lineCount + 1),
         endLine: allLines.length,
         totalLines: allLines.length,
@@ -609,6 +733,6 @@ export function tailTool(workspaceRoot: string, rawPath: string, lines = 50): To
       }),
     });
   } catch (error) {
-    return Object.freeze({ success: false, content: '', error: String(error) });
+    return Object.freeze({ success: false, content: "", error: String(error) });
   }
 }

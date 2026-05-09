@@ -6,16 +6,39 @@
  * @desc Gemini embedding helpers shared by semantic retrieval layers with local fallback vectors.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash } from "node:crypto";
 
-import { EMBEDDING_TIMEOUT_MS, GEMINI_EMBEDDING_MODEL } from './entities/constants';
-import type { GeminiEmbeddingTaskType } from './entities/gemini';
+import {
+  EMBEDDING_TIMEOUT_MS,
+  GEMINI_EMBEDDING_MODEL,
+} from "./entities/constants";
+import type { GeminiEmbeddingTaskType } from "./entities/gemini";
 
-const GEMINI_EMBEDDING_API_KEY =
-  process.env.GEMINI_API_KEY?.trim() ||
-  process.env.GOOGLE_API_KEY?.trim() ||
-  'AIzaSyBBEuo4Hz1d5oCtSxYe0uULMCXtQS-7DF0';
 const LOCAL_FALLBACK_EMBEDDING_DIMENSIONS = 128;
+
+function resolveGeminiEmbeddingApiKey(): string | null {
+  const configuredApiKey =
+    process.env.GEMINI_API_KEY?.trim() ||
+    process.env.GOOGLE_API_KEY?.trim() ||
+    "";
+  return configuredApiKey.length > 0 ? configuredApiKey : null;
+}
+
+async function withEmbeddingTimeout<T>(request: Promise<T>): Promise<T | null> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      request,
+      new Promise<null>((resolve) => {
+        timeoutHandle = setTimeout(() => resolve(null), EMBEDDING_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutHandle) {
+      clearTimeout(timeoutHandle);
+    }
+  }
+}
 
 /**
  * Returns the embedding model name used by current retrieval flows.
@@ -27,19 +50,24 @@ export function getGeminiEmbeddingModel(): string {
 /**
  * Generates a deterministic local embedding when remote Gemini embeddings are unavailable.
  */
-function createLocalFallbackEmbedding(text: string, taskType: GeminiEmbeddingTaskType): readonly number[] {
+function createLocalFallbackEmbedding(
+  text: string,
+  taskType: GeminiEmbeddingTaskType,
+): readonly number[] {
   const vector = new Array<number>(LOCAL_FALLBACK_EMBEDDING_DIMENSIONS).fill(0);
-  const normalizedText = `${taskType}\n${text}`.normalize('NFKC');
+  const normalizedText = `${taskType}\n${text}`.normalize("NFKC");
   const tokenParts = normalizedText
     .split(/[\s\p{P}\p{S}]+/u)
     .map((part) => part.trim().toLowerCase())
     .filter(Boolean);
-  const features = tokenParts.length > 0 ? tokenParts : [normalizedText.toLowerCase()];
+  const features =
+    tokenParts.length > 0 ? tokenParts : [normalizedText.toLowerCase()];
 
   for (const feature of features) {
-    const hash = createHash('sha256').update(feature).digest();
+    const hash = createHash("sha256").update(feature).digest();
     for (let index = 0; index < hash.length; index += 1) {
-      const dimension = (hash[index] ?? 0) % LOCAL_FALLBACK_EMBEDDING_DIMENSIONS;
+      const dimension =
+        (hash[index] ?? 0) % LOCAL_FALLBACK_EMBEDDING_DIMENSIONS;
       const signedValue = index % 2 === 0 ? 1 : -1;
       vector[dimension] = (vector[dimension] ?? 0) + signedValue;
     }
@@ -64,7 +92,9 @@ function createLocalFallbackEmbeddings(
   texts: readonly string[],
   taskType: GeminiEmbeddingTaskType,
 ): readonly (readonly number[])[] {
-  return Object.freeze(texts.map((text) => createLocalFallbackEmbedding(text, taskType)));
+  return Object.freeze(
+    texts.map((text) => createLocalFallbackEmbedding(text, taskType)),
+  );
 }
 
 /**
@@ -78,10 +108,15 @@ export async function embedTexts(
     return Object.freeze([]);
   }
 
+  const apiKey = resolveGeminiEmbeddingApiKey();
+  if (!apiKey) {
+    return createLocalFallbackEmbeddings(texts, taskType);
+  }
+
   try {
-    const { GoogleGenAI } = await import('@google/genai');
-    const client = new GoogleGenAI({ apiKey: GEMINI_EMBEDDING_API_KEY });
-    const response = await Promise.race([
+    const { GoogleGenAI } = await import("@google/genai");
+    const client = new GoogleGenAI({ apiKey });
+    const response = await withEmbeddingTimeout(
       client.models.embedContent({
         model: GEMINI_EMBEDDING_MODEL,
         contents: [...texts],
@@ -89,14 +124,13 @@ export async function embedTexts(
           taskType,
         },
       }),
-      new Promise<null>((resolve) => {
-        setTimeout(() => resolve(null), EMBEDDING_TIMEOUT_MS);
-      }),
-    ]);
+    );
     if (!response) {
       return createLocalFallbackEmbeddings(texts, taskType);
     }
-    const embeddings = (response.embeddings ?? []).map((item) => Object.freeze([...(item.values ?? [])]));
+    const embeddings = (response.embeddings ?? []).map((item) =>
+      Object.freeze([...(item.values ?? [])]),
+    );
     if (embeddings.length !== texts.length) {
       return createLocalFallbackEmbeddings(texts, taskType);
     }
@@ -113,7 +147,13 @@ export function cosineSimilarityEmbedding(
   left: readonly number[] | null | undefined,
   right: readonly number[] | null | undefined,
 ): number {
-  if (!left || !right || left.length === 0 || right.length === 0 || left.length !== right.length) {
+  if (
+    !left ||
+    !right ||
+    left.length === 0 ||
+    right.length === 0 ||
+    left.length !== right.length
+  ) {
     return 0;
   }
 

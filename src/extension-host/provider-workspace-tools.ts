@@ -79,8 +79,7 @@ export function createProviderWorkspaceToolActions(
         }
         return Object.freeze({
           success: true,
-          content:
-            `Started frontend preview for ${candidate.label} at ${candidate.previewUrl} using ${candidate.commandText} in ${candidate.relativePath}.`,
+          content: `Started frontend preview for ${candidate.label} at ${candidate.previewUrl} using ${candidate.commandText} in ${candidate.relativePath}.`,
           meta: Object.freeze({
             label: candidate.label,
             relativePath: candidate.relativePath,

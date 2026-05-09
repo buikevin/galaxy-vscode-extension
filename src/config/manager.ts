@@ -161,6 +161,10 @@ export function loadConfig(): GalaxyConfig {
 
     return {
       agent: parsed.agent ?? DEFAULT_CONFIG.agent,
+      subagent:
+        typeof parsed.subagent === 'boolean'
+          ? parsed.subagent
+          : DEFAULT_CONFIG.subagent,
       quality,
       validation: normalizeValidationConfig(parsed.validation),
       maxToolRounds:

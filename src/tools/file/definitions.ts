@@ -94,6 +94,8 @@ function getToolCapability(
     case "create_drawio_diagram":
     case "convert_drawio_diagram":
     case "export_drawio_diagram":
+    case "export_workflow_drawio_diagram":
+    case "export_workflow_mermaid_diagram":
     case "insert_file_at_line":
     case "edit_file":
     case "edit_file_range":

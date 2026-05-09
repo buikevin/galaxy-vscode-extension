@@ -6,6 +6,7 @@
  * @desc Shared runtime entities reused across extension runtime modules, validation, and tool orchestration.
  */
 
+import type { GalaxyConfig } from "./config";
 import type { AgentType, ChatMessage } from "./protocol";
 import type { ToolCall } from "../tools/entities/file-tools";
 
@@ -161,13 +162,58 @@ export type CommandTerminalRecord = Readonly<{
   finalize: (opts: CommandTerminalCompletion) => void;
 }>;
 
+/** Role identifiers supported by the role-aware sub-agent orchestrator. */
+export type SubagentRoleId = "main" | "ba" | "planning" | "sa" | "coding" | "testing" | "review";
+
+/** Runtime tool profile assigned to one sub-agent role. */
+export type SubagentToolProfile = GalaxyConfig["toolCapabilities"];
+
+/** Model routing profile assigned to one sub-agent role. */
+export type SubagentModelProfile = Readonly<{
+  /** Provider type used by the role. */
+  agentType: AgentType;
+  /** Hosted or local model name used by the role. */
+  model: string;
+  /** Optional provider base URL for manual/Ollama-compatible hosted models. */
+  baseUrl?: string;
+}>;
+
+/** Static role definition used by planning, prompting, and tool filtering. */
+export type SubagentRoleDefinition = Readonly<{
+  /** Stable role id. */
+  id: SubagentRoleId;
+  /** Human-readable role title. */
+  title: string;
+  /** Role mission injected into scoped prompts. */
+  mission: string;
+  /** Default model routing for the role. */
+  model: SubagentModelProfile;
+  /** Maximum tool surface exposed to the role. */
+  toolProfile: SubagentToolProfile;
+  /** Whether the role is allowed to ask the user for missing decisions. */
+  canAskUser: boolean;
+  /** Whether the role is expected to write project files. */
+  canEditFiles: boolean;
+}>;
+
 /** Scope bucket used to split a broad task into selective multi-agent subtasks. */
-export type SubtaskScope = "backend" | "frontend" | "integration";
+export type SubtaskScope =
+  | "ba"
+  | "planning"
+  | "sa"
+  | "coding"
+  | "testing"
+  | "review"
+  | "backend"
+  | "frontend"
+  | "integration";
 
 /** One scoped subtask emitted by the selective multi-agent planner. */
 export type SelectiveMultiAgentSubtask = Readonly<{
   /** Stable scope id used to order and label the subtask. */
   id: SubtaskScope;
+  /** Sub-agent role that should handle this subtask. */
+  role: SubagentRoleId;
   /** Human-readable subtask title shown in orchestration messages. */
   title: string;
   /** Objective the sub-agent should complete in this scope. */
@@ -186,6 +232,49 @@ export type SelectiveMultiAgentPlan = Readonly<{
   summary: string;
   /** Ordered subtask list to execute or display. */
   subtasks: readonly SelectiveMultiAgentSubtask[];
+}>;
+
+/** Completion status for one sub-agent handoff record. */
+export type SubagentHandoffStatus = "completed" | "failed" | "needs_user_input";
+
+/** Structured handoff emitted after one sub-agent role finishes its turn. */
+export type SubagentHandoffRecord = Readonly<{
+  /** Stable plan id shared by every subtask in one orchestrated turn. */
+  planId: string;
+  /** Stable handoff id for this subtask result. */
+  handoffId: string;
+  /** One-based subtask index in the plan. */
+  index: number;
+  /** Total number of subtasks in the plan. */
+  total: number;
+  /** Scope id handled by this handoff. */
+  subtaskId: SubtaskScope;
+  /** Role that produced the handoff. */
+  role: SubagentRoleId;
+  /** Human-readable role title. */
+  roleTitle: string;
+  /** Model selected for this role. */
+  model: string;
+  /** Subtask title. */
+  title: string;
+  /** Subtask objective. */
+  objective: string;
+  /** Status after the role turn. */
+  status: SubagentHandoffStatus;
+  /** Acceptance criteria assigned to the role. */
+  acceptanceCriteria: readonly string[];
+  /** Optional narrowing notes assigned to the role. */
+  scopeNotes?: readonly string[];
+  /** Files written by this role turn. */
+  filesWritten: readonly string[];
+  /** Optional role that should consume this handoff next. */
+  nextRole?: SubagentRoleId;
+  /** User-facing summary suitable for memory and downstream context. */
+  summary: string;
+  /** Timestamp when the sub-agent turn started. */
+  startedAt: number;
+  /** Timestamp when the sub-agent turn completed. */
+  completedAt: number;
 }>;
 
 /** Parsed review finding extracted from reviewer output. */

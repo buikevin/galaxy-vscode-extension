@@ -6,7 +6,13 @@
  * @desc Entity definitions for session memory, prompt build output, and working-turn history.
  */
 
-import type { ChatMessage } from '../../shared/protocol';
+import type { ChatMessage } from "../../shared/protocol";
+import type {
+  RetrievalIntentKind,
+  RetrievalPromptBlockId,
+  RetrievalStageId,
+  RetrievalStopReason,
+} from "../retrieval-core";
 
 /**
  * Compact summary of one tool action used inside turn history.
@@ -163,7 +169,7 @@ export type ReadPlanProgressItem = Readonly<{
   /** Whether the step has already been confirmed by evidence. */
   confirmed: boolean;
   /** Fine-grained status used for reread gating and summaries. */
-  status?: 'confirmed' | 'needs_refresh' | 'pending';
+  status?: "confirmed" | "needs_refresh" | "pending";
   /** Optional evidence summary backing the status. */
   evidenceSummary?: string;
   /** File path targeted by the read-plan step. */
@@ -171,7 +177,7 @@ export type ReadPlanProgressItem = Readonly<{
   /** Optional symbol name associated with the step. */
   symbolName?: string;
   /** Tool the agent should use to execute the step. */
-  tool: 'read_file' | 'grep';
+  tool: "read_file" | "grep";
 }>;
 
 /**
@@ -194,6 +200,22 @@ export type WorkflowRereadGuard = Readonly<{
 export type PromptBuildResult = Readonly<{
   /** Final prompt message list sent to the driver. */
   messages: readonly ChatMessage[];
+  /** Primary retrieval intent selected by the shared retrieval core. */
+  retrievalIntentKind: RetrievalIntentKind;
+  /** Secondary retrieval intents kept as context for the turn. */
+  retrievalSecondaryIntents: readonly RetrievalIntentKind[];
+  /** Whether exact code evidence should be preferred before broad summaries. */
+  retrievalRequiresExactEvidence: boolean;
+  /** Signals that triggered the selected retrieval intent. */
+  retrievalSignals: readonly string[];
+  /** Ordered retrieval stages selected for the current query. */
+  retrievalStageOrder: readonly RetrievalStageId[];
+  /** Preferred prompt blocks selected by the shared retrieval core. */
+  retrievalPromptBlocks: readonly RetrievalPromptBlockId[];
+  /** Stop target associated with the selected retrieval plan. */
+  retrievalStopTarget: RetrievalStopReason;
+  /** Stop reason resolved from the evidence actually gathered for this turn. */
+  retrievalStopReason: RetrievalStopReason;
   /** Absolute project root actually used for retrieval and workflow context in this prompt. */
   effectiveWorkspacePath: string;
   /** Token estimate for static notes content. */

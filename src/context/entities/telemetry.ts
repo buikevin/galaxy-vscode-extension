@@ -6,11 +6,16 @@
  * @desc Entity definitions for telemetry events and aggregated summaries.
  */
 
+import type {
+  RetrievalIntentKind,
+  RetrievalStopReason,
+} from "../retrieval-core";
+
 export type PromptBuildTelemetryEvent = Readonly<{
   /** Stable event identifier. */
   id: string;
   /** Discriminator for prompt build telemetry. */
-  kind: 'prompt_build';
+  kind: "prompt_build";
   /** Timestamp when the event was captured. */
   capturedAt: number;
   /** Estimated total prompt tokens for the turn. */
@@ -29,13 +34,23 @@ export type PromptBuildTelemetryEvent = Readonly<{
   hybridCandidateCount?: number;
   /** Optional number of semantic retrieval candidates scored. */
   semanticCandidateCount?: number;
+  /** Optional primary retrieval intent chosen for the turn. */
+  retrievalIntentKind?: RetrievalIntentKind;
+  /** Optional exact-evidence flag chosen for the turn. */
+  retrievalRequiresExactEvidence?: boolean;
+  /** Optional stage count selected by the shared retrieval plan. */
+  retrievalStageCount?: number;
+  /** Optional stop target selected by the shared retrieval plan. */
+  retrievalStopTarget?: RetrievalStopReason;
+  /** Optional stop reason resolved from the evidence actually gathered. */
+  retrievalStopReason?: RetrievalStopReason;
 }>;
 
 export type WorkingTurnCompactedTelemetryEvent = Readonly<{
   /** Stable event identifier. */
   id: string;
   /** Discriminator for compaction telemetry. */
-  kind: 'working_turn_compacted';
+  kind: "working_turn_compacted";
   /** Timestamp when the event was captured. */
   capturedAt: number;
   /** Estimated prompt tokens before or after compaction. */
@@ -50,7 +65,7 @@ export type ToolEvidenceTelemetryEvent = Readonly<{
   /** Stable event identifier. */
   id: string;
   /** Discriminator for tool-evidence telemetry. */
-  kind: 'tool_evidence';
+  kind: "tool_evidence";
   /** Timestamp when the event was captured. */
   capturedAt: number;
   /** Tool name that produced the evidence. */
@@ -67,7 +82,7 @@ export type MultiAgentPlanTelemetryEvent = Readonly<{
   /** Stable event identifier. */
   id: string;
   /** Discriminator for multi-agent planning telemetry. */
-  kind: 'multi_agent_plan';
+  kind: "multi_agent_plan";
   /** Timestamp when the event was captured. */
   capturedAt: number;
   /** Number of subtasks planned. */
@@ -84,7 +99,7 @@ export type SubAgentTurnTelemetryEvent = Readonly<{
   /** Stable event identifier. */
   id: string;
   /** Discriminator for sub-agent turn telemetry. */
-  kind: 'sub_agent_turn';
+  kind: "sub_agent_turn";
   /** Timestamp when the event was captured. */
   capturedAt: number;
   /** Scope handled by the sub-agent. */
@@ -99,7 +114,7 @@ export type UserRevertTelemetryEvent = Readonly<{
   /** Stable event identifier. */
   id: string;
   /** Discriminator for user revert telemetry. */
-  kind: 'user_revert';
+  kind: "user_revert";
   /** Timestamp when the event was captured. */
   capturedAt: number;
   /** Number of files reverted by the user. */
@@ -110,11 +125,11 @@ export type CapabilitySnapshotTelemetryEvent = Readonly<{
   /** Stable event identifier. */
   id: string;
   /** Discriminator for capability snapshot telemetry. */
-  kind: 'capability_snapshot';
+  kind: "capability_snapshot";
   /** Timestamp when the event was captured. */
   capturedAt: number;
   /** Runtime source that emitted the snapshot. */
-  source: 'chat_turn' | 'repair_turn';
+  source: "chat_turn" | "repair_turn";
   /** Agent type active for the turn. */
   agentType: string;
   /** Capability ids enabled for the turn. */
@@ -125,11 +140,11 @@ export type ValidationSelectionTelemetryEvent = Readonly<{
   /** Stable event identifier. */
   id: string;
   /** Discriminator for validation-selection telemetry. */
-  kind: 'validation_selection';
+  kind: "validation_selection";
   /** Timestamp when the event was captured. */
   capturedAt: number;
   /** Whether project, file, or no validation was selected. */
-  mode: 'project' | 'file' | 'none';
+  mode: "project" | "file" | "none";
   /** Validation profiles chosen for execution. */
   profiles: readonly string[];
   /** Number of commands selected for validation. */
@@ -142,7 +157,7 @@ export type BlockedToolTelemetryEvent = Readonly<{
   /** Stable event identifier. */
   id: string;
   /** Discriminator for blocked-tool telemetry. */
-  kind: 'blocked_tool';
+  kind: "blocked_tool";
   /** Timestamp when the event was captured. */
   capturedAt: number;
   /** Tool name that was blocked. */
@@ -155,7 +170,7 @@ export type WorkflowRetrievalTelemetryEvent = Readonly<{
   /** Stable event identifier. */
   id: string;
   /** Discriminator for workflow-retrieval telemetry. */
-  kind: 'workflow_retrieval';
+  kind: "workflow_retrieval";
   /** Timestamp when the event was captured. */
   capturedAt: number;
   /** Whether the current user query was classified as a flow query. */
@@ -183,16 +198,16 @@ export type TelemetryEvent =
   | WorkflowRetrievalTelemetryEvent;
 
 export type TelemetryEventInput =
-  | Omit<PromptBuildTelemetryEvent, 'id' | 'capturedAt'>
-  | Omit<WorkingTurnCompactedTelemetryEvent, 'id' | 'capturedAt'>
-  | Omit<ToolEvidenceTelemetryEvent, 'id' | 'capturedAt'>
-  | Omit<MultiAgentPlanTelemetryEvent, 'id' | 'capturedAt'>
-  | Omit<SubAgentTurnTelemetryEvent, 'id' | 'capturedAt'>
-  | Omit<UserRevertTelemetryEvent, 'id' | 'capturedAt'>
-  | Omit<CapabilitySnapshotTelemetryEvent, 'id' | 'capturedAt'>
-  | Omit<ValidationSelectionTelemetryEvent, 'id' | 'capturedAt'>
-  | Omit<BlockedToolTelemetryEvent, 'id' | 'capturedAt'>
-  | Omit<WorkflowRetrievalTelemetryEvent, 'id' | 'capturedAt'>;
+  | Omit<PromptBuildTelemetryEvent, "id" | "capturedAt">
+  | Omit<WorkingTurnCompactedTelemetryEvent, "id" | "capturedAt">
+  | Omit<ToolEvidenceTelemetryEvent, "id" | "capturedAt">
+  | Omit<MultiAgentPlanTelemetryEvent, "id" | "capturedAt">
+  | Omit<SubAgentTurnTelemetryEvent, "id" | "capturedAt">
+  | Omit<UserRevertTelemetryEvent, "id" | "capturedAt">
+  | Omit<CapabilitySnapshotTelemetryEvent, "id" | "capturedAt">
+  | Omit<ValidationSelectionTelemetryEvent, "id" | "capturedAt">
+  | Omit<BlockedToolTelemetryEvent, "id" | "capturedAt">
+  | Omit<WorkflowRetrievalTelemetryEvent, "id" | "capturedAt">;
 
 export type TelemetrySummary = Readonly<{
   /** Total number of telemetry events recorded. */

@@ -7,7 +7,12 @@
  */
 
 import { useEffect } from "react";
-import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from "react";
+import type {
+  Dispatch,
+  MutableRefObject,
+  RefObject,
+  SetStateAction,
+} from "react";
 import type {
   CommandStreamChunkPayload,
   CommandStreamEndPayload,
@@ -22,7 +27,10 @@ import type {
   ToolToggles,
   WebviewMessage,
 } from "@shared/protocol";
-import type { LocalAttachment, PreviewAsset } from "@webview/entities/attachments";
+import type {
+  LocalAttachment,
+  PreviewAsset,
+} from "@webview/entities/attachments";
 import type {
   ActiveShellSession,
   ManualPromptPlan,
@@ -41,9 +49,13 @@ type UseHostMessagesOptions = Readonly<{
   /** Update workspace display name. */
   setWorkspaceName: Dispatch<SetStateAction<string>>;
   /** Append or replace transcript messages. */
-  setMessages: Dispatch<SetStateAction<import("@shared/protocol").ChatMessage[]>>;
+  setMessages: Dispatch<
+    SetStateAction<import("@shared/protocol").ChatMessage[]>
+  >;
   /** Update selected agent in the composer. */
-  setSelectedAgent: Dispatch<SetStateAction<import("@shared/protocol").AgentType>>;
+  setSelectedAgent: Dispatch<
+    SetStateAction<import("@shared/protocol").AgentType>
+  >;
   /** Track whether older transcript history is available. */
   setHasOlderMessages: Dispatch<SetStateAction<boolean>>;
   /** Track whether an older-history batch is currently loading. */
@@ -91,9 +103,13 @@ type UseHostMessagesOptions = Readonly<{
   /** Update tool toggles from host. */
   setToolToggles: Dispatch<SetStateAction<ToolToggles>>;
   /** Update discovered extension tool groups from host. */
-  setExtensionToolGroups: Dispatch<SetStateAction<readonly ExtensionToolGroup[]>>;
+  setExtensionToolGroups: Dispatch<
+    SetStateAction<readonly ExtensionToolGroup[]>
+  >;
   /** Update extension tool toggles from host. */
-  setExtensionToolToggles: Dispatch<SetStateAction<Readonly<Record<string, boolean>>>>;
+  setExtensionToolToggles: Dispatch<
+    SetStateAction<Readonly<Record<string, boolean>>>
+  >;
   /** Update change summary box state. */
   setChangeSummary: Dispatch<
     SetStateAction<import("@shared/protocol").ChangeSummary>
@@ -140,7 +156,9 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         cwd: payload.cwd,
         startedAt: payload.startedAt,
         output: "",
-        ...(payload.terminalTitle ? { terminalTitle: payload.terminalTitle } : {}),
+        ...(payload.terminalTitle
+          ? { terminalTitle: payload.terminalTitle }
+          : {}),
       },
     ]);
   }
@@ -153,8 +171,8 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
               ...session,
               output: `${session.output}${payload.chunk}`.slice(-50_000),
             }
-          : session
-      )
+          : session,
+      ),
     );
   }
 
@@ -169,8 +187,8 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
               durationMs: payload.durationMs,
               ...(payload.background ? { background: true } : {}),
             }
-          : session
-      )
+          : session,
+      ),
     );
   }
 
@@ -178,7 +196,9 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
     switch (message.type) {
       case "session-init":
         options.setWorkspaceName(message.payload.workspaceName);
-        options.setMessages(message.payload.messages as import("@shared/protocol").ChatMessage[]);
+        options.setMessages(
+          message.payload.messages as import("@shared/protocol").ChatMessage[],
+        );
         options.setHasOlderMessages(Boolean(message.payload.hasOlderMessages));
         options.setIsLoadingOlderMessages(false);
         options.setSelectedAgent(message.payload.selectedAgent);
@@ -196,7 +216,7 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
             ...(attachment.previewDataUrl
               ? { previewUrl: attachment.previewDataUrl }
               : {}),
-          }))
+          })),
         );
         options.setPreviewAsset(null);
         options.setIsPlusMenuOpen(false);
@@ -205,13 +225,15 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         options.setPendingMessageId(null);
         options.setInflightRequest(null);
         options.setActiveShellSessions(
-          (message.payload.activeShellSessions as ActiveShellSession[] | undefined) ?? []
+          (message.payload.activeShellSessions as
+            | ActiveShellSession[]
+            | undefined) ?? [],
         );
         options.setManualPromptPlan(null);
         options.setSelectedFiles(
           message.payload.files
             .filter((file: FileItem) => file.selected)
-            .map((file: FileItem) => file.path)
+            .map((file: FileItem) => file.path),
         );
         options.setQualityPreferences(message.payload.qualityPreferences);
         options.setQualityDetails(message.payload.qualityDetails);
@@ -242,11 +264,13 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
           const preserved = options.prependHistoryScrollRef.current;
           const root = options.scrollAreaRef.current;
           const viewport = root?.querySelector(
-            "[data-radix-scroll-area-viewport]"
+            "[data-radix-scroll-area-viewport]",
           ) as HTMLElement | null;
           if (preserved && viewport) {
             const nextTop =
-              viewport.scrollHeight - preserved.previousHeight + preserved.previousTop;
+              viewport.scrollHeight -
+              preserved.previousHeight +
+              preserved.previousTop;
             viewport.scrollTop = Math.max(nextTop, 0);
           }
           options.prependHistoryScrollRef.current = null;
@@ -255,11 +279,15 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
       }
       case "assistant-stream":
         markServerResponseReceived();
-        options.setStreamingAssistant((current) => current + message.payload.delta);
+        options.setStreamingAssistant(
+          (current) => current + message.payload.delta,
+        );
         return;
       case "assistant-thinking":
         markServerResponseReceived();
-        options.setStreamingThinking((current) => current + message.payload.delta);
+        options.setStreamingThinking(
+          (current) => current + message.payload.delta,
+        );
         return;
       case "assistant-message":
       case "message-added":
@@ -334,14 +362,13 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         if (message.payload.purpose === "attach") {
           options.setFigmaAttachments((current) => {
             const next = current.filter(
-              (item) => item.importId !== message.payload.attachment.importId
+              (item) => item.importId !== message.payload.attachment.importId,
             );
             return [...next, message.payload.attachment];
           });
         }
         if (
-          options.pendingPreviewImportId ===
-          message.payload.attachment.importId
+          options.pendingPreviewImportId === message.payload.attachment.importId
         ) {
           if (message.payload.attachment.previewDataUrl) {
             options.setPreviewAsset({
@@ -357,7 +384,7 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         options.setLocalAttachments((current) => {
           const next = current.filter(
             (item) =>
-              item.attachmentId !== message.payload.attachment.attachmentId
+              item.attachmentId !== message.payload.attachment.attachmentId,
           );
           return [
             ...next,
@@ -393,7 +420,10 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         options.setKeptChangeSummaryKey("");
         return;
       case "error":
-        if (options.inflightRequest && !options.inflightRequest.hasServerResponse) {
+        if (
+          options.inflightRequest &&
+          !options.inflightRequest.hasServerResponse
+        ) {
           options.setRetryRequest(options.inflightRequest);
           options.setPendingMessageId(null);
         }

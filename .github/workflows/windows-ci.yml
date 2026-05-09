@@ -39,5 +39,12 @@ jobs:
       - name: Compile Test Suite
         run: yarn run compile-tests
 
+      - name: Run Local Retrieval Benchmark Assertions
+        run: yarn workflow:benchmark:assert-local
+
+      - name: Run Kuzu Retrieval Benchmark Assertions
+        if: matrix.os == 'ubuntu-latest'
+        run: node scripts/benchmark-workflow-rag.mjs --assert-kuzu-parity
+
       - name: Run Extension Tests
         run: yarn test

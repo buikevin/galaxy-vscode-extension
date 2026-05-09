@@ -32,6 +32,12 @@ export function normalizeToolName(raw: string): string {
       return "convert_drawio_diagram";
     case "exportdrawiodiagram":
       return "export_drawio_diagram";
+    case "exportworkflowdrawiodiagram":
+    case "createworkflowdrawiodiagram":
+      return "export_workflow_drawio_diagram";
+    case "exportworkflowmermaiddiagram":
+    case "createworkflowmermaiddiagram":
+      return "export_workflow_mermaid_diagram";
     case "insertfileatline":
       return "insert_file_at_line";
     case "listdir":
@@ -133,6 +139,8 @@ export function isCodeWriteTool(toolName: string): boolean {
     normalized === "create_drawio_diagram" ||
     normalized === "convert_drawio_diagram" ||
     normalized === "export_drawio_diagram" ||
+    normalized === "export_workflow_drawio_diagram" ||
+    normalized === "export_workflow_mermaid_diagram" ||
     normalized === "insert_file_at_line" ||
     normalized === "edit_file" ||
     normalized === "edit_file_range" ||

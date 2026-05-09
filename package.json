@@ -2,7 +2,7 @@
   "name": "galaxy-code-vscode",
   "displayName": "Galaxy Code",
   "description": "AI-powered coding assistant with a Galaxy chat experience for VS Code.",
-  "version": "0.1.58",
+  "version": "0.1.64",
   "publisher": "kevinbui",
   "icon": "resources/icon.png",
   "license": "MIT",
@@ -105,6 +105,11 @@
         "category": "Galaxy Code"
       },
       {
+        "command": "galaxy-code.openWorkflowGraphExplorer",
+        "title": "Open Workflow Graph Explorer",
+        "category": "Galaxy Code"
+      },
+      {
         "command": "galaxy-code.toggleReview",
         "title": "Toggle Review",
         "category": "Galaxy Code"
@@ -147,6 +152,8 @@
     "vscode:prepublish": "yarn run package",
     "acceptance:collect": "node scripts/collect-acceptance-artifacts.mjs",
     "workflow:benchmark": "yarn run compile-tests && node scripts/benchmark-workflow-rag.mjs",
+    "workflow:benchmark:assert-local": "yarn run compile-tests && node scripts/benchmark-workflow-rag.mjs --assert-local-benchmark",
+    "workflow:benchmark:assert-kuzu": "yarn run compile-tests && node scripts/benchmark-workflow-rag.mjs --assert-kuzu-parity",
     "compile": "yarn run check-types && yarn run lint && node esbuild.js && vite build",
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
@@ -174,12 +181,15 @@
     "chromadb": "^3.4.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "jszip": "^3.10.1",
     "lucide-react": "^0.542.0",
     "mammoth": "^1.11.0",
     "ollama": "^0.6.3",
     "openai": "^6.27.0",
     "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^5.7.284",
     "playwright-core": "^1.55.1",
+    "pngjs": "^7.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^3.3.1",
@@ -188,9 +198,11 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@galaxy/retrieval-core": "link:../galaxy-retrieval-core",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
     "@types/pdf-parse": "^1.1.5",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^18.3.24",
     "@types/react-dom": "^18.3.7",
     "@types/vscode": "^1.103.0",
@@ -208,5 +220,8 @@
     "typescript-eslint": "^8.56.1",
     "vite": "^7.1.7"
   },
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e",
+  "optionalDependencies": {
+    "kuzu": "0.11.3"
+  }
 }

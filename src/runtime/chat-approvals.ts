@@ -60,6 +60,8 @@ export function getBlockedCapability(toolName: string): string {
     toolName === "create_drawio_diagram" ||
     toolName === "convert_drawio_diagram" ||
     toolName === "export_drawio_diagram" ||
+    toolName === "export_workflow_drawio_diagram" ||
+    toolName === "export_workflow_mermaid_diagram" ||
     toolName === "edit_file" ||
     toolName === "edit_file_range" ||
     toolName === "multi_edit_file_ranges" ||

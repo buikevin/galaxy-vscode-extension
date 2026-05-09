@@ -18,6 +18,7 @@ import {
   FIGMA_BRIDGE_HOST,
   FIGMA_BRIDGE_PORT,
   GALAXY_CONFIGURATION_SECTION,
+  OPEN_WORKFLOW_GRAPH_EXPLORER_COMMAND_ID,
   QUALITY_FULL_ACCESS_SETTING_KEY,
   QUALITY_REVIEW_SETTING_KEY,
   QUALITY_VALIDATE_SETTING_KEY,
@@ -36,6 +37,8 @@ import {
 } from "./frontend-preview";
 import { getWorkspaceRoot, resolveStorageWorkspacePath } from "./session-sync";
 import { openLocalhostPreviewPanel } from "./vscode-tooling";
+import { openWorkflowGraphExplorer } from "./workflow-graph-explorer";
+import { bootstrapWorkflowGraph } from "../context/workflow/extractor/bootstrap";
 
 let figmaBridge: FigmaBridgeServer | null = null;
 
@@ -202,6 +205,19 @@ export function activateExtension(params: ActivateExtensionParams): void {
       }
     },
   );
+  const openWorkflowGraphExplorerCommand = vscode.commands.registerCommand(
+    OPEN_WORKFLOW_GRAPH_EXPLORER_COMMAND_ID,
+    async (input?: unknown) => {
+      try {
+        await openWorkflowGraphExplorer(input);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(
+          `Failed to open workflow graph explorer: ${message}`,
+        );
+      }
+    },
+  );
   const toggleReview = vscode.commands.registerCommand(
     TOGGLE_REVIEW_COMMAND_ID,
     async () => {
@@ -235,6 +251,24 @@ export function activateExtension(params: ActivateExtensionParams): void {
   void sidebarProvider.syncQualityPreferencesToVsCodeSettings();
   void ensureFigmaBridgeStarted(params.handleImportedFigmaDesign, false);
 
+  // Prime the workflow graph in the background using previous-session ledgers and entry-point
+  // manifest scanning so tools that consume the graph (drawio/mermaid export, queries, retrieval)
+  // do not race against an empty database on the very first prompt.
+  setTimeout(() => {
+    try {
+      const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+      for (const folder of workspaceFolders) {
+        try {
+          bootstrapWorkflowGraph(folder.uri.fsPath);
+        } catch {
+          /* never break activation on bootstrap errors */
+        }
+      }
+    } catch {
+      /* defensive: workspaceFolders should always be readable */
+    }
+  }, 0);
+
   params.context.subscriptions.push(
     outputChannel,
     runStatusItem,
@@ -252,6 +286,7 @@ export function activateExtension(params: ActivateExtensionParams): void {
     openLocalPreview,
     startLocalPreviewSession,
     capturePreviewScreenshot,
+    openWorkflowGraphExplorerCommand,
     toggleReview,
     toggleValidation,
     qualitySettingsSync,

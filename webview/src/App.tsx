@@ -66,6 +66,8 @@ const DEFAULT_TOOL_TOGGLES: ToolToggles = {
   create_drawio_diagram: true,
   convert_drawio_diagram: true,
   export_drawio_diagram: true,
+  export_workflow_drawio_diagram: true,
+  export_workflow_mermaid_diagram: true,
   insert_file_at_line: true,
   edit_file_range: true,
   multi_edit_file_ranges: true,

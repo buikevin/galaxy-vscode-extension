@@ -26,6 +26,7 @@ import { buildPromptContext } from "../context/prompt-builder";
 import { appendTelemetryEvent } from "../context/telemetry";
 import type { HistoryManager } from "../context/entities/history-manager";
 import { scheduleWorkflowGraphRefresh } from "../context/workflow/extractor/runtime";
+import { noteFileTouchedForGraph } from "../context/workflow/extractor/touch-queue";
 import { evaluateWorkflowRereadGuard } from "../context/workflow/reread-guard";
 import type {
   AgentType,
@@ -46,9 +47,12 @@ import { createDriver } from "./driver-factory";
 import { derivePromptContextHints } from "./drivers/message-builders";
 import {
   captureWorkspaceSnapshot,
+  getOriginalContent,
   getSessionFiles,
   trackWorkspaceChanges,
 } from "./session-tracker";
+import { recordCodeEdit } from "../context/rag-metadata/code-edits";
+import { recordFileRead } from "../context/rag-metadata/file-reads";
 import { buildSystemPrompt } from "./system-prompt";
 import type { StreamChunk } from "../shared/runtime";
 
@@ -498,6 +502,110 @@ export async function runExtensionChat(opts: {
         result,
         toolCallId: toolCall.id,
       });
+      try {
+        const activeTurn = opts.historyManager.getWorkingTurn();
+        if (activeTurn) {
+          const turnId = activeTurn.turnId;
+          const workspaceId = opts.historyManager.getWorkspaceId();
+          if (
+            result.success &&
+            [
+              "write_file",
+              "insert_file_at_line",
+              "edit_file",
+              "edit_file_range",
+              "multi_edit_file_ranges",
+            ].includes(toolName)
+          ) {
+            const editPath =
+              typeof result.meta?.filePath === "string"
+                ? result.meta.filePath
+                : typeof call.params["path"] === "string"
+                  ? String(call.params["path"])
+                  : "";
+            if (editPath) {
+              const beforeContent = getOriginalContent(editPath) ?? "";
+              let afterContent = "";
+              try {
+                const fsModule = await import("node:fs");
+                afterContent = fsModule.existsSync(editPath)
+                  ? fsModule.readFileSync(editPath, "utf-8")
+                  : "";
+              } catch {
+                afterContent = "";
+              }
+              const meta = (result.meta ?? {}) as Readonly<
+                Record<string, unknown>
+              >;
+              const ranges = Array.isArray(meta.changedLineRanges)
+                ? meta.changedLineRanges
+                : [];
+              const firstRange =
+                ranges.length > 0
+                  ? (ranges[0] as Readonly<{
+                      startLine?: number;
+                      endLine?: number;
+                    }>)
+                  : null;
+              recordCodeEdit(workspacePath, {
+                workspaceId,
+                turnId,
+                toolName,
+                filePath: editPath,
+                rangeStartLine: firstRange?.startLine ?? null,
+                rangeEndLine: firstRange?.endLine ?? null,
+                beforeContent,
+                afterContent,
+              });
+            }
+          }
+          if (result.success && toolName === "read_file") {
+            const meta = (result.meta ?? {}) as Readonly<
+              Record<string, unknown>
+            >;
+            const targetPath =
+              typeof meta.filePath === "string"
+                ? meta.filePath
+                : typeof call.params["path"] === "string"
+                  ? String(call.params["path"])
+                  : "";
+            if (targetPath) {
+              let mtimeMs = 0;
+              let sizeBytes = 0;
+              try {
+                const fsModule = await import("node:fs");
+                if (fsModule.existsSync(targetPath)) {
+                  const stat = fsModule.statSync(targetPath);
+                  mtimeMs = stat.mtimeMs;
+                  sizeBytes = stat.size;
+                }
+              } catch {
+                /* ignore */
+              }
+              recordFileRead(workspacePath, {
+                workspaceId,
+                turnId,
+                filePath: targetPath,
+                readMode:
+                  typeof meta.readMode === "string"
+                    ? String(meta.readMode)
+                    : "file_lines",
+                offset: Number(
+                  call.params["offset"] ?? meta.requestedOffset ?? 0,
+                ),
+                limit: Number(
+                  call.params["maxLines"] ?? meta.requestedMaxLines ?? 0,
+                ),
+                mtimeMs,
+                sizeBytes,
+                cached: meta.cacheHit === true,
+              });
+            }
+          }
+        }
+      } catch {
+        /* never break the chat loop on ledger errors */
+      }
       const touchedPath =
         typeof result.meta?.filePath === "string"
           ? result.meta.filePath
@@ -510,6 +618,8 @@ export async function runExtensionChat(opts: {
         ([
           "write_file",
           "create_drawio_diagram",
+          "export_workflow_drawio_diagram",
+          "export_workflow_mermaid_diagram",
           "insert_file_at_line",
           "edit_file",
           "edit_file_range",
@@ -526,6 +636,8 @@ export async function runExtensionChat(opts: {
         ([
           "write_file",
           "create_drawio_diagram",
+          "export_workflow_drawio_diagram",
+          "export_workflow_mermaid_diagram",
           "insert_file_at_line",
           "edit_file",
           "edit_file_range",
@@ -561,6 +673,39 @@ export async function runExtensionChat(opts: {
           reason: `tool:${toolName}`,
           filePaths: scopedWorkflowRefreshPaths,
         });
+        for (const scopedPath of scopedWorkflowRefreshPaths) {
+          noteFileTouchedForGraph(workflowRefreshWorkspacePath, scopedPath, {
+            force: true,
+          });
+        }
+      }
+      if (
+        result.success &&
+        touchedPath &&
+        [
+          "read_file",
+          "head",
+          "tail",
+          "grep",
+          "read_document",
+          "validate_code",
+          "diff_file",
+        ].includes(toolName)
+      ) {
+        const readWorkspacePath = resolveEffectiveProjectPath({
+          workspacePath,
+          activeProjectPath:
+            opts.historyManager.getSessionMemory().activeProjectPath,
+          candidateFilePaths: [touchedPath],
+        });
+        const [scopedReadPath] = mapPathsToProjectScope(
+          workspacePath,
+          readWorkspacePath,
+          [touchedPath],
+        );
+        if (scopedReadPath) {
+          noteFileTouchedForGraph(readWorkspacePath, scopedReadPath);
+        }
       }
       const toolMessage: ChatMessage = Object.freeze({
         id: createMessageId(),

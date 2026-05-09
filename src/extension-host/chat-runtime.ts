@@ -8,7 +8,11 @@
 
 import { appendTelemetryEvent } from "../context/telemetry";
 import {
-  buildCoderSubAgentConfig,
+  appendTaskMemoryEntry,
+  replaceTaskMemoryFindings,
+} from "../context/rag-metadata/task-memory";
+import {
+  buildSubAgentConfig,
   buildSelectiveMultiAgentPlanMessage,
   buildSelectiveMultiAgentSubtaskMessage,
   maybeBuildSelectiveMultiAgentPlan,
@@ -16,6 +20,10 @@ import {
 import { runExtensionChat } from "../runtime/run-chat";
 import { MAX_EMPTY_CONTINUE_ATTEMPTS } from "../shared/constants";
 import type { ChatMessage } from "../shared/protocol";
+import {
+  buildSubagentHandoffRecord,
+  formatSubagentHandoffForMemory,
+} from "../shared/subagents";
 import type {
   ChatRuntimeCallbacks,
   MainChatTurnOutcomeRequest,
@@ -27,7 +35,46 @@ import type {
   SelectiveMultiAgentPlanRequest,
   SelectiveMultiAgentPlanResult,
 } from "../shared/chat-runtime";
+import type {
+  SubagentHandoffRecord,
+  SubagentHandoffStatus,
+} from "../shared/runtime";
 import { createAssistantMessage, createMessageId } from "./utils";
+
+function persistSubagentHandoffToTaskMemory(
+  callbacks: ChatRuntimeCallbacks,
+  handoff: SubagentHandoffRecord,
+  originalUserContent: string,
+): void {
+  const conclusion = formatSubagentHandoffForMemory(handoff);
+  appendTaskMemoryEntry(callbacks.workspacePath, {
+    workspaceId: callbacks.historyManager.getWorkspaceId(),
+    turnId: handoff.handoffId,
+    turnKind: "subagent_handoff",
+    userIntent: `Sub-agent handoff for ${handoff.role}: ${originalUserContent.slice(0, 1200)}`,
+    assistantConclusion: conclusion.slice(0, 2400),
+    filesJson: JSON.stringify(handoff.filesWritten),
+    attachmentsJson: JSON.stringify([
+      `plan:${handoff.planId}`,
+      `role:${handoff.role}`,
+      `model:${handoff.model}`,
+      `status:${handoff.status}`,
+    ]),
+    confidence: handoff.status === "failed" ? 0.65 : 0.9,
+    freshnessScore: 1,
+    createdAt: handoff.completedAt,
+  });
+  replaceTaskMemoryFindings(callbacks.workspacePath, handoff.handoffId, [
+    Object.freeze({
+      id: `${handoff.handoffId}-summary`,
+      entryTurnId: handoff.handoffId,
+      kind: "handoff" as const,
+      summary: `${handoff.roleTitle} ${handoff.status}: ${handoff.title}`,
+      status: handoff.status === "completed" ? "resolved" as const : "open" as const,
+      createdAt: handoff.completedAt,
+    }),
+  ]);
+}
 
 /** Runs the selective multi-agent planner and executes scoped repair turns when a plan is produced. */
 export async function runSelectiveMultiAgentPlan(
@@ -37,6 +84,7 @@ export async function runSelectiveMultiAgentPlan(
   const plan = maybeBuildSelectiveMultiAgentPlan(
     opts.agentType,
     opts.originalUserMessage.content,
+    opts.config.subagent,
   );
   if (!plan) {
     return Object.freeze({
@@ -55,7 +103,7 @@ export async function runSelectiveMultiAgentPlan(
     `Selective multi-agent plan activated: ${plan.subtasks.map((subtask) => subtask.id).join(", ")}.`,
   );
 
-  const coderConfig = buildCoderSubAgentConfig(opts.config);
+  const planId = `subagent-plan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const written = new Set<string>();
   let hadError = false;
   const hasDesignContext =
@@ -70,14 +118,16 @@ export async function runSelectiveMultiAgentPlan(
 
   for (let index = 0; index < plan.subtasks.length; index += 1) {
     const subtask = plan.subtasks[index]!;
-    const subtaskLabel = `Sub-agent ${index + 1}/${plan.subtasks.length}: ${subtask.title}`;
+    const subAgentConfig = buildSubAgentConfig(opts.config, subtask.role);
+    const subtaskLabel = `Sub-agent ${index + 1}/${plan.subtasks.length} (${subtask.role}): ${subtask.title}`;
+    const startedAt = Date.now();
     callbacks.setStatusText(subtaskLabel);
     callbacks.appendLog("status", subtaskLabel);
     callbacks.reportProgress(subtaskLabel);
     await callbacks.postRunState();
 
     const result = await runInternalRepairTurn(callbacks, {
-      config: coderConfig,
+      config: subAgentConfig,
       agentType: opts.agentType,
       userMessage: buildSelectiveMultiAgentSubtaskMessage({
         originalUserMessage: opts.originalUserMessage,
@@ -100,6 +150,28 @@ export async function runSelectiveMultiAgentPlan(
       filesWritten: result.filesWritten.length,
       hadError: result.hadError,
     });
+    const handoffStatus: SubagentHandoffStatus = result.hadError
+      ? "failed"
+      : subtask.role === "ba" && result.filesWritten.length === 0
+        ? "needs_user_input"
+        : "completed";
+    const nextSubtask = plan.subtasks[index + 1];
+    const handoff = buildSubagentHandoffRecord({
+      planId,
+      index: index + 1,
+      total: plan.subtasks.length,
+      subtask,
+      status: handoffStatus,
+      filesWritten: result.filesWritten,
+      startedAt,
+      completedAt: Date.now(),
+      ...(nextSubtask ? { nextRole: nextSubtask.role } : {}),
+    });
+    persistSubagentHandoffToTaskMemory(
+      callbacks,
+      handoff,
+      opts.originalUserMessage.content,
+    );
 
     if (result.hadError) {
       hadError = true;

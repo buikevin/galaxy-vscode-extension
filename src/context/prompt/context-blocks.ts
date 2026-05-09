@@ -6,9 +6,12 @@
  * @desc Prompt context block builders extracted from prompt-builder for maintainability.
  */
 
-import type { ReadPlanProgressItem } from '../entities/history';
-import { resolveShellProfile } from '../../runtime/shell-resolver';
-import type { ManualReadPlanStep, SyntaxSymbolCandidate } from '../entities/syntax-index';
+import type { ReadPlanProgressItem } from "../entities/history";
+import { resolveShellProfile } from "../../runtime/shell-resolver";
+import type {
+  ManualReadPlanStep,
+  SyntaxSymbolCandidate,
+} from "../entities/syntax-index";
 
 /**
  * Builds high-priority task memory continuation content.
@@ -20,6 +23,37 @@ export function buildTaskMemoryContent(opts: {
     assistantConclusion: string;
     files: readonly string[];
   }>[];
+}): string {
+  if (opts.entries.length === 0) {
+    return "";
+  }
+
+  const lines: string[] = ["[RELEVANT PRIOR TASK MEMORY]"];
+  opts.entries.slice(0, 3).forEach((entry, index) => {
+    lines.push(
+      `${index + 1}. [${entry.turnKind}] User intent: ${entry.userIntent}`,
+    );
+    lines.push(`   Conclusion: ${entry.assistantConclusion}`);
+    if (entry.files.length > 0) {
+      lines.push(`   Files: ${entry.files.join(", ")}`);
+    }
+  });
+
+  lines.push("");
+  lines.push("Use this memory as high-priority continuity context.");
+  lines.push(
+    "Do not ask the user to restate or re-derive these points unless the current workspace state, new attachments, review findings, or validation output contradict them.",
+  );
+  lines.push(
+    "If you reopen the analysis, explain briefly what changed or what evidence is now missing.",
+  );
+  return lines.join("\n").trim();
+}
+
+/**
+ * Builds a standalone open-findings continuation block.
+ */
+export function buildOpenFindingsContent(opts: {
   findings: readonly Readonly<{
     kind: string;
     summary: string;
@@ -27,37 +61,58 @@ export function buildTaskMemoryContent(opts: {
     line?: number;
     status: string;
   }>[];
+  pendingSteps: readonly string[];
+  blockers: readonly string[];
 }): string {
-  if (opts.entries.length === 0 && opts.findings.length === 0) {
-    return '';
+  const openFindings = opts.findings
+    .filter(
+      (finding) =>
+        finding.status !== "dismissed" && finding.status !== "resolved",
+    )
+    .slice(0, 8);
+  const pendingItems = Array.from(
+    new Set(
+      [...opts.pendingSteps, ...opts.blockers]
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0),
+    ),
+  ).slice(0, 8);
+
+  if (openFindings.length === 0 && pendingItems.length === 0) {
+    return "";
   }
 
-  const lines: string[] = ['[RELEVANT PRIOR TASK MEMORY]'];
-  opts.entries.slice(0, 3).forEach((entry, index) => {
-    lines.push(`${index + 1}. [${entry.turnKind}] User intent: ${entry.userIntent}`);
-    lines.push(`   Conclusion: ${entry.assistantConclusion}`);
-    if (entry.files.length > 0) {
-      lines.push(`   Files: ${entry.files.join(', ')}`);
-    }
-  });
-
-  const openFindings = opts.findings.filter((finding) => finding.status !== 'dismissed').slice(0, 8);
+  const lines: string[] = ["[OPEN FINDINGS TO CONTINUE]"];
   if (openFindings.length > 0) {
-    lines.push('');
-    lines.push('[OPEN FINDINGS TO CONTINUE]');
+    lines.push("Retrieved findings:");
     openFindings.forEach((finding) => {
       const location = finding.filePath
-        ? `${finding.filePath}${typeof finding.line === 'number' ? `:${finding.line}` : ''}`
-        : '';
-      lines.push(`- [${finding.kind}] ${location ? `${location} - ` : ''}${finding.summary}`);
+        ? `${finding.filePath}${typeof finding.line === "number" ? `:${finding.line}` : ""}`
+        : "";
+      lines.push(
+        `- [${finding.kind}] ${location ? `${location} - ` : ""}${finding.summary}`,
+      );
     });
   }
 
-  lines.push('');
-  lines.push('Use this memory as high-priority continuity context.');
-  lines.push('Do not ask the user to restate or re-derive these points unless the current workspace state, new attachments, review findings, or validation output contradict them.');
-  lines.push('If you reopen the analysis, explain briefly what changed or what evidence is now missing.');
-  return lines.join('\n').trim();
+  if (pendingItems.length > 0) {
+    if (openFindings.length > 0) {
+      lines.push("");
+    }
+    lines.push("Pending continuity items:");
+    pendingItems.forEach((item) => {
+      lines.push(`- ${item}`);
+    });
+  }
+
+  lines.push("");
+  lines.push(
+    "Continue from these unresolved findings before reopening broad discovery.",
+  );
+  lines.push(
+    "If current workspace evidence resolves or contradicts one of them, say so explicitly and update the conclusion instead of silently carrying it forward.",
+  );
+  return lines.join("\n").trim();
 }
 
 /**
@@ -65,21 +120,21 @@ export function buildTaskMemoryContent(opts: {
  */
 export function buildSystemPlatformContent(): string {
   const platformLabel =
-    process.platform === 'win32'
-      ? 'Windows'
-      : process.platform === 'darwin'
-        ? 'macOS'
-        : process.platform === 'linux'
-          ? 'Linux'
+    process.platform === "win32"
+      ? "Windows"
+      : process.platform === "darwin"
+        ? "macOS"
+        : process.platform === "linux"
+          ? "Linux"
           : process.platform;
   const shell = resolveShellProfile();
   return [
-    '[SYSTEM PLATFORM CONTEXT]',
+    "[SYSTEM PLATFORM CONTEXT]",
     `Operating system: ${platformLabel} (${process.platform})`,
     `Preferred shell for tool execution: ${shell.kind} via ${shell.executable}`,
-    'Choose commands, quoting, path separators, and shell syntax that match this platform.',
-    'Do not default to bash/zsh syntax on Windows unless the shell context explicitly supports it.',
-  ].join('\n');
+    "Choose commands, quoting, path separators, and shell syntax that match this platform.",
+    "Do not default to bash/zsh syntax on Windows unless the shell context explicitly supports it.",
+  ].join("\n");
 }
 
 /**
@@ -92,16 +147,16 @@ export function buildCodeMapCandidatesContent(opts: {
 }): string {
   const lines: string[] = [];
   if (opts.primaryPaths.length > 0) {
-    lines.push('[CODE MAP CANDIDATES]');
-    lines.push(`Primary files: ${opts.primaryPaths.join(', ')}`);
+    lines.push("[CODE MAP CANDIDATES]");
+    lines.push(`Primary files: ${opts.primaryPaths.join(", ")}`);
   }
   if (opts.definitionPaths.length > 0) {
-    lines.push(`Definition candidates: ${opts.definitionPaths.join(', ')}`);
+    lines.push(`Definition candidates: ${opts.definitionPaths.join(", ")}`);
   }
   if (opts.referencePaths.length > 0) {
-    lines.push(`Reference candidates: ${opts.referencePaths.join(', ')}`);
+    lines.push(`Reference candidates: ${opts.referencePaths.join(", ")}`);
   }
-  return lines.join('\n').trim();
+  return lines.join("\n").trim();
 }
 
 /**
@@ -115,22 +170,28 @@ export function buildSymbolMapCandidatesContent(opts: {
 }): string {
   const lines: string[] = [];
   if (opts.focusSymbols.length > 0) {
-    lines.push('[SYMBOL MAP CANDIDATES]');
-    lines.push(`Focus symbols: ${opts.focusSymbols.join(', ')}`);
+    lines.push("[SYMBOL MAP CANDIDATES]");
+    lines.push(`Focus symbols: ${opts.focusSymbols.join(", ")}`);
   }
   if (opts.primaryCandidates.length > 0) {
-    lines.push('Primary symbol candidates:');
-    opts.primaryCandidates.slice(0, 4).forEach((candidate) => lines.push(`- ${candidate.description}`));
+    lines.push("Primary symbol candidates:");
+    opts.primaryCandidates
+      .slice(0, 4)
+      .forEach((candidate) => lines.push(`- ${candidate.description}`));
   }
   if (opts.definitionCandidates.length > 0) {
-    lines.push('Definition symbol candidates:');
-    opts.definitionCandidates.slice(0, 4).forEach((candidate) => lines.push(`- ${candidate.description}`));
+    lines.push("Definition symbol candidates:");
+    opts.definitionCandidates
+      .slice(0, 4)
+      .forEach((candidate) => lines.push(`- ${candidate.description}`));
   }
   if (opts.referenceCandidates.length > 0) {
-    lines.push('Reference symbol candidates:');
-    opts.referenceCandidates.slice(0, 4).forEach((candidate) => lines.push(`- ${candidate.description}`));
+    lines.push("Reference symbol candidates:");
+    opts.referenceCandidates
+      .slice(0, 4)
+      .forEach((candidate) => lines.push(`- ${candidate.description}`));
   }
-  return lines.join('\n').trim();
+  return lines.join("\n").trim();
 }
 
 /**
@@ -141,8 +202,16 @@ export function buildManualPlanningContent(opts: {
   primaryPaths: readonly string[];
   definitionPaths: readonly string[];
   referencePaths: readonly string[];
-  primaryCandidates: readonly Readonly<{ description: string; filePath: string; line?: number }>[];
-  definitionCandidates: readonly Readonly<{ description: string; filePath: string; line?: number }>[];
+  primaryCandidates: readonly Readonly<{
+    description: string;
+    filePath: string;
+    line?: number;
+  }>[];
+  definitionCandidates: readonly Readonly<{
+    description: string;
+    filePath: string;
+    line?: number;
+  }>[];
 }): string {
   if (
     opts.focusSymbols.length === 0 &&
@@ -152,15 +221,18 @@ export function buildManualPlanningContent(opts: {
     opts.primaryCandidates.length === 0 &&
     opts.definitionCandidates.length === 0
   ) {
-    return '';
+    return "";
   }
 
-  const lines: string[] = ['[MANUAL PLANNING HINTS]'];
+  const lines: string[] = ["[MANUAL PLANNING HINTS]"];
   if (opts.focusSymbols.length > 0) {
-    lines.push(`Focus on these symbols first: ${opts.focusSymbols.join(', ')}`);
+    lines.push(`Focus on these symbols first: ${opts.focusSymbols.join(", ")}`);
   }
 
-  const targetedReads = [...opts.primaryCandidates, ...opts.definitionCandidates]
+  const targetedReads = [
+    ...opts.primaryCandidates,
+    ...opts.definitionCandidates,
+  ]
     .slice(0, 4)
     .map((candidate) =>
       candidate.line
@@ -168,21 +240,31 @@ export function buildManualPlanningContent(opts: {
         : `read_file(${candidate.filePath})`,
     );
   if (targetedReads.length > 0) {
-    lines.push(`Start with targeted reads: ${targetedReads.join('; ')}`);
+    lines.push(`Start with targeted reads: ${targetedReads.join("; ")}`);
   } else if (opts.primaryPaths.length > 0) {
-    lines.push(`Start with these files before broader exploration: ${opts.primaryPaths.join(', ')}`);
+    lines.push(
+      `Start with these files before broader exploration: ${opts.primaryPaths.join(", ")}`,
+    );
   }
 
   if (opts.definitionPaths.length > 0) {
-    lines.push(`Use definition candidates next if the primary file delegates logic: ${opts.definitionPaths.join(', ')}`);
+    lines.push(
+      `Use definition candidates next if the primary file delegates logic: ${opts.definitionPaths.join(", ")}`,
+    );
   }
   if (opts.referencePaths.length > 0) {
-    lines.push(`Use reference candidates to confirm downstream impact: ${opts.referencePaths.join(', ')}`);
+    lines.push(
+      `Use reference candidates to confirm downstream impact: ${opts.referencePaths.join(", ")}`,
+    );
   }
 
-  lines.push('Prefer grep for the focus symbols, then read_file with a narrow maxLines/offset window before expanding to wider scans.');
-  lines.push('Avoid broad list_dir or rereading full files unless these targeted reads fail to answer the task.');
-  return lines.join('\n').trim();
+  lines.push(
+    "Prefer grep for the focus symbols, then read_file with a narrow maxLines/offset window before expanding to wider scans.",
+  );
+  lines.push(
+    "Avoid broad list_dir or rereading full files unless these targeted reads fail to answer the task.",
+  );
+  return lines.join("\n").trim();
 }
 
 /**
@@ -233,7 +315,9 @@ export function narrowManualPlanningScope(opts: {
   referenceCandidates: readonly SyntaxSymbolCandidate[];
   manualReadPlan: readonly ManualReadPlanStep[];
 }> {
-  const scopedPaths = opts.scopedPaths.filter((candidate) => candidate.trim().length > 0);
+  const scopedPaths = opts.scopedPaths.filter(
+    (candidate) => candidate.trim().length > 0,
+  );
   if (scopedPaths.length === 0) {
     return Object.freeze({
       primaryPaths: Object.freeze([...opts.primaryPaths]),
@@ -249,16 +333,26 @@ export function narrowManualPlanningScope(opts: {
   const scopedSet = new Set(scopedPaths);
   const matchesScope = (candidatePath: string): boolean =>
     scopedSet.has(candidatePath) ||
-    scopedPaths.some((scopedPath) => candidatePath.endsWith(scopedPath) || scopedPath.endsWith(candidatePath));
+    scopedPaths.some(
+      (scopedPath) =>
+        candidatePath.endsWith(scopedPath) ||
+        scopedPath.endsWith(candidatePath),
+    );
   const filterPaths = (paths: readonly string[]): readonly string[] => {
     const filtered = paths.filter(matchesScope);
     return Object.freeze(filtered.length > 0 ? filtered : [...paths]);
   };
-  const filterCandidates = <T extends Readonly<{ filePath: string }>>(candidates: readonly T[]): readonly T[] => {
-    const filtered = candidates.filter((candidate) => matchesScope(candidate.filePath));
+  const filterCandidates = <T extends Readonly<{ filePath: string }>>(
+    candidates: readonly T[],
+  ): readonly T[] => {
+    const filtered = candidates.filter((candidate) =>
+      matchesScope(candidate.filePath),
+    );
     return Object.freeze(filtered.length > 0 ? filtered : [...candidates]);
   };
-  const filterReadPlan = (steps: readonly ManualReadPlanStep[]): readonly ManualReadPlanStep[] => {
+  const filterReadPlan = (
+    steps: readonly ManualReadPlanStep[],
+  ): readonly ManualReadPlanStep[] => {
     const filtered = steps.filter((step) => matchesScope(step.targetPath));
     return Object.freeze(filtered.length > 0 ? filtered : [...steps]);
   };
@@ -279,7 +373,7 @@ export function narrowManualPlanningScope(opts: {
  */
 export function buildManualReadBatchesBlock(opts: {
   readPlan: readonly Readonly<{
-    tool: 'read_file' | 'grep';
+    tool: "read_file" | "grep";
     targetPath: string;
     symbolName?: string;
     line?: number;
@@ -292,21 +386,22 @@ export function buildManualReadBatchesBlock(opts: {
 }> {
   if (opts.readPlan.length === 0) {
     return Object.freeze({
-      content: '',
+      content: "",
       items: Object.freeze([]),
     });
   }
 
-  const readSteps = opts.readPlan.filter((step) => step.tool === 'read_file');
-  const grepSteps = opts.readPlan.filter((step) => step.tool === 'grep');
-  const lines: string[] = ['[MANUAL READ BATCHES]'];
+  const readSteps = opts.readPlan.filter((step) => step.tool === "read_file");
+  const grepSteps = opts.readPlan.filter((step) => step.tool === "grep");
+  const lines: string[] = ["[MANUAL READ BATCHES]"];
   const items: string[] = [];
 
   if (readSteps.length > 0) {
-    lines.push('Batch 1: targeted reads');
+    lines.push("Batch 1: targeted reads");
     readSteps.slice(0, 4).forEach((step) => {
-      const lineSuffix = typeof step.line === 'number' ? ` around line ${step.line}` : '';
-      const symbolSuffix = step.symbolName ? ` [${step.symbolName}]` : '';
+      const lineSuffix =
+        typeof step.line === "number" ? ` around line ${step.line}` : "";
+      const symbolSuffix = step.symbolName ? ` [${step.symbolName}]` : "";
       const item = `read_file ${step.targetPath}${lineSuffix}${symbolSuffix} — ${step.reason}`;
       lines.push(`- ${item}`);
       items.push(item);
@@ -314,9 +409,9 @@ export function buildManualReadBatchesBlock(opts: {
   }
 
   if (grepSteps.length > 0) {
-    lines.push('Batch 2: symbol verification');
+    lines.push("Batch 2: symbol verification");
     grepSteps.slice(0, 4).forEach((step) => {
-      const patternSuffix = step.pattern ? ` pattern=${step.pattern}` : '';
+      const patternSuffix = step.pattern ? ` pattern=${step.pattern}` : "";
       const item = `grep ${step.targetPath}${patternSuffix} — ${step.reason}`;
       lines.push(`- ${item}`);
       items.push(item);
@@ -324,7 +419,7 @@ export function buildManualReadBatchesBlock(opts: {
   }
 
   return Object.freeze({
-    content: lines.join('\n').trim(),
+    content: lines.join("\n").trim(),
     items: Object.freeze(items),
   });
 }
@@ -332,13 +427,15 @@ export function buildManualReadBatchesBlock(opts: {
 /**
  * Filters a read plan down to steps not already confirmed by evidence.
  */
-export function filterPendingReadPlan<T extends Readonly<{
-    tool: 'read_file' | 'grep';
+export function filterPendingReadPlan<
+  T extends Readonly<{
+    tool: "read_file" | "grep";
     targetPath: string;
     symbolName?: string;
     line?: number;
     pattern?: string;
-  }>>(
+  }>,
+>(
   readPlan: readonly T[],
   progressItems: readonly ReadPlanProgressItem[],
 ): readonly T[] {
@@ -349,19 +446,24 @@ export function filterPendingReadPlan<T extends Readonly<{
   const confirmedKeys = new Set(
     progressItems
       .filter((item) => item.confirmed)
-      .map((item) => `${item.tool}:${item.targetPath}:${item.symbolName ?? ''}:${item.label}`),
+      .map(
+        (item) =>
+          `${item.tool}:${item.targetPath}:${item.symbolName ?? ""}:${item.label}`,
+      ),
   );
 
   const pending = readPlan.filter((step) => {
     const labelParts = [
       step.tool,
       step.targetPath,
-      typeof step.line === 'number' ? ` around line ${step.line}` : '',
-      step.symbolName ? ` [${step.symbolName}]` : '',
-      step.pattern && step.tool === 'grep' ? ` pattern=${step.pattern}` : '',
+      typeof step.line === "number" ? ` around line ${step.line}` : "",
+      step.symbolName ? ` [${step.symbolName}]` : "",
+      step.pattern && step.tool === "grep" ? ` pattern=${step.pattern}` : "",
     ];
     const label = `${labelParts[0]} ${labelParts[1]}${labelParts[2]}${labelParts[3]}${labelParts[4]}`;
-    return !confirmedKeys.has(`${step.tool}:${step.targetPath}:${step.symbolName ?? ''}:${label}`);
+    return !confirmedKeys.has(
+      `${step.tool}:${step.targetPath}:${step.symbolName ?? ""}:${label}`,
+    );
   });
 
   return pending.length > 0 ? Object.freeze(pending) : Object.freeze([]);
@@ -370,7 +472,9 @@ export function filterPendingReadPlan<T extends Readonly<{
 /**
  * Prioritizes read-plan steps that need a refresh according to evidence.
  */
-export function prioritizeRefreshReadPlan<T extends Readonly<{ tool: string; targetPath: string; symbolName?: string }>>(
+export function prioritizeRefreshReadPlan<
+  T extends Readonly<{ tool: string; targetPath: string; symbolName?: string }>,
+>(
   readPlan: readonly T[],
   progressItems: readonly ReadPlanProgressItem[],
 ): readonly T[] {
@@ -380,11 +484,20 @@ export function prioritizeRefreshReadPlan<T extends Readonly<{ tool: string; tar
 
   const refreshKeys = new Set(
     progressItems
-      .filter((item) => item.status === 'needs_refresh')
-      .map((item) => `${item.tool}:${item.targetPath}:${item.symbolName ?? ''}`),
+      .filter((item) => item.status === "needs_refresh")
+      .map(
+        (item) => `${item.tool}:${item.targetPath}:${item.symbolName ?? ""}`,
+      ),
   );
 
-  const refreshSteps = readPlan.filter((step) => refreshKeys.has(`${step.tool}:${step.targetPath}:${step.symbolName ?? ''}`));
-  const otherSteps = readPlan.filter((step) => !refreshKeys.has(`${step.tool}:${step.targetPath}:${step.symbolName ?? ''}`));
+  const refreshSteps = readPlan.filter((step) =>
+    refreshKeys.has(`${step.tool}:${step.targetPath}:${step.symbolName ?? ""}`),
+  );
+  const otherSteps = readPlan.filter(
+    (step) =>
+      !refreshKeys.has(
+        `${step.tool}:${step.targetPath}:${step.symbolName ?? ""}`,
+      ),
+  );
   return Object.freeze([...refreshSteps, ...otherSteps]);
 }

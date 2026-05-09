@@ -120,7 +120,7 @@ export type TaskMemoryEntryRecord = Readonly<{
   /** Turn identifier. */
   turnId: string;
   /** High-level turn classification. */
-  turnKind: 'analysis' | 'implementation' | 'review' | 'validation' | 'repair';
+  turnKind: 'analysis' | 'implementation' | 'review' | 'validation' | 'repair' | 'subagent_handoff';
   /** User request summarized for retrieval. */
   userIntent: string;
   /** Final assistant conclusion captured for the turn. */
@@ -146,7 +146,7 @@ export type TaskMemoryFindingRecord = Readonly<{
   /** Parent entry turn identifier. */
   entryTurnId: string;
   /** Finding classification. */
-  kind: 'accepted_finding' | 'review_finding' | 'validation_failure' | 'decision';
+  kind: 'accepted_finding' | 'review_finding' | 'validation_failure' | 'decision' | 'handoff';
   /** Finding summary text. */
   summary: string;
   /** Optional related file path. */
@@ -204,4 +204,3 @@ export type TaskMemoryFindingSummary = Readonly<{
   /** Creation timestamp in milliseconds. */
   createdAt: number;
 }>;
-

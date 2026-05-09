@@ -43,7 +43,7 @@ type PlusMenuProps = Readonly<{
   onUpdateToolToggles: (next: ToolToggles) => void;
   /** Apply new extension-tool values. */
   onUpdateExtensionToolToggles: (
-    next: Readonly<Record<string, boolean>>
+    next: Readonly<Record<string, boolean>>,
   ) => void;
 }>;
 
@@ -72,17 +72,61 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
     label: "Đọc dự án",
     description: "Đọc file, tài liệu và cấu trúc workspace.",
     tools: [
-      { key: "read_file", label: "Đọc file", description: "Đọc nội dung file theo vùng dòng." },
-      { key: "find_test_files", label: "Tìm file test", description: "Tìm file test hoặc source liên quan." },
-      { key: "get_latest_test_failure", label: "Lỗi test gần nhất", description: "Lấy lỗi test gần nhất đã lưu." },
-      { key: "get_latest_review_findings", label: "Review findings gần nhất", description: "Lấy kết quả review gần nhất đã lưu." },
-      { key: "get_next_review_finding", label: "Finding review tiếp theo", description: "Lấy finding review tiếp theo chưa bỏ qua." },
-      { key: "dismiss_review_finding", label: "Bỏ qua finding review", description: "Ẩn một review finding theo id." },
-      { key: "read_document", label: "Đọc tài liệu", description: "Đọc tài liệu như docx hoặc pdf theo từng phần." },
-      { key: "grep", label: "Tìm nội dung", description: "Tìm text hoặc symbol theo pattern." },
-      { key: "list_dir", label: "Quét thư mục", description: "Liệt kê cây thư mục và file." },
-      { key: "head", label: "Xem đầu file", description: "Xem nhanh phần đầu file." },
-      { key: "tail", label: "Xem cuối file", description: "Xem nhanh phần cuối file." },
+      {
+        key: "read_file",
+        label: "Đọc file",
+        description: "Đọc nội dung file theo vùng dòng.",
+      },
+      {
+        key: "find_test_files",
+        label: "Tìm file test",
+        description: "Tìm file test hoặc source liên quan.",
+      },
+      {
+        key: "get_latest_test_failure",
+        label: "Lỗi test gần nhất",
+        description: "Lấy lỗi test gần nhất đã lưu.",
+      },
+      {
+        key: "get_latest_review_findings",
+        label: "Review findings gần nhất",
+        description: "Lấy kết quả review gần nhất đã lưu.",
+      },
+      {
+        key: "get_next_review_finding",
+        label: "Finding review tiếp theo",
+        description: "Lấy finding review tiếp theo chưa bỏ qua.",
+      },
+      {
+        key: "dismiss_review_finding",
+        label: "Bỏ qua finding review",
+        description: "Ẩn một review finding theo id.",
+      },
+      {
+        key: "read_document",
+        label: "Đọc tài liệu",
+        description: "Đọc tài liệu như docx hoặc pdf theo từng phần.",
+      },
+      {
+        key: "grep",
+        label: "Tìm nội dung",
+        description: "Tìm text hoặc symbol theo pattern.",
+      },
+      {
+        key: "list_dir",
+        label: "Quét thư mục",
+        description: "Liệt kê cây thư mục và file.",
+      },
+      {
+        key: "head",
+        label: "Xem đầu file",
+        description: "Xem nhanh phần đầu file.",
+      },
+      {
+        key: "tail",
+        label: "Xem cuối file",
+        description: "Xem nhanh phần cuối file.",
+      },
     ],
   },
   {
@@ -90,10 +134,26 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
     label: "Sửa file",
     description: "Cho phép agent sửa hoặc tạo file.",
     tools: [
-      { key: "insert_file_at_line", label: "Chèn vào file", description: "Chèn nội dung vào trước một dòng cụ thể." },
-      { key: "edit_file_range", label: "Sửa một vùng file", description: "Chỉnh sửa đúng một vùng dòng." },
-      { key: "multi_edit_file_ranges", label: "Sửa nhiều vùng", description: "Chỉnh sửa nhiều vùng dòng trong cùng một file." },
-      { key: "write_file", label: "Tạo file mới", description: "Chỉ tạo file mới, không ghi đè file đã tồn tại." },
+      {
+        key: "insert_file_at_line",
+        label: "Chèn vào file",
+        description: "Chèn nội dung vào trước một dòng cụ thể.",
+      },
+      {
+        key: "edit_file_range",
+        label: "Sửa một vùng file",
+        description: "Chỉnh sửa đúng một vùng dòng.",
+      },
+      {
+        key: "multi_edit_file_ranges",
+        label: "Sửa nhiều vùng",
+        description: "Chỉnh sửa nhiều vùng dòng trong cùng một file.",
+      },
+      {
+        key: "write_file",
+        label: "Tạo file mới",
+        description: "Chỉ tạo file mới, không ghi đè file đã tồn tại.",
+      },
     ],
   },
   {
@@ -101,18 +161,66 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
     label: "Chạy lệnh",
     description: "Cho phép agent chạy command trong terminal.",
     tools: [
-      { key: "git_status", label: "Git status", description: "Đọc trạng thái working tree Git." },
-      { key: "git_diff", label: "Git diff", description: "Đọc thay đổi staged hoặc unstaged." },
-      { key: "git_add", label: "Git add", description: "Stage file hoặc thư mục." },
-      { key: "git_commit", label: "Git commit", description: "Tạo commit với message cụ thể." },
-      { key: "git_push", label: "Git push", description: "Đẩy branch hiện tại hoặc branch chỉ định." },
-      { key: "git_pull", label: "Git pull", description: "Kéo thay đổi mới từ remote." },
-      { key: "git_checkout", label: "Git checkout", description: "Chuyển branch/ref hoặc tạo branch mới." },
-      { key: "run_terminal_command", label: "Chạy lệnh mới", description: "Tạo command terminal mới." },
-      { key: "await_terminal_command", label: "Chờ lệnh hoàn tất", description: "Chờ command nền hoàn thành." },
-      { key: "get_terminal_output", label: "Lấy output terminal", description: "Lấy output của command đã chạy." },
-      { key: "kill_terminal_command", label: "Dừng lệnh", description: "Dừng command terminal đang chạy." },
-      { key: "run_project_command", label: "Chạy lệnh dự án", description: "Giữ tương thích với flow cũ." },
+      {
+        key: "git_status",
+        label: "Git status",
+        description: "Đọc trạng thái working tree Git.",
+      },
+      {
+        key: "git_diff",
+        label: "Git diff",
+        description: "Đọc thay đổi staged hoặc unstaged.",
+      },
+      {
+        key: "git_add",
+        label: "Git add",
+        description: "Stage file hoặc thư mục.",
+      },
+      {
+        key: "git_commit",
+        label: "Git commit",
+        description: "Tạo commit với message cụ thể.",
+      },
+      {
+        key: "git_push",
+        label: "Git push",
+        description: "Đẩy branch hiện tại hoặc branch chỉ định.",
+      },
+      {
+        key: "git_pull",
+        label: "Git pull",
+        description: "Kéo thay đổi mới từ remote.",
+      },
+      {
+        key: "git_checkout",
+        label: "Git checkout",
+        description: "Chuyển branch/ref hoặc tạo branch mới.",
+      },
+      {
+        key: "run_terminal_command",
+        label: "Chạy lệnh mới",
+        description: "Tạo command terminal mới.",
+      },
+      {
+        key: "await_terminal_command",
+        label: "Chờ lệnh hoàn tất",
+        description: "Chờ command nền hoàn thành.",
+      },
+      {
+        key: "get_terminal_output",
+        label: "Lấy output terminal",
+        description: "Lấy output của command đã chạy.",
+      },
+      {
+        key: "kill_terminal_command",
+        label: "Dừng lệnh",
+        description: "Dừng command terminal đang chạy.",
+      },
+      {
+        key: "run_project_command",
+        label: "Chạy lệnh dự án",
+        description: "Giữ tương thích với flow cũ.",
+      },
     ],
   },
   {
@@ -120,10 +228,26 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
     label: "Nghiên cứu web",
     description: "Tìm tài liệu lập trình và đọc nội dung web.",
     tools: [
-      { key: "search_web", label: "Tìm trên web", description: "Tìm kiếm web." },
-      { key: "extract_web", label: "Đọc trang web", description: "Đọc nội dung chính của trang web." },
-      { key: "map_web", label: "Sơ đồ website", description: "Lập sơ đồ cấu trúc website." },
-      { key: "crawl_web", label: "Quét website", description: "Quét website theo phạm vi cho phép." },
+      {
+        key: "search_web",
+        label: "Tìm trên web",
+        description: "Tìm kiếm web.",
+      },
+      {
+        key: "extract_web",
+        label: "Đọc trang web",
+        description: "Đọc nội dung chính của trang web.",
+      },
+      {
+        key: "map_web",
+        label: "Sơ đồ website",
+        description: "Lập sơ đồ cấu trúc website.",
+      },
+      {
+        key: "crawl_web",
+        label: "Quét website",
+        description: "Quét website theo phạm vi cho phép.",
+      },
     ],
   },
   {
@@ -131,7 +255,11 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
     label: "Kiểm tra",
     description: "Chạy validate phù hợp với dự án trước khi chốt.",
     tools: [
-      { key: "validate_code", label: "Validate code", description: "Chọn validator theo ngôn ngữ và loại dự án." },
+      {
+        key: "validate_code",
+        label: "Validate code",
+        description: "Chọn validator theo ngôn ngữ và loại dự án.",
+      },
     ],
   },
   {
@@ -139,7 +267,11 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
     label: "Review",
     description: "Chạy code review ở cuối pha làm việc trước khi chốt.",
     tools: [
-      { key: "request_code_review", label: "Code review", description: "Chạy reviewer ở cuối pha làm việc." },
+      {
+        key: "request_code_review",
+        label: "Code review",
+        description: "Chạy reviewer ở cuối pha làm việc.",
+      },
     ],
   },
   {
@@ -147,13 +279,42 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
     label: "VS Code",
     description: "Dùng diff, search, problems và các khả năng native khác.",
     tools: [
-      { key: "vscode_open_diff", label: "Mở diff", description: "Mở diff editor native." },
-      { key: "vscode_start_frontend_preview", label: "Khởi động frontend preview", description: "Tự dò app frontend, chạy dev server và mở localhost preview." },
-      { key: "vscode_show_problems", label: "Mở Problems", description: "Mở Problems panel." },
-      { key: "vscode_workspace_search", label: "Tìm trong workspace", description: "Tìm bằng native search của VS Code." },
-      { key: "vscode_find_references", label: "Tìm references", description: "Tìm references native của VS Code." },
-      { key: "search_extension_tools", label: "Tìm extension tools", description: "Tìm trong danh mục extension tools đã cài." },
-      { key: "activate_extension_tools", label: "Bật extension tools", description: "Bật extension tools đã tìm thấy để dùng ở các lượt sau." },
+      {
+        key: "vscode_open_diff",
+        label: "Mở diff",
+        description: "Mở diff editor native.",
+      },
+      {
+        key: "vscode_start_frontend_preview",
+        label: "Khởi động frontend preview",
+        description:
+          "Tự dò app frontend, chạy dev server và mở localhost preview.",
+      },
+      {
+        key: "vscode_show_problems",
+        label: "Mở Problems",
+        description: "Mở Problems panel.",
+      },
+      {
+        key: "vscode_workspace_search",
+        label: "Tìm trong workspace",
+        description: "Tìm bằng native search của VS Code.",
+      },
+      {
+        key: "vscode_find_references",
+        label: "Tìm references",
+        description: "Tìm references native của VS Code.",
+      },
+      {
+        key: "search_extension_tools",
+        label: "Tìm extension tools",
+        description: "Tìm trong danh mục extension tools đã cài.",
+      },
+      {
+        key: "activate_extension_tools",
+        label: "Bật extension tools",
+        description: "Bật extension tools đã tìm thấy để dùng ở các lượt sau.",
+      },
     ],
   },
   {
@@ -161,15 +322,33 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
     label: "Galaxy Design",
     description: "Cho phép agent dùng các tool Galaxy Design.",
     tools: [
-      { key: "galaxy_design_project_info", label: "Phân tích dự án", description: "Phân tích project hiện tại." },
-      { key: "galaxy_design_registry", label: "Tra cứu registry", description: "Tra cứu registry và component." },
-      { key: "galaxy_design_init", label: "Khởi tạo Galaxy Design", description: "Khởi tạo Galaxy Design." },
-      { key: "galaxy_design_add", label: "Thêm component", description: "Thêm component Galaxy Design." },
+      {
+        key: "galaxy_design_project_info",
+        label: "Phân tích dự án",
+        description: "Phân tích project hiện tại.",
+      },
+      {
+        key: "galaxy_design_registry",
+        label: "Tra cứu registry",
+        description: "Tra cứu registry và component.",
+      },
+      {
+        key: "galaxy_design_init",
+        label: "Khởi tạo Galaxy Design",
+        description: "Khởi tạo Galaxy Design.",
+      },
+      {
+        key: "galaxy_design_add",
+        label: "Thêm component",
+        description: "Thêm component Galaxy Design.",
+      },
     ],
   },
 ] as const;
 
-function CheckboxIndicator(props: Readonly<{ checked: boolean; indeterminate?: boolean }>) {
+function CheckboxIndicator(
+  props: Readonly<{ checked: boolean; indeterminate?: boolean }>,
+) {
   return (
     <span
       className={`flex h-4 w-4 items-center justify-center rounded border transition-colors ${
@@ -187,12 +366,14 @@ function CheckboxIndicator(props: Readonly<{ checked: boolean; indeterminate?: b
   );
 }
 
-function TreeCheckbox(props: Readonly<{
-  checked: boolean;
-  indeterminate?: boolean;
-  onClick: () => void;
-  title: string;
-}>) {
+function TreeCheckbox(
+  props: Readonly<{
+    checked: boolean;
+    indeterminate?: boolean;
+    onClick: () => void;
+    title: string;
+  }>,
+) {
   return (
     <button
       type="button"
@@ -212,21 +393,26 @@ export function PlusMenu(props: PlusMenuProps) {
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(
     () =>
       Object.fromEntries(
-        CAPABILITY_GROUPS.map((group) => [group.key, true])
-      ) as Record<string, boolean>
+        CAPABILITY_GROUPS.map((group) => [group.key, true]),
+      ) as Record<string, boolean>,
   );
 
-  const selectedBuiltInToolCount = Object.values(props.toolToggles).filter(Boolean).length;
+  const selectedBuiltInToolCount = Object.values(props.toolToggles).filter(
+    Boolean,
+  ).length;
   const activeExtensionToolGroups = props.extensionToolGroups.filter((group) =>
-    group.tools.some((tool) => props.extensionToolToggles[tool.key] === true)
+    group.tools.some((tool) => props.extensionToolToggles[tool.key] === true),
   );
   const selectedExtensionToolCount = activeExtensionToolGroups.reduce(
     (total, group) =>
       total +
-      group.tools.filter((tool) => props.extensionToolToggles[tool.key] === true).length,
+      group.tools.filter(
+        (tool) => props.extensionToolToggles[tool.key] === true,
+      ).length,
     0,
   );
-  const selectedToolCount = selectedBuiltInToolCount + selectedExtensionToolCount;
+  const selectedToolCount =
+    selectedBuiltInToolCount + selectedExtensionToolCount;
 
   function toggleGroupExpanded(groupKey: string): void {
     setExpandedGroups((current) => ({
@@ -246,13 +432,17 @@ export function PlusMenu(props: PlusMenuProps) {
     } as ToolToggles);
   }
 
-  function updateTool(group: CapabilityGroup, tool: ToolItem, enabled: boolean): void {
+  function updateTool(
+    group: CapabilityGroup,
+    tool: ToolItem,
+    enabled: boolean,
+  ): void {
     const nextToolToggles = {
       ...props.toolToggles,
       [tool.key]: enabled,
     } satisfies ToolToggles;
     const enabledCount = group.tools.filter((item) =>
-      item.key === tool.key ? enabled : nextToolToggles[item.key]
+      item.key === tool.key ? enabled : nextToolToggles[item.key],
     ).length;
     const nextCapabilities = {
       ...props.toolCapabilities,
@@ -262,9 +452,11 @@ export function PlusMenu(props: PlusMenuProps) {
     props.onUpdateToolCapabilities(nextCapabilities);
   }
 
-  function getExtensionGroupState(group: ExtensionToolGroup): ExtensionGroupState {
+  function getExtensionGroupState(
+    group: ExtensionToolGroup,
+  ): ExtensionGroupState {
     const enabledCount = group.tools.filter(
-      (tool) => props.extensionToolToggles[tool.key] === true
+      (tool) => props.extensionToolToggles[tool.key] === true,
     ).length;
     return {
       checked: enabledCount === group.tools.length && group.tools.length > 0,
@@ -273,7 +465,10 @@ export function PlusMenu(props: PlusMenuProps) {
     };
   }
 
-  function updateExtensionGroup(group: ExtensionToolGroup, enabled: boolean): void {
+  function updateExtensionGroup(
+    group: ExtensionToolGroup,
+    enabled: boolean,
+  ): void {
     props.onUpdateExtensionToolToggles({
       ...props.extensionToolToggles,
       ...Object.fromEntries(group.tools.map((tool) => [tool.key, enabled])),
@@ -290,10 +485,10 @@ export function PlusMenu(props: PlusMenuProps) {
   return (
     <div className="relative" ref={props.anchorRef}>
       <button
-      type="button"
-      className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-[color:var(--gc-border)] bg-[var(--gc-surface)] text-[color:var(--gc-foreground)] transition-colors hover:bg-[var(--gc-surface-elevated)]"
-      onClick={props.onToggleOpen}
-      title="Mở cấu hình công cụ"
+        type="button"
+        className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-[color:var(--gc-border)] bg-[var(--gc-surface)] text-[color:var(--gc-foreground)] transition-colors hover:bg-[var(--gc-surface-elevated)]"
+        onClick={props.onToggleOpen}
+        title="Mở cấu hình công cụ"
       >
         <SlidersHorizontal className="h-4 w-4" />
       </button>
@@ -327,10 +522,11 @@ export function PlusMenu(props: PlusMenuProps) {
                 </div>
                 {CAPABILITY_GROUPS.map((group) => {
                   const enabledCount = group.tools.filter(
-                    (tool) => props.toolToggles[tool.key]
+                    (tool) => props.toolToggles[tool.key],
                   ).length;
                   const groupChecked =
-                    props.toolCapabilities[group.key] && enabledCount === group.tools.length;
+                    props.toolCapabilities[group.key] &&
+                    enabledCount === group.tools.length;
                   const groupIndeterminate =
                     enabledCount > 0 && enabledCount < group.tools.length;
                   const isExpanded = expandedGroups[group.key] ?? true;
@@ -357,7 +553,12 @@ export function PlusMenu(props: PlusMenuProps) {
                         <TreeCheckbox
                           checked={groupChecked}
                           indeterminate={groupIndeterminate}
-                          onClick={() => updateGroup(group, !(groupChecked || groupIndeterminate))}
+                          onClick={() =>
+                            updateGroup(
+                              group,
+                              !(groupChecked || groupIndeterminate),
+                            )
+                          }
                           title={group.label}
                         />
 
@@ -389,12 +590,18 @@ export function PlusMenu(props: PlusMenuProps) {
                               <TreeCheckbox
                                 checked={props.toolToggles[tool.key]}
                                 onClick={() =>
-                                  updateTool(group, tool, !props.toolToggles[tool.key])
+                                  updateTool(
+                                    group,
+                                    tool,
+                                    !props.toolToggles[tool.key],
+                                  )
                                 }
                                 title={tool.label}
                               />
                               <div className="min-w-0">
-                                <div className="text-sm text-[color:var(--gc-foreground)]">{tool.label}</div>
+                                <div className="text-sm text-[color:var(--gc-foreground)]">
+                                  {tool.label}
+                                </div>
                                 <div className="text-xs text-[color:var(--gc-muted)]">
                                   {tool.description}
                                 </div>
@@ -415,7 +622,8 @@ export function PlusMenu(props: PlusMenuProps) {
 
                     {activeExtensionToolGroups.map((group) => {
                       const groupState = getExtensionGroupState(group);
-                      const isExpanded = expandedGroups[group.extensionId] ?? false;
+                      const isExpanded =
+                        expandedGroups[group.extensionId] ?? false;
 
                       return (
                         <div
@@ -426,7 +634,9 @@ export function PlusMenu(props: PlusMenuProps) {
                             <button
                               type="button"
                               className="mt-0.5 inline-flex h-5 w-5 items-center justify-center text-[color:var(--gc-muted)] transition-colors hover:text-[color:var(--gc-foreground)]"
-                              onClick={() => toggleGroupExpanded(group.extensionId)}
+                              onClick={() =>
+                                toggleGroupExpanded(group.extensionId)
+                              }
                               title={isExpanded ? "Thu gọn" : "Mở rộng"}
                             >
                               {isExpanded ? (
@@ -442,7 +652,10 @@ export function PlusMenu(props: PlusMenuProps) {
                               onClick={() =>
                                 updateExtensionGroup(
                                   group,
-                                  !(groupState.checked || groupState.indeterminate)
+                                  !(
+                                    groupState.checked ||
+                                    groupState.indeterminate
+                                  ),
                                 )
                               }
                               title={group.label}
@@ -451,7 +664,9 @@ export function PlusMenu(props: PlusMenuProps) {
                             <button
                               type="button"
                               className="min-w-0 text-left"
-                              onClick={() => toggleGroupExpanded(group.extensionId)}
+                              onClick={() =>
+                                toggleGroupExpanded(group.extensionId)
+                              }
                             >
                               <div className="text-sm font-medium text-[color:var(--gc-foreground)]">
                                 {group.label}
@@ -479,11 +694,15 @@ export function PlusMenu(props: PlusMenuProps) {
                                   className="grid grid-cols-[20px_minmax(0,1fr)] items-start gap-3 rounded-lg py-1.5 pl-8 pr-2 hover:bg-[var(--gc-surface-elevated)]"
                                 >
                                   <TreeCheckbox
-                                    checked={props.extensionToolToggles[tool.key] === true}
+                                    checked={
+                                      props.extensionToolToggles[tool.key] ===
+                                      true
+                                    }
                                     onClick={() =>
                                       updateExtensionTool(
                                         tool.key,
-                                        props.extensionToolToggles[tool.key] !== true
+                                        props.extensionToolToggles[tool.key] !==
+                                          true,
                                       )
                                     }
                                     title={tool.runtimeName}

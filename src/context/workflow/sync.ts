@@ -6,18 +6,25 @@
  * @desc Workflow graph persistence and cleanup operations.
  */
 
-import type { WorkflowGraphSnapshot } from './entities/graph';
+import type { WorkflowGraphSnapshot } from "./entities/graph";
 import {
   buildWorkflowArtifactEmbeddingId,
   serializeWorkflowProvenance,
-} from './graph-helpers';
-import { getProjectStorageInfo } from '../project-store';
-import { withRagMetadataDatabase } from '../rag-metadata/database';
+} from "./graph-helpers";
+import { getProjectStorageInfo } from "../project-store";
+import {
+  clearWorkflowProjectionFromKuzu,
+  projectWorkflowSnapshotToKuzu,
+} from "./projector/kuzu";
+import { withRagMetadataDatabase } from "../rag-metadata/database";
 
 /**
  * Persists a workflow graph snapshot and keeps artifact timestamps stable when hashes do not change.
  */
-export function syncWorkflowGraphSnapshot(workspacePath: string, snapshot: WorkflowGraphSnapshot): void {
+export function syncWorkflowGraphSnapshot(
+  workspacePath: string,
+  snapshot: WorkflowGraphSnapshot,
+): void {
   const storage = getProjectStorageInfo(workspacePath);
   const workspaceId = storage.workspaceId;
   const nodeIds = snapshot.nodes.map((node) => node.id);
@@ -30,65 +37,77 @@ export function syncWorkflowGraphSnapshot(workspacePath: string, snapshot: Workf
   ];
 
   withRagMetadataDatabase(workspacePath, (db) => {
-    db.exec('BEGIN IMMEDIATE');
+    db.exec("BEGIN IMMEDIATE");
     try {
       const existingMaps = new Map(
-        (db.prepare(`
+        (
+          db
+            .prepare(
+              `
           SELECT id, source_hash, generated_at, updated_at
           FROM workflow_maps
           WHERE workspace_id = ?
-        `).all(workspaceId) as Array<{
-          id: string;
-          source_hash: string | null;
-          generated_at: number;
-          updated_at: number;
-        }>).map((row) => [row.id, row] as const),
+        `,
+            )
+            .all(workspaceId) as Array<{
+            id: string;
+            source_hash: string | null;
+            generated_at: number;
+            updated_at: number;
+          }>
+        ).map((row) => [row.id, row] as const),
       );
       const existingTraces = new Map(
-        (db.prepare(`
+        (
+          db
+            .prepare(
+              `
           SELECT id, source_hash, generated_at, updated_at
           FROM workflow_trace_summaries
           WHERE workspace_id = ?
-        `).all(workspaceId) as Array<{
-          id: string;
-          source_hash: string | null;
-          generated_at: number;
-          updated_at: number;
-        }>).map((row) => [row.id, row] as const),
+        `,
+            )
+            .all(workspaceId) as Array<{
+            id: string;
+            source_hash: string | null;
+            generated_at: number;
+            updated_at: number;
+          }>
+        ).map((row) => [row.id, row] as const),
       );
       const existingMapIds = [...existingMaps.keys()];
 
       db.prepare(
         nodeIds.length > 0
-          ? `DELETE FROM workflow_nodes WHERE workspace_id = ? AND id NOT IN (${nodeIds.map(() => '?').join(',')})`
-          : 'DELETE FROM workflow_nodes WHERE workspace_id = ?',
+          ? `DELETE FROM workflow_nodes WHERE workspace_id = ? AND id NOT IN (${nodeIds.map(() => "?").join(",")})`
+          : "DELETE FROM workflow_nodes WHERE workspace_id = ?",
       ).run(workspaceId, ...nodeIds);
       db.prepare(
         edgeIds.length > 0
-          ? `DELETE FROM workflow_edges WHERE workspace_id = ? AND id NOT IN (${edgeIds.map(() => '?').join(',')})`
-          : 'DELETE FROM workflow_edges WHERE workspace_id = ?',
+          ? `DELETE FROM workflow_edges WHERE workspace_id = ? AND id NOT IN (${edgeIds.map(() => "?").join(",")})`
+          : "DELETE FROM workflow_edges WHERE workspace_id = ?",
       ).run(workspaceId, ...edgeIds);
       db.prepare(
         mapIds.length > 0
-          ? `DELETE FROM workflow_maps WHERE workspace_id = ? AND id NOT IN (${mapIds.map(() => '?').join(',')})`
-          : 'DELETE FROM workflow_maps WHERE workspace_id = ?',
+          ? `DELETE FROM workflow_maps WHERE workspace_id = ? AND id NOT IN (${mapIds.map(() => "?").join(",")})`
+          : "DELETE FROM workflow_maps WHERE workspace_id = ?",
       ).run(workspaceId, ...mapIds);
       db.prepare(
         traceIds.length > 0
-          ? `DELETE FROM workflow_trace_summaries WHERE workspace_id = ? AND id NOT IN (${traceIds.map(() => '?').join(',')})`
-          : 'DELETE FROM workflow_trace_summaries WHERE workspace_id = ?',
+          ? `DELETE FROM workflow_trace_summaries WHERE workspace_id = ? AND id NOT IN (${traceIds.map(() => "?").join(",")})`
+          : "DELETE FROM workflow_trace_summaries WHERE workspace_id = ?",
       ).run(workspaceId, ...traceIds);
       if (existingMapIds.length > 0) {
         db.prepare(
           mapIds.length > 0
-            ? `DELETE FROM workflow_map_sources WHERE workflow_map_id IN (${existingMapIds.map(() => '?').join(',')}) AND workflow_map_id NOT IN (${mapIds.map(() => '?').join(',')})`
-            : `DELETE FROM workflow_map_sources WHERE workflow_map_id IN (${existingMapIds.map(() => '?').join(',')})`,
+            ? `DELETE FROM workflow_map_sources WHERE workflow_map_id IN (${existingMapIds.map(() => "?").join(",")}) AND workflow_map_id NOT IN (${mapIds.map(() => "?").join(",")})`
+            : `DELETE FROM workflow_map_sources WHERE workflow_map_id IN (${existingMapIds.map(() => "?").join(",")})`,
         ).run(...existingMapIds, ...mapIds);
       }
       db.prepare(
         scopedArtifactIds.length > 0
-          ? `DELETE FROM workflow_artifact_embeddings WHERE artifact_id LIKE ? AND artifact_id NOT IN (${scopedArtifactIds.map(() => '?').join(',')})`
-          : 'DELETE FROM workflow_artifact_embeddings WHERE artifact_id LIKE ?',
+          ? `DELETE FROM workflow_artifact_embeddings WHERE artifact_id LIKE ? AND artifact_id NOT IN (${scopedArtifactIds.map(() => "?").join(",")})`
+          : "DELETE FROM workflow_artifact_embeddings WHERE artifact_id LIKE ?",
       ).run(`${workspaceId}:%`, ...scopedArtifactIds);
 
       const upsertNode = db.prepare(`
@@ -210,12 +229,14 @@ export function syncWorkflowGraphSnapshot(workspacePath: string, snapshot: Workf
       (snapshot.maps ?? []).forEach((map) => {
         const existing = existingMaps.get(map.id);
         const sourceHash = map.sourceHash ?? null;
-        const generatedAt = existing && existing.source_hash === sourceHash
-          ? existing.generated_at
-          : map.generatedAt;
-        const updatedAt = existing && existing.source_hash === sourceHash
-          ? existing.updated_at
-          : map.updatedAt ?? Date.now();
+        const generatedAt =
+          existing && existing.source_hash === sourceHash
+            ? existing.generated_at
+            : map.generatedAt;
+        const updatedAt =
+          existing && existing.source_hash === sourceHash
+            ? existing.updated_at
+            : (map.updatedAt ?? Date.now());
         upsertMap.run(
           map.id,
           map.workspaceId ?? workspaceId,
@@ -268,12 +289,14 @@ export function syncWorkflowGraphSnapshot(workspacePath: string, snapshot: Workf
       (snapshot.traceSummaries ?? []).forEach((trace) => {
         const existing = existingTraces.get(trace.id);
         const sourceHash = trace.sourceHash ?? null;
-        const generatedAt = existing && existing.source_hash === sourceHash
-          ? existing.generated_at
-          : trace.generatedAt;
-        const updatedAt = existing && existing.source_hash === sourceHash
-          ? existing.updated_at
-          : trace.updatedAt ?? Date.now();
+        const generatedAt =
+          existing && existing.source_hash === sourceHash
+            ? existing.generated_at
+            : trace.generatedAt;
+        const updatedAt =
+          existing && existing.source_hash === sourceHash
+            ? existing.updated_at
+            : (trace.updatedAt ?? Date.now());
         upsertTrace.run(
           trace.id,
           trace.workspaceId ?? workspaceId,
@@ -290,12 +313,14 @@ export function syncWorkflowGraphSnapshot(workspacePath: string, snapshot: Workf
         );
       });
 
-      db.exec('COMMIT');
+      db.exec("COMMIT");
     } catch (error) {
-      db.exec('ROLLBACK');
+      db.exec("ROLLBACK");
       throw error;
     }
   });
+
+  projectWorkflowSnapshotToKuzu(workspacePath);
 }
 
 /**
@@ -304,23 +329,37 @@ export function syncWorkflowGraphSnapshot(workspacePath: string, snapshot: Workf
 export function clearWorkflowGraph(workspacePath: string): void {
   const storage = getProjectStorageInfo(workspacePath);
   withRagMetadataDatabase(workspacePath, (db) => {
-    db.exec('BEGIN IMMEDIATE');
+    db.exec("BEGIN IMMEDIATE");
     try {
-      db.prepare(`
+      db.prepare(
+        `
         DELETE FROM workflow_map_sources
         WHERE workflow_map_id IN (
           SELECT id FROM workflow_maps WHERE workspace_id = ?
         )
-      `).run(storage.workspaceId);
-      db.prepare(`DELETE FROM workflow_nodes WHERE workspace_id = ?`).run(storage.workspaceId);
-      db.prepare(`DELETE FROM workflow_edges WHERE workspace_id = ?`).run(storage.workspaceId);
-      db.prepare(`DELETE FROM workflow_maps WHERE workspace_id = ?`).run(storage.workspaceId);
-      db.prepare(`DELETE FROM workflow_trace_summaries WHERE workspace_id = ?`).run(storage.workspaceId);
-      db.prepare(`DELETE FROM workflow_artifact_embeddings WHERE artifact_id LIKE ?`).run(`${storage.workspaceId}:%`);
-      db.exec('COMMIT');
+      `,
+      ).run(storage.workspaceId);
+      db.prepare(`DELETE FROM workflow_nodes WHERE workspace_id = ?`).run(
+        storage.workspaceId,
+      );
+      db.prepare(`DELETE FROM workflow_edges WHERE workspace_id = ?`).run(
+        storage.workspaceId,
+      );
+      db.prepare(`DELETE FROM workflow_maps WHERE workspace_id = ?`).run(
+        storage.workspaceId,
+      );
+      db.prepare(
+        `DELETE FROM workflow_trace_summaries WHERE workspace_id = ?`,
+      ).run(storage.workspaceId);
+      db.prepare(
+        `DELETE FROM workflow_artifact_embeddings WHERE artifact_id LIKE ?`,
+      ).run(`${storage.workspaceId}:%`);
+      db.exec("COMMIT");
     } catch (error) {
-      db.exec('ROLLBACK');
+      db.exec("ROLLBACK");
       throw error;
     }
   });
+
+  clearWorkflowProjectionFromKuzu(workspacePath);
 }

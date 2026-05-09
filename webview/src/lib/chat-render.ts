@@ -86,7 +86,9 @@ export function buildListDirEntries(message: ChatMessage): ListDirEntry[] {
  * @returns Path string or an empty string when the tool has no path payload.
  */
 export function getToolPath(message: ChatMessage): string {
-  return typeof message.toolParams?.path === "string" ? message.toolParams.path : "";
+  return typeof message.toolParams?.path === "string"
+    ? message.toolParams.path
+    : "";
 }
 
 /**
@@ -110,7 +112,7 @@ export function getToolMetaString(message: ChatMessage, key: string): string {
  */
 export function getToolMetaNumber(
   message: ChatMessage,
-  key: string
+  key: string,
 ): number | null {
   const value = message.toolMeta?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;

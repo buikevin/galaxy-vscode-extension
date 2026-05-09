@@ -135,6 +135,16 @@ export type WorkflowExtractorAdapter = Readonly<{
   label: string;
   /** Extracts workflow graph contributions for a workspace. */
   extract: (workspacePath: string) => Promise<WorkflowGraphContribution>;
+  /** Whether the adapter can extract a contribution scoped to a single file. */
+  supportsFile?: (relativePath: string) => boolean;
+  /**
+   * Extracts workflow graph contributions scoped to a single file when supported.
+   * Adapters that do not implement this method fall back to the workspace-wide `extract`.
+   */
+  extractFromFile?: (
+    workspacePath: string,
+    relativePath: string,
+  ) => Promise<WorkflowGraphContribution>;
 }>;
 
 /**

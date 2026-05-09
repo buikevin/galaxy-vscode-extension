@@ -43,7 +43,7 @@ type ToolCardProps = Readonly<{
   /** Handle hover behavior for list_dir entries. */
   onListDirHover: (
     event: MouseEvent<HTMLButtonElement>,
-    entry: ListDirEntry
+    entry: ListDirEntry,
   ) => void;
   /** Pre-rendered shell content for run_project_command cards. */
   shellContent?: ReactNode;
@@ -132,7 +132,8 @@ export function ToolCard(props: ToolCardProps) {
               </div>
               {listDirWasTruncated ? (
                 <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-2.5 py-2 text-xs leading-5 text-amber-100/90">
-                  Kết quả quét đã bị cắt bớt. Hãy thu hẹp `path` hoặc giảm `depth` để xem đầy đủ hơn.
+                  Kết quả quét đã bị cắt bớt. Hãy thu hẹp `path` hoặc giảm
+                  `depth` để xem đầy đủ hơn.
                 </div>
               ) : null}
               <div className="space-y-1">
@@ -164,7 +165,11 @@ export function ToolCard(props: ToolCardProps) {
               </div>
             </div>
           ) : (
-            <RichMessageBody content={props.message.content} tone="muted" compact />
+            <RichMessageBody
+              content={props.message.content}
+              tone="muted"
+              compact
+            />
           )}
         </div>
       ) : null}

@@ -6,19 +6,21 @@
  * @desc Database bootstrap helpers for the RAG metadata SQLite store.
  */
 
-import { DatabaseSync } from 'node:sqlite';
-import { ensureProjectStorage, getProjectStorageInfo } from '../project-store';
+import { DatabaseSync } from "node:sqlite";
+import { ensureProjectStorage, getProjectStorageInfo } from "../project-store";
 
 /**
  * Adds newly introduced semantic chunk columns to existing databases.
  */
 function ensureSemanticChunkColumns(db: DatabaseSync): void {
-  const columns = db.prepare(`PRAGMA table_info(semantic_chunks)`).all() as Array<{ name: string }>;
+  const columns = db
+    .prepare(`PRAGMA table_info(semantic_chunks)`)
+    .all() as Array<{ name: string }>;
   const existing = new Set(columns.map((column) => column.name));
-  if (!existing.has('description')) {
+  if (!existing.has("description")) {
     db.exec(`ALTER TABLE semantic_chunks ADD COLUMN description TEXT;`);
   }
-  if (!existing.has('description_source')) {
+  if (!existing.has("description_source")) {
     db.exec(`ALTER TABLE semantic_chunks ADD COLUMN description_source TEXT;`);
   }
 }
@@ -26,7 +28,10 @@ function ensureSemanticChunkColumns(db: DatabaseSync): void {
 /**
  * Opens the per-project RAG metadata database, ensures schema, and closes it after use.
  */
-export function withRagMetadataDatabase<T>(workspacePath: string, fn: (db: DatabaseSync) => T): T {
+export function withRagMetadataDatabase<T>(
+  workspacePath: string,
+  fn: (db: DatabaseSync) => T,
+): T {
   const storage = getProjectStorageInfo(workspacePath);
   ensureProjectStorage(storage);
   const db = new DatabaseSync(storage.ragMetadataDbPath);
@@ -234,6 +239,59 @@ export function withRagMetadataDatabase<T>(workspacePath: string, fn: (db: Datab
     CREATE INDEX IF NOT EXISTS idx_workflow_trace_summaries_workspace_id ON workflow_trace_summaries(workspace_id);
     CREATE INDEX IF NOT EXISTS idx_workflow_trace_summaries_entry_node_id ON workflow_trace_summaries(entry_node_id);
     CREATE INDEX IF NOT EXISTS idx_workflow_trace_summaries_title_lower ON workflow_trace_summaries(title_lower);
+    CREATE TABLE IF NOT EXISTS code_edits (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      workspace_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      range_start_line INTEGER,
+      range_end_line INTEGER,
+      before_hash TEXT NOT NULL,
+      after_hash TEXT NOT NULL,
+      before_blob TEXT,
+      after_blob TEXT,
+      parent_edit_id INTEGER,
+      reverted_at INTEGER,
+      created_at INTEGER NOT NULL,
+      FOREIGN KEY (parent_edit_id) REFERENCES code_edits(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_code_edits_workspace_id ON code_edits(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_code_edits_turn_id ON code_edits(turn_id);
+    CREATE INDEX IF NOT EXISTS idx_code_edits_file_path ON code_edits(file_path);
+    CREATE INDEX IF NOT EXISTS idx_code_edits_parent_edit_id ON code_edits(parent_edit_id);
+    CREATE TABLE IF NOT EXISTS file_reads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      workspace_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      read_mode TEXT NOT NULL,
+      offset_value INTEGER NOT NULL,
+      limit_value INTEGER NOT NULL,
+      mtime_ms INTEGER NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      cached INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_file_reads_workspace_id ON file_reads(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_file_reads_turn_id ON file_reads(turn_id);
+    CREATE INDEX IF NOT EXISTS idx_file_reads_file_path ON file_reads(file_path);
+    CREATE INDEX IF NOT EXISTS idx_file_reads_created_at ON file_reads(created_at DESC);
+    CREATE TABLE IF NOT EXISTS workflow_file_index (
+      workspace_id TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      source_hash TEXT NOT NULL,
+      adapter_id TEXT NOT NULL,
+      mtime_ms INTEGER NOT NULL,
+      indexed_at INTEGER NOT NULL,
+      node_ids_json TEXT NOT NULL,
+      edge_ids_json TEXT NOT NULL,
+      node_count INTEGER NOT NULL,
+      edge_count INTEGER NOT NULL,
+      PRIMARY KEY (workspace_id, file_path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_file_index_workspace ON workflow_file_index(workspace_id);
+    CREATE INDEX IF NOT EXISTS idx_workflow_file_index_adapter ON workflow_file_index(adapter_id);
   `);
   ensureSemanticChunkColumns(db);
 

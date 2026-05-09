@@ -73,7 +73,9 @@ export function derivePromptContextHints(
       diagramMentions ||
       loweredContent.includes("create_drawio_diagram") ||
       loweredContent.includes("convert_drawio_diagram") ||
-      loweredContent.includes("export_drawio_diagram"),
+      loweredContent.includes("export_drawio_diagram") ||
+      loweredContent.includes("export_workflow_drawio_diagram") ||
+      loweredContent.includes("export_workflow_mermaid_diagram"),
     mentionsFrontendPreview:
       frontendPreviewMentions ||
       loweredContent.includes("vscode_start_frontend_preview") ||

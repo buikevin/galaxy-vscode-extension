@@ -48,3 +48,45 @@ export function buildTypeScriptWorkflowExtractionContext(workspacePath: string):
     exportedSymbolsByFile,
   });
 }
+
+/**
+ * Builds a workflow extraction context scoped to a single TypeScript/JavaScript source file.
+ *
+ * Cross-file edges that depend on imports from other files may not resolve until those files
+ * are also indexed; in-file nodes/edges are always captured.
+ *
+ * @param workspacePath Absolute workspace path.
+ * @param relativePath Workspace-relative path of the target file.
+ * @returns Single-file scoped extraction context, or null when the file is unparsable/unsupported.
+ */
+export function buildSingleFileTypeScriptWorkflowExtractionContext(
+  workspacePath: string,
+  relativePath: string,
+): TypeScriptWorkflowExtractionContext | null {
+  if (!isTypeScriptWorkflowSourceFile(relativePath)) {
+    return null;
+  }
+  const projectConfig = loadTypeScriptProjectConfig(workspacePath);
+  const parsedFile = parseWorkflowFile(workspacePath, relativePath, projectConfig);
+  if (!parsedFile) {
+    return null;
+  }
+  const baseNodes = new Map<string, WorkflowNodeRecord>();
+  const exportedSymbolsByFile = new Map<string, ReadonlyMap<string, string>>();
+  parsedFile.units.forEach((unit) => {
+    addNode(baseNodes, createGraphNodeFromUnit(unit));
+  });
+  exportedSymbolsByFile.set(
+    parsedFile.relativePath,
+    new Map(
+      parsedFile.units
+        .filter((unit) => unit.exported && unit.symbolName)
+        .map((unit) => [unit.symbolName!, unit.id] as const),
+    ),
+  );
+  return Object.freeze({
+    parsedFiles: Object.freeze([parsedFile]),
+    baseNodes,
+    exportedSymbolsByFile,
+  });
+}

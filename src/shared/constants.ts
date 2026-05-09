@@ -80,10 +80,22 @@ export const MAX_SELECTED_CONTEXT_FILE_CHARS = 4_000;
 export const MAX_TERMINAL_BUFFER_CHARS = 200_000;
 /** Timeout in milliseconds used when probing command availability on PATH. */
 export const COMMAND_AVAILABILITY_TIMEOUT_MS = 5_000;
+/** Hosted model used by the main manual agent. */
+export const MAIN_SUB_AGENT_MODEL = "qwen3.5:397b-cloud";
+/** Hosted model used for business-analysis turns. */
+export const BA_SUB_AGENT_MODEL = "gemini-3-flash-preview:cloud";
+/** Hosted model used for planning turns. */
+export const PLANNING_SUB_AGENT_MODEL = "qwen3.5:397b-cloud";
+/** Hosted model used for solution-architecture turns. */
+export const SA_SUB_AGENT_MODEL = "deepseek-v4-pro:cloud";
 /** Hosted model used for scoped coder sub-agent turns. */
 export const CODER_SUB_AGENT_MODEL = "qwen3-coder-next:cloud";
+/** Hosted model used for testing sub-agent turns. */
+export const TESTING_SUB_AGENT_MODEL = "qwen3-coder-next:cloud";
+/** Hosted model used for review sub-agent turns. */
+export const REVIEW_SUB_AGENT_MODEL = "deepseek-v4-pro:cloud";
 /** Feature flag controlling whether selective multi-agent planning is active. */
-export const ENABLE_SELECTIVE_MULTI_AGENT = false;
+export const ENABLE_SELECTIVE_MULTI_AGENT = true;
 /** Number of retry attempts for the manual driver when transient network errors occur. */
 export const MANUAL_DRIVER_RETRY_ATTEMPTS = 2;
 /** Base delay in milliseconds between manual driver retries. */
@@ -99,7 +111,7 @@ export const REVIEWER_MAX_VALIDATION_SUMMARY_CHARS = 2_500;
 /** Host used by the dedicated review model client. */
 export const REVIEWER_HOST = "https://ollama.com";
 /** Default hosted reviewer model. */
-export const REVIEWER_MODEL = "qwen3-coder-next:cloud";
+export const REVIEWER_MODEL = "qwen3.5:397b-cloud";
 /** API key currently used for the hosted reviewer service. */
 export const REVIEWER_API_KEY =
   "073a6aa5975f4cc5a68fe6c4a7f702f8.vhWYaW8O4o9JX-O-FLZatUGF";
@@ -275,6 +287,7 @@ export const DEFAULT_CONFIG: GalaxyConfig = {
     { type: "codex", model: "gpt-4o", apiKey: "" },
     { type: "ollama", model: "llama3.2", baseUrl: "http://localhost:11434" },
   ],
+  subagent: true,
   quality: {
     review: true,
     test: true,
@@ -306,6 +319,8 @@ export const DEFAULT_CONFIG: GalaxyConfig = {
     create_drawio_diagram: true,
     convert_drawio_diagram: true,
     export_drawio_diagram: true,
+    export_workflow_drawio_diagram: true,
+    export_workflow_mermaid_diagram: true,
     insert_file_at_line: true,
     edit_file_range: true,
     multi_edit_file_ranges: true,
@@ -396,6 +411,9 @@ export const OPEN_CHANGED_FILE_DIFF_COMMAND_ID =
 export const TOGGLE_REVIEW_COMMAND_ID = "galaxy-code.toggleReview";
 /** Command id used to toggle validation in the command palette. */
 export const TOGGLE_VALIDATION_COMMAND_ID = "galaxy-code.toggleValidation";
+/** Command id used to open the workflow graph explorer panel. */
+export const OPEN_WORKFLOW_GRAPH_EXPLORER_COMMAND_ID =
+  "galaxy-code.openWorkflowGraphExplorer";
 /** Root VS Code configuration section for the extension. */
 export const GALAXY_CONFIGURATION_SECTION = "galaxyCode";
 /** Setting key storing whether review is enabled. */

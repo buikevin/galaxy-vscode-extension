@@ -125,7 +125,10 @@ function pushUniqueIssue(target: string[], value: string, limit = 6): void {
   target.push(normalized.slice(0, 320));
 }
 
-function normalizeRelativeLabel(workspacePath: string, targetPath: string): string {
+function normalizeRelativeLabel(
+  workspacePath: string,
+  targetPath: string,
+): string {
   const relative = path.relative(workspacePath, targetPath) || ".";
   return relative.split(path.sep).join("/");
 }
@@ -145,13 +148,22 @@ function detectPackageManager(
   manifest: PackageManifest,
 ): PackageManager {
   const packageManagerField = String(manifest.packageManager ?? "").trim();
-  if (packageManagerField.startsWith("bun@") || fs.existsSync(path.join(cwd, "bun.lock"))) {
+  if (
+    packageManagerField.startsWith("bun@") ||
+    fs.existsSync(path.join(cwd, "bun.lock"))
+  ) {
     return "bun";
   }
-  if (packageManagerField.startsWith("pnpm@") || fs.existsSync(path.join(cwd, "pnpm-lock.yaml"))) {
+  if (
+    packageManagerField.startsWith("pnpm@") ||
+    fs.existsSync(path.join(cwd, "pnpm-lock.yaml"))
+  ) {
     return "pnpm";
   }
-  if (packageManagerField.startsWith("yarn@") || fs.existsSync(path.join(cwd, "yarn.lock"))) {
+  if (
+    packageManagerField.startsWith("yarn@") ||
+    fs.existsSync(path.join(cwd, "yarn.lock"))
+  ) {
     return "yarn";
   }
   if (fs.existsSync(path.join(cwd, "package-lock.json"))) {
@@ -187,10 +199,7 @@ function collectDependencyNames(manifest: PackageManifest): Set<string> {
   ]);
 }
 
-function inferFramework(
-  manifest: PackageManifest,
-  scriptText: string,
-): string {
+function inferFramework(manifest: PackageManifest, scriptText: string): string {
   const deps = collectDependencyNames(manifest);
   const normalizedScript = scriptText.toLowerCase();
 
@@ -217,10 +226,7 @@ function inferFramework(
   ) {
     return "Docusaurus";
   }
-  if (
-    deps.has("react-scripts") ||
-    /\breact-scripts\b/.test(normalizedScript)
-  ) {
+  if (deps.has("react-scripts") || /\breact-scripts\b/.test(normalizedScript)) {
     return "Create React App";
   }
   if (deps.has("vite") || /\bvite\b/.test(normalizedScript)) {
@@ -261,7 +267,9 @@ function looksLikeFrontendDirectory(cwd: string): boolean {
     path.join("src", "App.vue"),
     path.join("src", "app.html"),
   ];
-  return candidates.some((candidate) => fs.existsSync(path.join(cwd, candidate)));
+  return candidates.some((candidate) =>
+    fs.existsSync(path.join(cwd, candidate)),
+  );
 }
 
 function scriptLooksFrontend(scriptText: string): boolean {
@@ -334,10 +342,7 @@ function scorePreviewCandidate(
   return score;
 }
 
-function discoverPackageJsonFiles(
-  rootPath: string,
-  depth = 0,
-): string[] {
+function discoverPackageJsonFiles(rootPath: string, depth = 0): string[] {
   if (depth > FRONTEND_DISCOVERY_MAX_DEPTH || !fs.existsSync(rootPath)) {
     return [];
   }
@@ -375,7 +380,9 @@ export function discoverFrontendPreviewCandidates(
 
     const scripts = manifest.scripts ?? {};
     const scriptName = (["dev", "preview", "start"] as const).find(
-      (candidate) => typeof scripts[candidate] === "string" && scripts[candidate].trim().length > 0,
+      (candidate) =>
+        typeof scripts[candidate] === "string" &&
+        scripts[candidate].trim().length > 0,
     );
     if (!scriptName) {
       continue;
@@ -443,7 +450,9 @@ async function pickPreviewCandidate(
     return null;
   }
 
-  const query = String(options.query ?? "").trim().toLowerCase();
+  const query = String(options.query ?? "")
+    .trim()
+    .toLowerCase();
   if (query) {
     const ranked = candidates
       .map((candidate) => {
@@ -515,7 +524,10 @@ async function pickPreviewCandidate(
       throw new Error(
         `Preview query "${options.query}" is ambiguous. Matches: ${ranked
           .slice(0, 3)
-          .map((entry) => `${entry.candidate.label} (${entry.candidate.relativePath})`)
+          .map(
+            (entry) =>
+              `${entry.candidate.label} (${entry.candidate.relativePath})`,
+          )
           .join(", ")}`,
       );
     }
@@ -530,8 +542,7 @@ async function pickPreviewCandidate(
   const selected = await vscode.window.showQuickPick(
     candidates.map((candidate) => ({
       label: candidate.label,
-      detail:
-        `${candidate.framework} • ${candidate.relativePath} • ${candidate.commandText}`,
+      detail: `${candidate.framework} • ${candidate.relativePath} • ${candidate.commandText}`,
       description: candidate.previewUrl,
       candidate,
     })),
@@ -591,7 +602,9 @@ async function waitForPreviewReady(
   }
 }
 
-function resolvePathFromEnvCandidate(rawPath: string | undefined): string | null {
+function resolvePathFromEnvCandidate(
+  rawPath: string | undefined,
+): string | null {
   if (!rawPath) {
     return null;
   }
@@ -617,7 +630,8 @@ function resolveBinaryOnPath(commandNames: readonly string[]): string | null {
       for (const extension of extensions) {
         const candidate = path.join(
           entry,
-          process.platform === "win32" && !commandName.toLowerCase().endsWith(extension.toLowerCase())
+          process.platform === "win32" &&
+            !commandName.toLowerCase().endsWith(extension.toLowerCase())
             ? `${commandName}${extension}`
             : commandName,
         );
@@ -867,27 +881,31 @@ export async function startFrontendPreviewSession(
   if (runningPreviewSession) {
     if (options.interactive === false) {
       if (runningPreviewSession.candidate.cwd === candidate.cwd) {
-        await openLocalhostPreviewPanel(runningPreviewSession.candidate.previewUrl);
+        await openLocalhostPreviewPanel(
+          runningPreviewSession.candidate.previewUrl,
+        );
         return runningPreviewSession.candidate;
       }
       runningPreviewSession.terminal.dispose();
       activePreviewSession = null;
     } else {
-    const decision = await vscode.window.showWarningMessage(
-      `A frontend preview session is already running for ${runningPreviewSession.candidate.label}.`,
-      { modal: true },
-      "Reuse Current",
-      "Restart Preview",
-    );
-    if (!decision) {
-      return null;
-    }
-    if (decision === "Reuse Current") {
-      await openLocalhostPreviewPanel(runningPreviewSession.candidate.previewUrl);
-      return runningPreviewSession.candidate;
-    }
-    runningPreviewSession.terminal.dispose();
-    activePreviewSession = null;
+      const decision = await vscode.window.showWarningMessage(
+        `A frontend preview session is already running for ${runningPreviewSession.candidate.label}.`,
+        { modal: true },
+        "Reuse Current",
+        "Restart Preview",
+      );
+      if (!decision) {
+        return null;
+      }
+      if (decision === "Reuse Current") {
+        await openLocalhostPreviewPanel(
+          runningPreviewSession.candidate.previewUrl,
+        );
+        return runningPreviewSession.candidate;
+      }
+      runningPreviewSession.terminal.dispose();
+      activePreviewSession = null;
     }
   }
 
@@ -967,7 +985,8 @@ export async function captureLocalPreviewScreenshot(
     },
   );
 
-  const screenshotArtifacts = await capturePreviewScreenshotArtifacts(previewUrl);
+  const screenshotArtifacts =
+    await capturePreviewScreenshotArtifacts(previewUrl);
   return Object.freeze(
     await Promise.all(
       screenshotArtifacts.map((artifact) =>

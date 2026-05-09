@@ -24,9 +24,7 @@ type FullAccessConfirmModalProps = Readonly<{
 /**
  * Render the confirmation modal shown before switching the composer into full-access mode.
  */
-export function FullAccessConfirmModal(
-  props: FullAccessConfirmModalProps,
-) {
+export function FullAccessConfirmModal(props: FullAccessConfirmModalProps) {
   useEffect(() => {
     if (!props.isOpen) {
       return;
@@ -61,13 +59,13 @@ export function FullAccessConfirmModal(
               Cho phép toàn quyền truy cập?
             </h2>
             <p className="text-lg leading-9 text-white/70">
-              Khi chạy với toàn quyền truy cập, Galaxy Code có thể chỉnh sửa
-              bất kỳ tệp nào trên máy tính của bạn và chạy lệnh qua mạng mà
-              không cần bạn phê duyệt.
+              Khi chạy với toàn quyền truy cập, Galaxy Code có thể chỉnh sửa bất
+              kỳ tệp nào trên máy tính của bạn và chạy lệnh qua mạng mà không
+              cần bạn phê duyệt.
             </p>
             <p className="text-lg leading-9 text-white/70">
-              Hãy thận trọng khi cấp toàn quyền truy cập. Điều này làm tăng
-              đáng kể nguy cơ mất dữ liệu, rò rỉ dữ liệu hoặc hành vi bất ngờ.
+              Hãy thận trọng khi cấp toàn quyền truy cập. Điều này làm tăng đáng
+              kể nguy cơ mất dữ liệu, rò rỉ dữ liệu hoặc hành vi bất ngờ.
             </p>
           </div>
 

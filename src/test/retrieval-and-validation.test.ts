@@ -3,6 +3,7 @@ import { execSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { Webview } from "vscode";
 import { DEFAULT_CONFIG } from "../shared/constants";
 import type { GalaxyConfig } from "../shared/config";
 import {
@@ -75,6 +76,22 @@ import {
 import { syncWorkflowGraphSnapshot } from "../context/workflow/sync";
 import { buildWorkflowArtifacts } from "../context/workflow/extractor/artifacts";
 import {
+  buildViewGraphModelFromEntryNode,
+  buildViewGraphModelFromFile,
+  buildViewGraphModelFromRoute,
+  summarizeViewGraphModel,
+} from "../context/workflow/view/composer";
+import { exportViewGraphToDrawioXml } from "../context/workflow/view/drawio";
+import { exportViewGraphToMermaid } from "../context/workflow/view/mermaid";
+import {
+  describeWorkflowViewScope,
+  resolveWorkflowViewGraphModel,
+} from "../context/workflow/view/resolver";
+import {
+  buildWorkflowGraphExplorerPayload,
+  getWorkflowGraphExplorerHtml,
+} from "../extension-host/workflow-graph-explorer";
+import {
   tokenizeDirectCommandText,
   tryResolveDirectCommand,
 } from "../runtime/direct-command";
@@ -102,6 +119,14 @@ import {
   normalizeEditableDrawioPath,
   normalizeDrawioDiagramPath,
 } from "../tools/file/drawio";
+import {
+  createWorkflowMermaidDiagramTool,
+  normalizeWorkflowMermaidDiagramPath,
+} from "../tools/file/workflow-mermaid";
+import {
+  createWorkflowDrawioDiagramTool,
+  normalizeWorkflowDrawioDiagramPath,
+} from "../tools/file/workflow-drawio";
 import {
   editFileRangeTool,
   editFileTool,
@@ -150,6 +175,7 @@ import { selectNodeValidationScripts } from "../validation/node";
 import type { ChatRuntimeCallbacks } from "../shared/chat-runtime";
 import type { BackgroundCommandCompletion } from "../shared/extension-host";
 import type { HistoryManager } from "../context/entities/history-manager";
+import type { SessionMemory, WorkingTurn } from "../context/entities/history";
 import type { AgentType, ChatMessage } from "../shared/protocol";
 import type { RuntimeMessage, TrackedFile } from "../shared/runtime";
 import type { FileToolContext } from "../tools/entities/file-tools";
@@ -182,6 +208,266 @@ suite("Retrieval And Validation", () => {
 
     removeDir(workspacePath);
     removeDir(storage.projectDirPath);
+  }
+
+  function seedReadFileEvidence(
+    workspacePath: string,
+    opts: {
+      filePath: string;
+      capturedAt: number;
+      summary?: string;
+      turnId?: string;
+    },
+  ): void {
+    const storage = getProjectStorageInfo(workspacePath);
+    fs.mkdirSync(storage.projectDirPath, { recursive: true });
+    fs.appendFileSync(
+      storage.toolEvidencePath,
+      `${JSON.stringify({
+        evidenceId: `evidence-${opts.capturedAt}-${opts.filePath}`,
+        workspaceId: storage.workspaceId,
+        turnId: opts.turnId ?? "turn-seeded-evidence",
+        toolName: "read_file",
+        summary:
+          opts.summary ??
+          `Read ${opts.filePath} while tracing createCustomer flow.`,
+        success: true,
+        capturedAt: opts.capturedAt,
+        stale: false,
+        tags: ["customer", "createCustomer", "read_file"],
+        filePath: opts.filePath,
+        readMode: "partial",
+        startLine: 1,
+        endLine: 20,
+        totalLines: 20,
+        contentPreview:
+          "createCustomer -> insertCustomerRecord -> customer.created queue consumer",
+        truncated: false,
+      })}\n`,
+      "utf-8",
+    );
+  }
+
+  function loadLatestPromptBuildTelemetry(workspacePath: string): Readonly<{
+    hybridCandidateCount: number;
+    semanticCandidateCount: number;
+    evidenceEntryCount: number;
+    readPlanCount: number;
+  }> {
+    const storage = getProjectStorageInfo(workspacePath);
+    const lines = fs.existsSync(storage.telemetryPath)
+      ? fs
+          .readFileSync(storage.telemetryPath, "utf-8")
+          .split(/\r?\n/)
+          .filter(Boolean)
+      : [];
+
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const parsed = JSON.parse(lines[index]!) as Record<string, unknown>;
+      if (parsed.kind !== "prompt_build") {
+        continue;
+      }
+
+      return Object.freeze({
+        hybridCandidateCount:
+          typeof parsed.hybridCandidateCount === "number"
+            ? parsed.hybridCandidateCount
+            : 0,
+        semanticCandidateCount:
+          typeof parsed.semanticCandidateCount === "number"
+            ? parsed.semanticCandidateCount
+            : 0,
+        evidenceEntryCount:
+          typeof parsed.evidenceEntryCount === "number"
+            ? parsed.evidenceEntryCount
+            : 0,
+        readPlanCount:
+          typeof parsed.readPlanCount === "number" ? parsed.readPlanCount : 0,
+      });
+    }
+
+    throw new Error("Missing prompt_build telemetry event");
+  }
+
+  function getCustomerWorkflowKeyFiles(): readonly string[] {
+    return Object.freeze([
+      "src/server/routes/customers.ts",
+      "src/server/controllers/customers.ts",
+      "src/server/services/customer-service.ts",
+      "src/server/repositories/customer-repository.ts",
+      "src/server/workers/customer-worker.ts",
+    ]);
+  }
+
+  function seedCustomerWorkflowWorkspace(workspacePath: string): void {
+    fs.mkdirSync(path.join(workspacePath, "src", "server", "routes"), {
+      recursive: true,
+    });
+    fs.mkdirSync(path.join(workspacePath, "src", "server", "controllers"), {
+      recursive: true,
+    });
+    fs.mkdirSync(path.join(workspacePath, "src", "server", "services"), {
+      recursive: true,
+    });
+    fs.mkdirSync(path.join(workspacePath, "src", "server", "repositories"), {
+      recursive: true,
+    });
+    fs.mkdirSync(path.join(workspacePath, "src", "server", "workers"), {
+      recursive: true,
+    });
+
+    fs.writeFileSync(
+      path.join(workspacePath, "src", "server", "routes", "customers.ts"),
+      [
+        'import { createCustomerController } from "../controllers/customers";',
+        "declare const router: { post(path: string, handler: unknown): void };",
+        'router.post("/api/customers", createCustomerController);',
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    fs.writeFileSync(
+      path.join(workspacePath, "src", "server", "controllers", "customers.ts"),
+      [
+        'import { createCustomer } from "../services/customer-service";',
+        "export async function createCustomerController(payload: unknown) {",
+        "  return createCustomer(payload);",
+        "}",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    fs.writeFileSync(
+      path.join(
+        workspacePath,
+        "src",
+        "server",
+        "services",
+        "customer-service.ts",
+      ),
+      [
+        'import { insertCustomerRecord } from "../repositories/customer-repository";',
+        "declare const queue: { publish(topic: string, payload: unknown): void };",
+        "export async function createCustomer(payload: unknown) {",
+        "  await insertCustomerRecord(payload);",
+        '  queue.publish("customer.created", payload);',
+        "  return payload;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    fs.writeFileSync(
+      path.join(
+        workspacePath,
+        "src",
+        "server",
+        "repositories",
+        "customer-repository.ts",
+      ),
+      [
+        "declare const db: { query(sql: string, params?: unknown[]): Promise<unknown> };",
+        "export async function insertCustomerRecord(payload: unknown) {",
+        '  return db.query("insert into customers(id) values (?)", [payload]);',
+        "}",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    fs.writeFileSync(
+      path.join(
+        workspacePath,
+        "src",
+        "server",
+        "workers",
+        "customer-worker.ts",
+      ),
+      [
+        'import { createCustomer } from "../services/customer-service";',
+        "declare const queue: { consume(topic: string, handler: unknown): void };",
+        "export async function handleCustomerCreated(payload: unknown) {",
+        "  return createCustomer(payload);",
+        "}",
+        'queue.consume("customer.created", handleCustomerCreated);',
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+  }
+
+  function createPromptSessionMemory(
+    workspacePath: string,
+    now: number,
+    overrides: Readonly<{
+      workspaceId?: string;
+      activeTaskMemory?: Partial<SessionMemory["activeTaskMemory"]>;
+      projectMemory?: Partial<SessionMemory["projectMemory"]>;
+      lastFinalAssistantConclusion?: string;
+      keyFiles?: readonly string[];
+      activeProjectPath?: string;
+    }> = {},
+  ) {
+    return {
+      workspaceId: overrides.workspaceId ?? path.basename(workspacePath),
+      workspacePath,
+      ...(overrides.activeProjectPath
+        ? { activeProjectPath: overrides.activeProjectPath }
+        : {}),
+      activeTaskMemory: {
+        taskId: null,
+        originalUserGoal: "",
+        currentObjective: "",
+        definitionOfDone: Object.freeze([]),
+        completedSteps: Object.freeze([]),
+        pendingSteps: Object.freeze([]),
+        blockers: Object.freeze([]),
+        filesTouched: Object.freeze([]),
+        keyFiles: Object.freeze([]),
+        attachments: Object.freeze([]),
+        deniedCommands: Object.freeze([]),
+        recentTurnSummaries: Object.freeze([]),
+        handoffSummary: "",
+        lastUpdatedAt: now,
+        ...(overrides.activeTaskMemory ?? {}),
+      },
+      projectMemory: {
+        summary: "",
+        conventions: Object.freeze([]),
+        recurringPitfalls: Object.freeze([]),
+        recentDecisions: Object.freeze([]),
+        keyFiles: Object.freeze([]),
+        lastUpdatedAt: now,
+        ...(overrides.projectMemory ?? {}),
+      },
+      lastFinalAssistantConclusion:
+        overrides.lastFinalAssistantConclusion ?? "",
+      keyFiles: overrides.keyFiles ?? Object.freeze([]),
+      lastUpdatedAt: now,
+    } satisfies SessionMemory;
+  }
+
+  function createPromptWorkingTurn(
+    now: number,
+    content: string,
+    turnId = "turn-1",
+  ) {
+    return {
+      turnId,
+      userMessage: {
+        id: `${turnId}-user`,
+        role: "user",
+        content,
+        timestamp: now,
+      },
+      assistantDraft: "",
+      contextMessages: Object.freeze([]),
+      toolDigests: Object.freeze([]),
+      roundCount: 1,
+      tokenEstimate: 0,
+      startedAt: now,
+      compacted: false,
+      droppedContextMessages: 0,
+    } satisfies WorkingTurn;
   }
 
   async function withMockedPlatform<T>(
@@ -417,41 +703,77 @@ suite("Retrieval And Validation", () => {
   });
 
   test("embedTexts falls back to deterministic local embeddings when remote embeddings fail", async () => {
-    const embeddings = await embedTexts(
-      [
-        "submit order from product detail page",
-        "submit order from product detail page",
-      ],
-      "RETRIEVAL_QUERY",
-    );
+    const originalGeminiApiKey = process.env.GEMINI_API_KEY;
+    const originalGoogleApiKey = process.env.GOOGLE_API_KEY;
+    try {
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.GOOGLE_API_KEY;
 
-    assert.ok(embeddings);
-    assert.strictEqual(embeddings!.length, 2);
-    assert.strictEqual(embeddings![0]!.length > 0, true);
-    assert.deepStrictEqual(embeddings![0], embeddings![1]);
+      const embeddings = await embedTexts(
+        [
+          "submit order from product detail page",
+          "submit order from product detail page",
+        ],
+        "RETRIEVAL_QUERY",
+      );
+
+      assert.ok(embeddings);
+      assert.strictEqual(embeddings!.length, 2);
+      assert.strictEqual(embeddings![0]!.length > 0, true);
+      assert.deepStrictEqual(embeddings![0], embeddings![1]);
+    } finally {
+      if (typeof originalGeminiApiKey === "string") {
+        process.env.GEMINI_API_KEY = originalGeminiApiKey;
+      } else {
+        delete process.env.GEMINI_API_KEY;
+      }
+      if (typeof originalGoogleApiKey === "string") {
+        process.env.GOOGLE_API_KEY = originalGoogleApiKey;
+      } else {
+        delete process.env.GOOGLE_API_KEY;
+      }
+    }
   });
 
   test("fallback embeddings still preserve relative similarity for close texts", async () => {
-    const embeddings = await embedTexts(
-      [
-        "phone product grid with buy button and order flow",
-        "phone product grid with buy button and order flow",
-        "python worker consumes queue and writes invoice status",
-      ],
-      "RETRIEVAL_DOCUMENT",
-    );
+    const originalGeminiApiKey = process.env.GEMINI_API_KEY;
+    const originalGoogleApiKey = process.env.GOOGLE_API_KEY;
+    try {
+      delete process.env.GEMINI_API_KEY;
+      delete process.env.GOOGLE_API_KEY;
 
-    assert.ok(embeddings);
-    const sameSimilarity = cosineSimilarityEmbedding(
-      embeddings![0],
-      embeddings![1],
-    );
-    const differentSimilarity = cosineSimilarityEmbedding(
-      embeddings![0],
-      embeddings![2],
-    );
-    assert.strictEqual(sameSimilarity > 0.99, true);
-    assert.strictEqual(sameSimilarity > differentSimilarity, true);
+      const embeddings = await embedTexts(
+        [
+          "phone product grid with buy button and order flow",
+          "phone product grid with buy button and order flow",
+          "python worker consumes queue and writes invoice status",
+        ],
+        "RETRIEVAL_DOCUMENT",
+      );
+
+      assert.ok(embeddings);
+      const sameSimilarity = cosineSimilarityEmbedding(
+        embeddings![0],
+        embeddings![1],
+      );
+      const differentSimilarity = cosineSimilarityEmbedding(
+        embeddings![0],
+        embeddings![2],
+      );
+      assert.strictEqual(sameSimilarity > 0.99, true);
+      assert.strictEqual(sameSimilarity > differentSimilarity, true);
+    } finally {
+      if (typeof originalGeminiApiKey === "string") {
+        process.env.GEMINI_API_KEY = originalGeminiApiKey;
+      } else {
+        delete process.env.GEMINI_API_KEY;
+      }
+      if (typeof originalGoogleApiKey === "string") {
+        process.env.GOOGLE_API_KEY = originalGoogleApiKey;
+      } else {
+        delete process.env.GOOGLE_API_KEY;
+      }
+    }
   });
 
   test("runInternalRepairTurn does not mirror internal repair prompts into the visible transcript", async function () {
@@ -1571,10 +1893,7 @@ suite("Retrieval And Validation", () => {
       );
       assert.ok(websiteCandidate);
       assert.strictEqual(websiteCandidate?.commandText, "yarn dev");
-      assert.strictEqual(
-        websiteCandidate?.previewUrl,
-        "http://127.0.0.1:3000",
-      );
+      assert.strictEqual(websiteCandidate?.previewUrl, "http://127.0.0.1:3000");
       assert.strictEqual(
         candidates.some((candidate) => candidate.label === "api"),
         false,
@@ -1624,6 +1943,212 @@ suite("Retrieval And Validation", () => {
         duplicate.error ?? "",
         /Refusing to overwrite existing file/i,
       );
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("workflow Mermaid helpers normalize output paths and create Mermaid docs", async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const now = Date.now();
+      assert.strictEqual(
+        normalizeWorkflowMermaidDiagramPath("docs/customer-flow"),
+        "docs/customer-flow.md",
+      );
+      assert.strictEqual(
+        normalizeWorkflowMermaidDiagramPath("docs/customer-flow", "mmd"),
+        "docs/customer-flow.mmd",
+      );
+
+      syncWorkflowGraphSnapshot(workspacePath, {
+        nodes: [
+          {
+            id: "screen-customer-form",
+            nodeType: "screen",
+            label: "Customer Form Screen",
+            filePath: "src/pages/customer/FormPage.tsx",
+            confidence: 0.95,
+            createdAt: now,
+          },
+          {
+            id: "api-create-customer",
+            nodeType: "api_endpoint",
+            label: "POST /api/customers",
+            filePath: "src/server/routes/customers.ts",
+            routeMethod: "POST",
+            routePath: "/api/customers",
+            confidence: 0.94,
+            createdAt: now,
+          },
+          {
+            id: "service-create-customer",
+            nodeType: "service",
+            label: "createCustomer",
+            filePath: "src/server/services/customer-service.ts",
+            symbolName: "createCustomer",
+            confidence: 0.91,
+            createdAt: now,
+          },
+        ],
+        edges: [
+          {
+            id: "edge-screen-api",
+            fromNodeId: "screen-customer-form",
+            toNodeId: "api-create-customer",
+            edgeType: "invokes_http",
+            label: "submit form",
+            createdAt: now,
+          },
+          {
+            id: "edge-api-service",
+            fromNodeId: "api-create-customer",
+            toNodeId: "service-create-customer",
+            edgeType: "calls",
+            label: "createCustomer",
+            createdAt: now,
+          },
+        ],
+        maps: [
+          {
+            id: "map-customer-submit",
+            mapType: "request_flow",
+            entryNodeId: "screen-customer-form",
+            title: "Customer submit flow",
+            summary:
+              "Customer Form Screen submits to POST /api/customers and calls createCustomer.",
+            generatedAt: now,
+          },
+        ],
+        mapSources: [],
+        traceSummaries: [],
+      });
+
+      const created = await createWorkflowMermaidDiagramTool(
+        workspacePath,
+        "docs/customer-flow",
+        {
+          entryNodeId: "screen-customer-form",
+        },
+      );
+      assert.strictEqual(created.success, true);
+      assert.match(created.content, /Exported Mermaid workflow diagram/i);
+
+      const content = fs.readFileSync(
+        path.join(workspacePath, "docs", "customer-flow.md"),
+        "utf-8",
+      );
+      assert.match(content, /```mermaid/);
+      assert.match(content, /flowchart LR/);
+      assert.match(content, /Customer Form Screen/);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("workflow Draw.io helpers normalize output paths and create editable graph diagrams", async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const now = Date.now();
+      assert.strictEqual(
+        normalizeWorkflowDrawioDiagramPath("docs/customer-flow"),
+        "docs/customer-flow.drawio",
+      );
+      assert.strictEqual(
+        normalizeWorkflowDrawioDiagramPath("docs/customer-flow", "dio"),
+        "docs/customer-flow.dio",
+      );
+
+      syncWorkflowGraphSnapshot(workspacePath, {
+        nodes: [
+          {
+            id: "screen-customer-form",
+            nodeType: "screen",
+            label: "Customer Form Screen",
+            filePath: "src/pages/customer/FormPage.tsx",
+            confidence: 0.95,
+            createdAt: now,
+          },
+          {
+            id: "api-create-customer",
+            nodeType: "api_endpoint",
+            label: "POST /api/customers",
+            filePath: "src/server/routes/customers.ts",
+            routeMethod: "POST",
+            routePath: "/api/customers",
+            confidence: 0.94,
+            createdAt: now,
+          },
+          {
+            id: "service-create-customer",
+            nodeType: "service",
+            label: "createCustomer",
+            filePath: "src/server/services/customer-service.ts",
+            symbolName: "createCustomer",
+            confidence: 0.91,
+            createdAt: now,
+          },
+        ],
+        edges: [
+          {
+            id: "edge-screen-api",
+            fromNodeId: "screen-customer-form",
+            toNodeId: "api-create-customer",
+            edgeType: "invokes_http",
+            label: "submit form",
+            createdAt: now,
+          },
+          {
+            id: "edge-api-service",
+            fromNodeId: "api-create-customer",
+            toNodeId: "service-create-customer",
+            edgeType: "calls",
+            label: "createCustomer",
+            createdAt: now,
+          },
+        ],
+        maps: [
+          {
+            id: "map-customer-submit",
+            mapType: "request_flow",
+            entryNodeId: "screen-customer-form",
+            title: "Customer submit flow",
+            summary:
+              "Customer Form Screen submits to POST /api/customers and calls createCustomer.",
+            generatedAt: now,
+          },
+        ],
+        mapSources: [],
+        traceSummaries: [],
+      });
+
+      const model = buildViewGraphModelFromEntryNode(workspacePath, {
+        entryNodeId: "screen-customer-form",
+      });
+      const xml = exportViewGraphToDrawioXml(model);
+      assert.match(xml, /<mxfile /);
+      assert.match(xml, /Frontend/);
+      assert.match(xml, /Backend/);
+      assert.match(xml, /Customer Form Screen/);
+      assert.match(xml, /POST \/api\/customers/);
+
+      const created = await createWorkflowDrawioDiagramTool(
+        workspacePath,
+        "docs/customer-flow",
+        {
+          entryNodeId: "screen-customer-form",
+        },
+      );
+      assert.strictEqual(created.success, true);
+      assert.match(created.content, /Exported workflow Draw\.io diagram/i);
+
+      const content = fs.readFileSync(
+        path.join(workspacePath, "docs", "customer-flow.drawio"),
+        "utf-8",
+      );
+      assert.match(content, /<mxGraphModel /);
+      assert.match(content, /Customer Form Screen/);
+      assert.match(content, /Backend/);
     } finally {
       cleanupTempWorkspace(workspacePath);
     }
@@ -1775,6 +2300,252 @@ suite("Retrieval And Validation", () => {
     }
   });
 
+  test("executeToolAsync exports a workflow Mermaid diagram from route and query scopes", async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const now = Date.now();
+      syncWorkflowGraphSnapshot(workspacePath, {
+        nodes: [
+          {
+            id: "screen-customer-form",
+            nodeType: "screen",
+            label: "Customer Form Screen",
+            filePath: "src/pages/customer/FormPage.tsx",
+            confidence: 0.95,
+            createdAt: now,
+          },
+          {
+            id: "api-create-customer",
+            nodeType: "api_endpoint",
+            label: "POST /api/customers",
+            filePath: "src/server/routes/customers.ts",
+            routeMethod: "POST",
+            routePath: "/api/customers",
+            confidence: 0.94,
+            createdAt: now,
+          },
+          {
+            id: "service-create-customer",
+            nodeType: "service",
+            label: "createCustomer",
+            filePath: "src/server/services/customer-service.ts",
+            symbolName: "createCustomer",
+            confidence: 0.91,
+            createdAt: now,
+          },
+        ],
+        edges: [
+          {
+            id: "edge-screen-api",
+            fromNodeId: "screen-customer-form",
+            toNodeId: "api-create-customer",
+            edgeType: "invokes_http",
+            label: "submit form",
+            createdAt: now,
+          },
+          {
+            id: "edge-api-service",
+            fromNodeId: "api-create-customer",
+            toNodeId: "service-create-customer",
+            edgeType: "calls",
+            label: "createCustomer",
+            createdAt: now,
+          },
+        ],
+        maps: [
+          {
+            id: "map-customer-submit",
+            mapType: "request_flow",
+            entryNodeId: "screen-customer-form",
+            title: "Customer submit flow",
+            summary:
+              "Customer Form Screen submits to POST /api/customers and calls createCustomer.",
+            generatedAt: now,
+          },
+        ],
+        mapSources: [],
+        traceSummaries: [
+          {
+            id: "trace-customer-submit",
+            traceKind: "request_flow",
+            entryNodeId: "screen-customer-form",
+            title: "Customer submit journey",
+            queryHint: "customer submit flow",
+            narrative:
+              "The customer form invokes POST /api/customers, which then delegates to createCustomer.",
+            generatedAt: now,
+          },
+        ],
+      });
+
+      const revealed: string[] = [];
+      const routeResult = await executeToolAsync(
+        {
+          name: "export_workflow_mermaid_diagram",
+          params: {
+            path: "docs/customer-route.md",
+            route_path: "/api/customers",
+          },
+        },
+        {
+          workspaceRoot: workspacePath,
+          config: DEFAULT_CONFIG,
+          revealFile: async (filePath: string) => {
+            revealed.push(filePath);
+          },
+          refreshWorkspaceFiles: async () => {},
+        },
+      );
+
+      assert.strictEqual(routeResult.success, true);
+      assert.match(routeResult.content, /Opened docs\/customer-route\.md/i);
+      assert.match(revealed[0] ?? "", /customer-route\.md$/i);
+      const routeContent = fs.readFileSync(
+        path.join(workspacePath, "docs", "customer-route.md"),
+        "utf-8",
+      );
+      assert.match(routeContent, /```mermaid/);
+      assert.match(routeContent, /Route Context: \/api\/customers/);
+
+      const queryResult = await executeToolAsync(
+        {
+          name: "export_workflow_mermaid_diagram",
+          params: {
+            path: "docs/customer-query.mmd",
+            query: "customer submit flow",
+            open: false,
+          },
+        },
+        {
+          workspaceRoot: workspacePath,
+          config: DEFAULT_CONFIG,
+          revealFile: async () => {},
+          refreshWorkspaceFiles: async () => {},
+        },
+      );
+
+      assert.strictEqual(queryResult.success, true);
+      const queryContent = fs.readFileSync(
+        path.join(workspacePath, "docs", "customer-query.mmd"),
+        "utf-8",
+      );
+      assert.doesNotMatch(queryContent, /```mermaid/);
+      assert.match(queryContent, /flowchart LR/);
+      assert.match(queryContent, /Customer Form Screen/);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("executeToolAsync exports a workflow Draw.io diagram and opens it through the runtime tool context", async () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const now = Date.now();
+      syncWorkflowGraphSnapshot(workspacePath, {
+        nodes: [
+          {
+            id: "screen-customer-form",
+            nodeType: "screen",
+            label: "Customer Form Screen",
+            filePath: "src/pages/customer/FormPage.tsx",
+            confidence: 0.95,
+            createdAt: now,
+          },
+          {
+            id: "api-create-customer",
+            nodeType: "api_endpoint",
+            label: "POST /api/customers",
+            filePath: "src/server/routes/customers.ts",
+            routeMethod: "POST",
+            routePath: "/api/customers",
+            confidence: 0.94,
+            createdAt: now,
+          },
+          {
+            id: "service-create-customer",
+            nodeType: "service",
+            label: "createCustomer",
+            filePath: "src/server/services/customer-service.ts",
+            symbolName: "createCustomer",
+            confidence: 0.91,
+            createdAt: now,
+          },
+        ],
+        edges: [
+          {
+            id: "edge-screen-api",
+            fromNodeId: "screen-customer-form",
+            toNodeId: "api-create-customer",
+            edgeType: "invokes_http",
+            label: "submit form",
+            createdAt: now,
+          },
+          {
+            id: "edge-api-service",
+            fromNodeId: "api-create-customer",
+            toNodeId: "service-create-customer",
+            edgeType: "calls",
+            label: "createCustomer",
+            createdAt: now,
+          },
+        ],
+        maps: [
+          {
+            id: "map-customer-submit",
+            mapType: "request_flow",
+            entryNodeId: "screen-customer-form",
+            title: "Customer submit flow",
+            summary:
+              "Customer Form Screen submits to POST /api/customers and calls createCustomer.",
+            generatedAt: now,
+          },
+        ],
+        mapSources: [],
+        traceSummaries: [],
+      });
+
+      let refreshCalls = 0;
+      let openedPath = "";
+      const result = await executeToolAsync(
+        {
+          name: "export_workflow_drawio_diagram",
+          params: {
+            path: "docs/customer-graph",
+            route_path: "/api/customers",
+          },
+        },
+        {
+          workspaceRoot: workspacePath,
+          config: DEFAULT_CONFIG,
+          revealFile: async () => undefined,
+          refreshWorkspaceFiles: async () => {
+            refreshCalls += 1;
+          },
+          openDrawioDiagram: async (filePath: string) => {
+            openedPath = filePath;
+            return Object.freeze({
+              success: true,
+              content: "Opened workflow Draw.io diagram.",
+            });
+          },
+        },
+      );
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(refreshCalls, 1);
+      assert.match(result.content, /Opened workflow Draw\.io diagram/i);
+      assert.match(openedPath, /customer-graph\.drawio$/i);
+      const content = fs.readFileSync(
+        path.join(workspacePath, "docs", "customer-graph.drawio"),
+        "utf-8",
+      );
+      assert.match(content, /Route Context: \/api\/customers/);
+      assert.match(content, /POST \/api\/customers/);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
   test("diagram prompt hints prefer drawio for editable diagrams", () => {
     const messages = [
       {
@@ -1787,7 +2558,9 @@ suite("Retrieval And Validation", () => {
     const prompt = buildSystemPrompt("manual", DEFAULT_CONFIG, hints);
 
     assert.strictEqual(hints.mentionsDiagrams, true);
+    assert.match(prompt, /Prefer export_workflow_drawio_diagram/i);
     assert.match(prompt, /Prefer create_drawio_diagram/i);
+    assert.match(prompt, /Prefer export_workflow_mermaid_diagram/i);
     assert.match(
       prompt,
       /Use Mermaid mainly for inline markdown\/docs diagrams/i,
@@ -2116,7 +2889,8 @@ suite("Retrieval And Validation", () => {
     }
   });
 
-  test("runProjectCommandTool resolves detected project-command ids from workspace profile", async () => {
+  test("runProjectCommandTool resolves detected project-command ids from workspace profile", async function () {
+    this.timeout(10_000);
     const workspacePath = createTempWorkspace();
     try {
       fs.writeFileSync(
@@ -3216,9 +3990,7 @@ suite("Retrieval And Validation", () => {
       const previews = listRecentFrontendPreviewImages(workspacePath, 2);
       assert.strictEqual(previews.length, 2);
       assert.strictEqual(
-        previews.every((preview) =>
-          /^frontend-preview-/i.test(preview.name),
-        ),
+        previews.every((preview) => /^frontend-preview-/i.test(preview.name)),
         true,
       );
       assert.strictEqual(
@@ -3649,6 +4421,472 @@ suite("Retrieval And Validation", () => {
     } finally {
       cleanupTempWorkspace(workspacePath);
     }
+  });
+
+  test("workflow graph view composer builds grouped view models from an entry node", () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const now = Date.now();
+      syncWorkflowGraphSnapshot(workspacePath, {
+        nodes: [
+          {
+            id: "screen-customer-form",
+            nodeType: "screen",
+            label: "Customer Form Screen",
+            filePath: "src/pages/customer/FormPage.tsx",
+            symbolName: "CustomerFormPage",
+            confidence: 0.95,
+            createdAt: now,
+          },
+          {
+            id: "handler-submit-customer",
+            nodeType: "component",
+            label: "handleSubmit",
+            filePath: "src/pages/customer/FormPage.tsx",
+            symbolName: "handleSubmit",
+            confidence: 0.8,
+            createdAt: now,
+          },
+          {
+            id: "api-create-customer",
+            nodeType: "api_endpoint",
+            label: "POST /api/customers",
+            filePath: "src/server/routes/customers.ts",
+            routeMethod: "POST",
+            routePath: "/api/customers",
+            confidence: 0.94,
+            createdAt: now,
+          },
+          {
+            id: "service-create-customer",
+            nodeType: "service",
+            label: "createCustomer",
+            filePath: "src/server/services/customer-service.ts",
+            symbolName: "createCustomer",
+            confidence: 0.91,
+            createdAt: now,
+          },
+          {
+            id: "query-insert-customer",
+            nodeType: "db_query",
+            label: "insertCustomer",
+            filePath: "src/server/repositories/customer-repository.ts",
+            symbolName: "insertCustomer",
+            confidence: 0.88,
+            createdAt: now,
+          },
+          {
+            id: "external-analytics",
+            nodeType: "external_dependency",
+            label: "Analytics API",
+            confidence: 0.64,
+            createdAt: now,
+          },
+        ],
+        edges: [
+          {
+            id: "edge-screen-handler",
+            fromNodeId: "screen-customer-form",
+            toNodeId: "handler-submit-customer",
+            edgeType: "calls",
+            label: "submit click",
+            createdAt: now,
+          },
+          {
+            id: "edge-handler-api",
+            fromNodeId: "handler-submit-customer",
+            toNodeId: "api-create-customer",
+            edgeType: "invokes_http",
+            label: "POST /api/customers",
+            supportingFilePath: "src/pages/customer/FormPage.tsx",
+            supportingLine: 58,
+            createdAt: now,
+          },
+          {
+            id: "edge-api-service",
+            fromNodeId: "api-create-customer",
+            toNodeId: "service-create-customer",
+            edgeType: "calls",
+            label: "customerService.createCustomer",
+            supportingFilePath: "src/server/routes/customers.ts",
+            supportingLine: 23,
+            createdAt: now,
+          },
+          {
+            id: "edge-service-query",
+            fromNodeId: "service-create-customer",
+            toNodeId: "query-insert-customer",
+            edgeType: "queries",
+            label: "insertCustomer",
+            supportingFilePath: "src/server/services/customer-service.ts",
+            supportingLine: 41,
+            createdAt: now,
+          },
+          {
+            id: "edge-service-analytics",
+            fromNodeId: "service-create-customer",
+            toNodeId: "external-analytics",
+            edgeType: "invokes_http",
+            label: "track customer_created",
+            supportingFilePath: "src/server/services/customer-service.ts",
+            supportingLine: 48,
+            createdAt: now,
+          },
+        ],
+        maps: [
+          {
+            id: "map-customer-submit",
+            mapType: "request_flow",
+            entryNodeId: "screen-customer-form",
+            title: "Customer submit flow",
+            summary:
+              "Customer Form Screen submits to POST /api/customers, stores the customer, and notifies Analytics API.",
+            generatedAt: now,
+          },
+        ],
+        mapSources: [
+          {
+            workflowMapId: "map-customer-submit",
+            sourceKind: "node",
+            sourceRef: "screen-customer-form",
+          },
+          {
+            workflowMapId: "map-customer-submit",
+            sourceKind: "edge",
+            sourceRef: "edge-handler-api",
+          },
+        ],
+        traceSummaries: [
+          {
+            id: "trace-customer-submit",
+            traceKind: "request_flow",
+            entryNodeId: "screen-customer-form",
+            title: "Customer create journey",
+            queryHint: "customer form submit",
+            narrative:
+              "The customer form calls POST /api/customers, the server stores the record, and then emits analytics.",
+            generatedAt: now,
+          },
+        ],
+      });
+
+      const model = buildViewGraphModelFromEntryNode(workspacePath, {
+        entryNodeId: "screen-customer-form",
+        maxHops: 4,
+      });
+
+      assert.strictEqual(model.scopeKind, "entry_node");
+      assert.strictEqual(model.entryNodeId, "screen-customer-form");
+      assert.strictEqual(model.dominantFlowKind, "request_flow");
+      assert.strictEqual(model.nodes[0]?.isEntry, true);
+      assert.strictEqual(
+        model.groups.some((group) => group.kind === "frontend"),
+        true,
+      );
+      assert.strictEqual(
+        model.groups.some((group) => group.kind === "backend"),
+        true,
+      );
+      assert.strictEqual(
+        model.groups.some((group) => group.kind === "data"),
+        true,
+      );
+      assert.match(model.graphSummary, /Customer Form Screen submits/i);
+      assert.strictEqual(model.focusPaths.length > 0, true);
+
+      const mermaid = exportViewGraphToMermaid(model);
+      assert.match(mermaid, /flowchart LR/);
+      assert.match(mermaid, /Frontend/);
+      assert.match(mermaid, /Backend/);
+      assert.match(mermaid, /Customer Form Screen/);
+      assert.match(mermaid, /POST \/api\/customers/);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("workflow graph view composer resolves route and file scopes", () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const now = Date.now();
+      syncWorkflowGraphSnapshot(workspacePath, {
+        nodes: [
+          {
+            id: "api-create-customer",
+            nodeType: "api_endpoint",
+            label: "POST /api/customers",
+            filePath: "src/server/routes/customers.ts",
+            routeMethod: "POST",
+            routePath: "/api/customers",
+            confidence: 0.95,
+            createdAt: now,
+          },
+          {
+            id: "service-create-customer",
+            nodeType: "service",
+            label: "createCustomer",
+            filePath: "src/server/services/customer-service.ts",
+            symbolName: "createCustomer",
+            confidence: 0.92,
+            createdAt: now,
+          },
+          {
+            id: "query-insert-customer",
+            nodeType: "db_query",
+            label: "insertCustomer",
+            filePath: "src/server/repositories/customer-repository.ts",
+            symbolName: "insertCustomer",
+            confidence: 0.84,
+            createdAt: now,
+          },
+        ],
+        edges: [
+          {
+            id: "edge-api-service",
+            fromNodeId: "api-create-customer",
+            toNodeId: "service-create-customer",
+            edgeType: "calls",
+            createdAt: now,
+          },
+          {
+            id: "edge-service-query",
+            fromNodeId: "service-create-customer",
+            toNodeId: "query-insert-customer",
+            edgeType: "queries",
+            createdAt: now,
+          },
+        ],
+        maps: [],
+        mapSources: [],
+        traceSummaries: [],
+      });
+
+      const routeModel = buildViewGraphModelFromRoute(
+        workspacePath,
+        "/api/customers",
+        { maxHops: 3 },
+      );
+      assert.strictEqual(routeModel.scopeKind, "route");
+      assert.strictEqual(routeModel.entryNodeId, "api-create-customer");
+      assert.match(routeModel.graphTitle, /Route Context: \/api\/customers/);
+
+      const fileModel = buildViewGraphModelFromFile(
+        workspacePath,
+        "src/server/routes/customers.ts",
+        { maxHops: 3 },
+      );
+      assert.strictEqual(fileModel.scopeKind, "file");
+      assert.strictEqual(fileModel.entryNodeId, "api-create-customer");
+      assert.match(fileModel.graphTitle, /src\/server\/routes\/customers\.ts/);
+      assert.match(summarizeViewGraphModel(fileModel), /Primary path:/);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("workflow view resolver supports query scopes and explorer payload keeps source evidence", () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const now = Date.now();
+      syncWorkflowGraphSnapshot(workspacePath, {
+        nodes: [
+          {
+            id: "screen-customer-form",
+            nodeType: "screen",
+            label: "Customer Form Screen",
+            filePath: "src/pages/customer/FormPage.tsx",
+            symbolName: "CustomerFormPage",
+            startLine: 12,
+            endLine: 90,
+            confidence: 0.95,
+            createdAt: now,
+          },
+          {
+            id: "api-create-customer",
+            nodeType: "api_endpoint",
+            label: "POST /api/customers",
+            filePath: "src/server/routes/customers.ts",
+            routeMethod: "POST",
+            routePath: "/api/customers",
+            startLine: 8,
+            endLine: 30,
+            confidence: 0.94,
+            createdAt: now,
+          },
+          {
+            id: "service-create-customer",
+            nodeType: "service",
+            label: "createCustomer",
+            filePath: "src/server/services/customer-service.ts",
+            symbolName: "createCustomer",
+            startLine: 10,
+            endLine: 52,
+            confidence: 0.91,
+            createdAt: now,
+          },
+        ],
+        edges: [
+          {
+            id: "edge-screen-api",
+            fromNodeId: "screen-customer-form",
+            toNodeId: "api-create-customer",
+            edgeType: "invokes_http",
+            label: "submit form",
+            supportingFilePath: "src/pages/customer/FormPage.tsx",
+            supportingSymbolName: "handleSubmit",
+            supportingLine: 58,
+            createdAt: now,
+          },
+          {
+            id: "edge-api-service",
+            fromNodeId: "api-create-customer",
+            toNodeId: "service-create-customer",
+            edgeType: "calls",
+            label: "createCustomer",
+            supportingFilePath: "src/server/routes/customers.ts",
+            supportingLine: 23,
+            createdAt: now,
+          },
+        ],
+        maps: [
+          {
+            id: "map-customer-submit",
+            mapType: "request_flow",
+            entryNodeId: "screen-customer-form",
+            title: "Customer submit flow",
+            summary:
+              "Customer Form Screen submits to POST /api/customers and calls createCustomer.",
+            generatedAt: now,
+          },
+        ],
+        mapSources: [],
+        traceSummaries: [
+          {
+            id: "trace-customer-submit",
+            traceKind: "request_flow",
+            entryNodeId: "screen-customer-form",
+            title: "Customer submit journey",
+            queryHint: "customer submit flow",
+            narrative:
+              "The customer form invokes POST /api/customers, which then delegates to createCustomer.",
+            generatedAt: now,
+          },
+        ],
+      });
+
+      const { scope, model } = resolveWorkflowViewGraphModel(workspacePath, {
+        query: "customer submit flow",
+        maxHops: 4,
+      });
+
+      assert.strictEqual(scope.kind, "query");
+      assert.strictEqual(scope.entryNodeId, "screen-customer-form");
+      const payload = buildWorkflowGraphExplorerPayload(
+        model,
+        describeWorkflowViewScope(scope),
+      );
+      assert.match(payload.scopeLabel, /query "customer submit flow"/i);
+      assert.strictEqual(payload.groups.length > 0, true);
+      assert.strictEqual(payload.edges.length, 2);
+      const frontendNode = payload.groups
+        .flatMap((group) => group.nodes)
+        .find((node) => node.id === "screen-customer-form");
+      assert.strictEqual(frontendNode?.line, 12);
+      assert.match(frontendNode?.locationLabel ?? "", /FormPage\.tsx:12/);
+      assert.match(
+        payload.edges[0]?.fromLabel ?? "",
+        /Customer Form Screen|POST \/api\/customers/,
+      );
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("workflow graph explorer HTML renders grouped nodes and open-file actions", () => {
+    const model = Object.freeze({
+      scopeKind: "entry_node",
+      scopeValue: "screen-customer-form",
+      entryNodeId: "screen-customer-form",
+      graphTitle: "Customer submit flow",
+      graphSummary:
+        "Customer Form Screen submits to POST /api/customers and calls createCustomer.",
+      dominantFlowKind: "request_flow",
+      focusPaths: Object.freeze([
+        "Customer Form Screen -> POST /api/customers -> createCustomer",
+      ]),
+      nodes: Object.freeze([
+        Object.freeze({
+          id: "screen-customer-form",
+          label: "Customer Form Screen",
+          nodeType: "screen",
+          groupKey: "layer:frontend",
+          importanceScore: 20,
+          filePath: "src/pages/customer/FormPage.tsx",
+          startLine: 12,
+          isEntry: true,
+          isExternal: false,
+        }),
+        Object.freeze({
+          id: "api-create-customer",
+          label: "POST /api/customers",
+          nodeType: "api_endpoint",
+          groupKey: "layer:backend",
+          importanceScore: 16,
+          filePath: "src/server/routes/customers.ts",
+          routePath: "/api/customers",
+          routeMethod: "POST",
+          startLine: 8,
+          isEntry: false,
+          isExternal: false,
+        }),
+      ]),
+      edges: Object.freeze([
+        Object.freeze({
+          id: "edge-screen-api",
+          fromNodeId: "screen-customer-form",
+          toNodeId: "api-create-customer",
+          edgeType: "invokes_http",
+          label: "submit form",
+          importanceScore: 14,
+          supportingFilePath: "src/pages/customer/FormPage.tsx",
+          supportingLine: 58,
+        }),
+      ]),
+      groups: Object.freeze([
+        Object.freeze({
+          groupKey: "layer:frontend",
+          title: "Frontend",
+          kind: "frontend",
+          colorToken: "sky",
+          nodeIds: Object.freeze(["screen-customer-form"]),
+        }),
+        Object.freeze({
+          groupKey: "layer:backend",
+          title: "Backend",
+          kind: "backend",
+          colorToken: "violet",
+          nodeIds: Object.freeze(["api-create-customer"]),
+        }),
+      ]),
+      maps: Object.freeze([]),
+      traces: Object.freeze([]),
+    });
+
+    const payload = buildWorkflowGraphExplorerPayload(
+      model,
+      'query "customer submit flow"',
+    );
+    const html = getWorkflowGraphExplorerHtml({
+      webview: { cspSource: "vscode-webview://test" } as Webview,
+      payload,
+      createNonce: () => "workflow-explorer-test",
+    });
+
+    assert.match(html, /Workflow Graph Explorer/);
+    assert.match(html, /Customer Form Screen/);
+    assert.match(html, /data-action="open-node"/);
+    assert.match(html, /data-action="open-edge"/);
+    assert.match(html, /"scopeLabel":"query \\"customer submit flow\\""/);
   });
 
   test("workflow extractor builds generic flow graph for http, service, and queue patterns", async () => {
@@ -5133,6 +6371,10 @@ suite("Retrieval And Validation", () => {
       );
 
       const now = Date.now();
+      seedReadFileEvidence(workspacePath, {
+        filePath: "src/server/services/customer-service.ts",
+        capturedAt: now - 1_000,
+      });
       const result = await buildPromptContext({
         agentType: "manual",
         notes: "",
@@ -5190,11 +6432,43 @@ suite("Retrieval And Validation", () => {
       const combined = result.messages
         .map((message) => message.content)
         .join("\n\n");
+      assert.match(combined, /\[RETRIEVAL STRATEGY\]/);
+      assert.match(combined, /Primary intent: feature_flow/);
+      assert.match(
+        combined,
+        /Stage order: task_memory -> graph_query -> exact_graph_evidence -> semantic_support -> targeted_reread/,
+      );
+      assert.strictEqual(result.retrievalIntentKind, "feature_flow");
+      assert.strictEqual(result.retrievalRequiresExactEvidence, false);
+      assert.strictEqual(result.retrievalStopTarget, "enough_flow_evidence");
+      assert.strictEqual(result.retrievalStopReason, "enough_flow_evidence");
+      assert.deepStrictEqual(result.retrievalPromptBlocks, [
+        "task_memory",
+        "workflow_graph_retrieval",
+        "matched_nodes",
+        "graph_path",
+        "workflow_summaries",
+        "trace_narratives",
+        "semantic_retrieval",
+        "semantic_chunks",
+      ]);
       assert.match(combined, /\[WORKFLOW GRAPH RETRIEVAL\]/);
+      assert.match(
+        combined,
+        /\[WORKFLOW GRAPH RETRIEVAL\][\s\S]*\[MATCHED NODES\][\s\S]*\[GRAPH PATH\][\s\S]*\[WORKFLOW SUMMARIES\][\s\S]*\[TRACE NARRATIVES\][\s\S]*\[SEMANTIC RETRIEVAL\]/,
+      );
       assert.match(combined, /\[WORKFLOW SUMMARIES\]/);
       assert.match(combined, /\[TRACE NARRATIVES\]/);
+      assert.doesNotMatch(combined, /\[HYBRID RETRIEVAL\]/);
+      assert.doesNotMatch(combined, /\[SKELETON RETRIEVAL\]/);
+      assert.doesNotMatch(combined, /\[SYNTAX INDEX\]/);
+      assert.doesNotMatch(combined, /\[OPEN FINDINGS TO CONTINUE\]/);
+      assert.doesNotMatch(combined, /\[RELEVANT TOOL EVIDENCE\]/);
+      assert.doesNotMatch(combined, /\[MANUAL READ BATCHES\]/);
       assert.strictEqual(result.workflowRereadGuard?.enabled, true);
-      assert.match(combined, /workflow graph path/i);
+      assert.strictEqual(result.evidenceEntryCount, 0);
+      assert.strictEqual(result.evidenceContent, "");
+      assert.match(combined, /\[GRAPH PATH\]/);
       assert.match(combined, /\[SEMANTIC RETRIEVAL\][\s\S]*workflow-graph/i);
       assert.match(combined, /\[MATCHED NODES\]/);
       assert.match(combined, /POST \/api\/customers/);
@@ -5205,10 +6479,60 @@ suite("Retrieval And Validation", () => {
         /Do not reread raw files just to reconstruct the flow/i,
       );
 
+      const promptBuildTelemetry =
+        loadLatestPromptBuildTelemetry(workspacePath);
+      assert.strictEqual(promptBuildTelemetry.hybridCandidateCount, 0);
+      assert.strictEqual(promptBuildTelemetry.evidenceEntryCount, 0);
+      assert.strictEqual(promptBuildTelemetry.readPlanCount, 0);
+      assert.strictEqual(promptBuildTelemetry.semanticCandidateCount > 0, true);
+
       const telemetrySummary = loadTelemetrySummary(workspacePath);
       assert.strictEqual(telemetrySummary.workflowQueries >= 1, true);
       assert.strictEqual(telemetrySummary.workflowHits >= 1, true);
       assert.strictEqual(telemetrySummary.workflowGuardActivations >= 1, true);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("buildPromptContext escalates exact flow queries to targeted rereads", async function () {
+    this.timeout(10_000);
+    const workspacePath = createTempWorkspace();
+    try {
+      seedCustomerWorkflowWorkspace(workspacePath);
+
+      const now = Date.now();
+      const result = await buildPromptContext({
+        agentType: "manual",
+        notes: "",
+        sessionMemory: createPromptSessionMemory(workspacePath, now, {
+          workspaceId: "feature-flow-exact-test",
+          activeTaskMemory: {
+            keyFiles: getCustomerWorkflowKeyFiles(),
+          },
+        }),
+        workingTurn: createPromptWorkingTurn(
+          now,
+          "Show the exact lines for the customer API flow through controller, repository, db query, and queue consumer.",
+          "turn-feature-flow-exact",
+        ),
+      });
+
+      const combined = result.messages
+        .map((message) => message.content)
+        .join("\n\n");
+
+      assert.strictEqual(result.retrievalIntentKind, "feature_flow");
+      assert.strictEqual(result.retrievalRequiresExactEvidence, true);
+      assert.strictEqual(result.confirmedReadCount, 0);
+      assert.strictEqual(result.retrievalStopTarget, "enough_flow_evidence");
+      assert.strictEqual(result.retrievalStopReason, "needs_targeted_reread");
+      assert.strictEqual(
+        result.retrievalPromptBlocks.includes("manual_read_batches"),
+        true,
+      );
+      assert.strictEqual(result.manualReadBatchItems.length > 0, true);
+      assert.match(combined, /\[MANUAL READ BATCHES\]/);
     } finally {
       cleanupTempWorkspace(workspacePath);
     }
@@ -5341,6 +6665,296 @@ suite("Retrieval And Validation", () => {
       });
 
       assert.strictEqual(result.effectiveWorkspacePath, nestedProjectPath);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("buildPromptContext keeps exact-impact retrieval blocks for change-impact queries", async function () {
+    this.timeout(10_000);
+    const workspacePath = createTempWorkspace();
+    try {
+      seedCustomerWorkflowWorkspace(workspacePath);
+
+      const now = Date.now();
+      seedReadFileEvidence(workspacePath, {
+        filePath: "src/server/workers/customer-worker.ts",
+        capturedAt: now - 1_000,
+        summary:
+          "Read customer worker retry logic while investigating the retry bug.",
+      });
+      const result = await buildPromptContext({
+        agentType: "manual",
+        notes: "",
+        sessionMemory: createPromptSessionMemory(workspacePath, now, {
+          workspaceId: "change-impact-test",
+          activeTaskMemory: {
+            filesTouched: Object.freeze([
+              "src/server/services/customer-service.ts",
+            ]),
+            pendingSteps: Object.freeze([
+              "Confirm downstream queue consumer impact before editing the service.",
+            ]),
+            keyFiles: getCustomerWorkflowKeyFiles(),
+          },
+        }),
+        workingTurn: createPromptWorkingTurn(
+          now,
+          "If I change src/server/services/customer-service.ts createCustomer, what controller, repository, db query, and queue consumer are affected?",
+          "turn-change-impact",
+        ),
+      });
+
+      const combined = result.messages
+        .map((message) => message.content)
+        .join("\n\n");
+      assert.match(combined, /\[RETRIEVAL STRATEGY\]/);
+      assert.match(combined, /Primary intent: change_impact/);
+      assert.match(combined, /Secondary intents: feature_flow/);
+      assert.strictEqual(result.retrievalIntentKind, "change_impact");
+      assert.strictEqual(result.retrievalRequiresExactEvidence, false);
+      assert.strictEqual(result.retrievalStopTarget, "enough_exact_evidence");
+      assert.strictEqual(result.retrievalStopReason, "enough_exact_evidence");
+      assert.deepStrictEqual(result.retrievalSecondaryIntents, [
+        "feature_flow",
+      ]);
+      assert.deepStrictEqual(result.retrievalPromptBlocks, [
+        "task_memory",
+        "open_findings",
+        "hybrid_retrieval",
+        "skeleton_retrieval",
+        "syntax_index",
+        "tool_evidence",
+        "workflow_graph_retrieval",
+        "semantic_retrieval",
+        "semantic_chunks",
+      ]);
+      assert.match(combined, /\[HYBRID RETRIEVAL\]/);
+      assert.match(combined, /\[SKELETON RETRIEVAL\]/);
+      assert.match(combined, /\[SYNTAX INDEX\]/);
+      assert.match(combined, /\[SEMANTIC RETRIEVAL\]/);
+      assert.match(combined, /\[WORKFLOW GRAPH RETRIEVAL\]/);
+      assert.match(combined, /\[OPEN FINDINGS TO CONTINUE\]/);
+      assert.doesNotMatch(combined, /\[MANUAL READ BATCHES\]/);
+      assert.doesNotMatch(combined, /\[READ PLAN PROGRESS\]/);
+      assert.doesNotMatch(combined, /\[MATCHED NODES\]/);
+      assert.doesNotMatch(combined, /\[GRAPH PATH\]/);
+      assert.doesNotMatch(combined, /\[WORKFLOW SUMMARIES\]/);
+      assert.doesNotMatch(combined, /\[TRACE NARRATIVES\]/);
+      assert.match(
+        combined,
+        /Confirm downstream queue consumer impact before editing the service\./,
+      );
+      assert.match(combined, /createCustomer/);
+      assert.match(combined, /insertCustomerRecord/);
+      assert.strictEqual(result.workflowRereadGuard?.enabled, false);
+      assert.doesNotMatch(combined, /\[PREVIOUS FINAL ASSISTANT CONCLUSION\]/);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("buildPromptContext escalates exact-impact queries to targeted rereads", async function () {
+    this.timeout(10_000);
+    const workspacePath = createTempWorkspace();
+    try {
+      seedCustomerWorkflowWorkspace(workspacePath);
+
+      const now = Date.now();
+      const result = await buildPromptContext({
+        agentType: "manual",
+        notes: "",
+        sessionMemory: createPromptSessionMemory(workspacePath, now, {
+          workspaceId: "change-impact-exact-test",
+          activeTaskMemory: {
+            filesTouched: Object.freeze([
+              "src/server/services/customer-service.ts",
+              "src/server/workers/customer-worker.ts",
+            ]),
+            pendingSteps: Object.freeze([
+              "Read the exact service and worker code before patching the retry bug.",
+            ]),
+            keyFiles: getCustomerWorkflowKeyFiles(),
+            recentTurnSummaries: Object.freeze([
+              "The retry bug likely spans the service and queue consumer, but exact edit locations are still unverified.",
+            ]),
+          },
+        }),
+        workingTurn: createPromptWorkingTurn(
+          now,
+          "Show the exact lines I need to change for the customer retry bug across the service and queue consumer.",
+          "turn-change-impact-exact",
+        ),
+      });
+
+      const combined = result.messages
+        .map((message) => message.content)
+        .join("\n\n");
+
+      assert.strictEqual(result.retrievalIntentKind, "change_impact");
+      assert.strictEqual(result.retrievalRequiresExactEvidence, true);
+      assert.strictEqual(result.confirmedReadCount, 0);
+      assert.strictEqual(result.retrievalStopTarget, "enough_exact_evidence");
+      assert.strictEqual(result.retrievalStopReason, "needs_targeted_reread");
+      assert.strictEqual(
+        result.retrievalPromptBlocks.includes("manual_read_batches"),
+        true,
+      );
+      assert.strictEqual(
+        result.retrievalPromptBlocks.includes("read_plan_progress"),
+        true,
+      );
+      assert.strictEqual(result.manualReadBatchItems.length > 0, true);
+      assert.match(combined, /\[MANUAL READ BATCHES\]/);
+      assert.match(combined, /\[READ PLAN PROGRESS\]/);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("buildPromptContext prioritizes continuity retrieval blocks for task-continuity queries", async function () {
+    this.timeout(10_000);
+    const workspacePath = createTempWorkspace();
+    try {
+      seedCustomerWorkflowWorkspace(workspacePath);
+
+      const now = Date.now();
+      const result = await buildPromptContext({
+        agentType: "manual",
+        notes: "",
+        sessionMemory: createPromptSessionMemory(workspacePath, now, {
+          workspaceId: "task-continuity-test",
+          activeTaskMemory: {
+            originalUserGoal:
+              "Fix the customer retry bug without retracing the whole system.",
+            currentObjective:
+              "Continue from the previous validated conclusion and isolate the retry cause.",
+            pendingSteps: Object.freeze([
+              "Confirm why the queue consumer retries twice.",
+            ]),
+            blockers: Object.freeze(["Retry cause is still unverified."]),
+            filesTouched: Object.freeze([
+              "src/server/services/customer-service.ts",
+              "src/server/workers/customer-worker.ts",
+            ]),
+            keyFiles: getCustomerWorkflowKeyFiles(),
+            recentTurnSummaries: Object.freeze([
+              "We already traced the controller, service, repository, db query, and queue consumer path.",
+            ]),
+            handoffSummary:
+              "Reuse the prior flow analysis and focus only on the retry bug.",
+          },
+          lastFinalAssistantConclusion:
+            "We already traced createCustomer from POST /api/customers through createCustomerController, createCustomer, insertCustomerRecord, db.query, and the customer.created queue consumer.",
+        }),
+        workingTurn: createPromptWorkingTurn(
+          now,
+          "Tiếp tục bug hôm qua ở src/server/services/customer-service.ts customer API controller repository queue consumer path, dùng lại kết luận trước thay vì phân tích lại từ đầu.",
+          "turn-task-continuity",
+        ),
+      });
+
+      const combined = result.messages
+        .map((message) => message.content)
+        .join("\n\n");
+      assert.match(combined, /\[RETRIEVAL STRATEGY\]/);
+      assert.match(combined, /Primary intent: task_continuity/);
+      assert.match(combined, /Secondary intents: change_impact, feature_flow/);
+      assert.strictEqual(result.retrievalIntentKind, "task_continuity");
+      assert.strictEqual(
+        result.retrievalStopTarget,
+        "enough_continuity_context",
+      );
+      assert.strictEqual(
+        result.retrievalStopReason,
+        "enough_continuity_context",
+      );
+      assert.deepStrictEqual(result.retrievalSecondaryIntents, [
+        "change_impact",
+        "feature_flow",
+      ]);
+      assert.deepStrictEqual(result.retrievalPromptBlocks, [
+        "task_memory",
+        "open_findings",
+        "tool_evidence",
+        "session_memory",
+        "previous_final_conclusion",
+        "workflow_graph_retrieval",
+        "manual_read_batches",
+      ]);
+      assert.match(combined, /\[PREVIOUS FINAL ASSISTANT CONCLUSION\]/);
+      assert.match(combined, /\[OPEN FINDINGS TO CONTINUE\]/);
+      assert.match(combined, /Confirm why the queue consumer retries twice\./);
+      assert.match(combined, /Retry cause is still unverified\./);
+      assert.doesNotMatch(combined, /\[MATCHED NODES\]/);
+      assert.doesNotMatch(combined, /\[GRAPH PATH\]/);
+      assert.doesNotMatch(combined, /\[WORKFLOW SUMMARIES\]/);
+      assert.doesNotMatch(combined, /\[TRACE NARRATIVES\]/);
+      assert.match(
+        combined,
+        /We already traced createCustomer from POST \/api\/customers through createCustomerController/i,
+      );
+      assert.match(combined, /\[WORKFLOW GRAPH RETRIEVAL\]/);
+      assert.strictEqual(result.workflowRereadGuard?.enabled, false);
+      assert.doesNotMatch(combined, /\[HYBRID RETRIEVAL\]/);
+      assert.doesNotMatch(combined, /\[SKELETON RETRIEVAL\]/);
+      assert.doesNotMatch(combined, /\[SYNTAX INDEX\]/);
+      assert.doesNotMatch(combined, /\[SEMANTIC RETRIEVAL\]/);
+      assert.doesNotMatch(combined, /\[SEMANTIC CHUNKS\]/);
+
+      const promptBuildTelemetry =
+        loadLatestPromptBuildTelemetry(workspacePath);
+      assert.strictEqual(promptBuildTelemetry.hybridCandidateCount, 0);
+      assert.strictEqual(promptBuildTelemetry.semanticCandidateCount, 0);
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("buildPromptContext backfills thin continuity prompts with semantic support", async function () {
+    this.timeout(10_000);
+    const workspacePath = createTempWorkspace();
+    try {
+      seedCustomerWorkflowWorkspace(workspacePath);
+
+      const now = Date.now();
+      const result = await buildPromptContext({
+        agentType: "manual",
+        notes: "",
+        sessionMemory: createPromptSessionMemory(workspacePath, now, {
+          workspaceId: "thin-continuity-test",
+          activeTaskMemory: {
+            currentObjective:
+              "Continue the retry-bug investigation from the prior validated conclusion.",
+            recentTurnSummaries: Object.freeze([
+              "We narrowed the retry bug but never refreshed the exact file anchor.",
+            ]),
+            handoffSummary:
+              "Reuse the prior retry-bug conclusion and reopen only the exact file that still matters.",
+          },
+          lastFinalAssistantConclusion:
+            "Continue from the previous retry-bug conclusion instead of retracing the whole system.",
+        }),
+        workingTurn: createPromptWorkingTurn(
+          now,
+          "Tiếp tục bug hôm qua ở src/server/services/customer-service.ts, dùng lại kết luận trước và tìm đúng chỗ cần mở lại.",
+          "turn-thin-continuity",
+        ),
+      });
+
+      const combined = result.messages
+        .map((message) => message.content)
+        .join("\n\n");
+      assert.strictEqual(result.retrievalIntentKind, "task_continuity");
+      assert.strictEqual(
+        result.retrievalStopReason,
+        "enough_continuity_context",
+      );
+      assert.doesNotMatch(combined, /\[SEMANTIC RETRIEVAL\]/);
+
+      const promptBuildTelemetry =
+        loadLatestPromptBuildTelemetry(workspacePath);
+      assert.strictEqual(promptBuildTelemetry.semanticCandidateCount > 0, true);
     } finally {
       cleanupTempWorkspace(workspacePath);
     }

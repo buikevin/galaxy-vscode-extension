@@ -191,6 +191,8 @@ export type ToolToggleKey =
   | "create_drawio_diagram"
   | "convert_drawio_diagram"
   | "export_drawio_diagram"
+  | "export_workflow_drawio_diagram"
+  | "export_workflow_mermaid_diagram"
   | "insert_file_at_line"
   | "edit_file_range"
   | "multi_edit_file_ranges"

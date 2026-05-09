@@ -103,8 +103,10 @@ ${
 
   if (capabilities.editFiles && promptHints.mentionsDiagrams) {
     sections.push(`### Diagrams
-- Prefer create_drawio_diagram for editable workspace diagrams the user may continue refining visually.
+- Prefer export_workflow_drawio_diagram when the user wants an editable workflow or architecture diagram generated from the existing workflow graph.
+- Prefer create_drawio_diagram for editable workspace diagrams the user may continue refining visually from scratch.
 - Prefer convert_drawio_diagram for editable .drawio.svg or .drawio.png outputs, and export_drawio_diagram for flat .svg or .png exports.
+- Prefer export_workflow_mermaid_diagram when the user wants a docs-friendly workflow or architecture flow generated from the existing workflow graph.
 - Use Mermaid mainly for inline markdown/docs diagrams, quick text-only sketches, or when the user explicitly asks for Mermaid.
 - When Draw.io convert/export tools run, tell the user the final Quick Pick or save dialog still belongs to the Draw.io extension.
 `);
