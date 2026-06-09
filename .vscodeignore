@@ -1,5 +1,6 @@
 .vscode/**
 .vscode-test/**
+.github/**
 .galaxy/**
 documents/**
 out/**
@@ -11,11 +12,14 @@ webview/**
 .yarnrc
 figma-imports.jsonl
 *.vsix
+ARCHITECTURE.md
+README_vi.md
 esbuild.js
 vite.config.ts
 tailwind.config.ts
 postcss.config.cjs
 vsc-extension-quickstart.md
+scripts/**
 bun.lock
 **/tsconfig.json
 **/tsconfig.webview.json

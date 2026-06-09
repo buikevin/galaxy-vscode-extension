@@ -1,0 +1,89 @@
+name: Publish Extension
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "pre-v*"
+  workflow_dispatch:
+    inputs:
+      releaseType:
+        description: "release | pre-release"
+        required: true
+        default: "release"
+        type: choice
+        options:
+          - release
+          - pre-release
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: true
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install Dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Validate VSCE_PAT
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "Missing VSCE_PAT secret. Add it in GitHub repo settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Verify Tag Matches package.json Version
+        if: github.event_name == 'push'
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG="${GITHUB_REF_NAME}"
+
+          if [[ "$TAG" == pre-v* ]]; then
+            EXPECTED="${TAG#pre-v}"
+          elif [[ "$TAG" == v* ]]; then
+            EXPECTED="${TAG#v}"
+          else
+            echo "Unsupported tag format: $TAG"
+            echo "Use v<version> or pre-v<version>."
+            exit 1
+          fi
+
+          if [[ "$EXPECTED" != "$PKG_VERSION" ]]; then
+            echo "Tag version mismatch."
+            echo "Tag implies version: $EXPECTED"
+            echo "package.json version: $PKG_VERSION"
+            exit 1
+          fi
+
+          echo "Version check passed: tag=$TAG package.json=$PKG_VERSION"
+
+      - name: Publish Release (tag v*)
+        if: startsWith(github.ref_name, 'v')
+        run: yarn run marketplace:publish:ci
+
+      - name: Publish Pre-release (tag pre-v*)
+        if: startsWith(github.ref_name, 'pre-v')
+        run: yarn run marketplace:publish:pre-release:ci
+
+      - name: Publish Release (manual)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.releaseType == 'release'
+        run: yarn run marketplace:publish:ci
+
+      - name: Publish Pre-release (manual)
+        if: github.event_name == 'workflow_dispatch' && github.event.inputs.releaseType == 'pre-release'
+        run: yarn run marketplace:publish:pre-release:ci
