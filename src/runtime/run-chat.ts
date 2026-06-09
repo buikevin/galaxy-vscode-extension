@@ -28,6 +28,10 @@ import type { HistoryManager } from "../context/entities/history-manager";
 import { scheduleWorkflowGraphRefresh } from "../context/workflow/extractor/runtime";
 import { noteFileTouchedForGraph } from "../context/workflow/extractor/touch-queue";
 import { evaluateWorkflowRereadGuard } from "../context/workflow/reread-guard";
+import {
+  buildSubagentRoleConfig,
+  getSubagentRoleDefinition,
+} from "../shared/subagents";
 import type {
   AgentType,
   ChatMessage,
@@ -37,10 +41,9 @@ import type { PendingActionApproval, RunResult } from "../shared/runtime";
 import { executeToolAsync } from "../tools/file/dispatch";
 import {
   getEnabledToolDefinitions,
-  isToolEnabled,
 } from "../tools/file/definitions";
-import { normalizeToolName } from "../tools/file/tooling";
-import type { FileToolContext, ToolCall } from "../tools/entities/file-tools";
+import { getToolFilePath, normalizeToolName } from "../tools/file/tooling";
+import type { FileToolContext, ToolCall, ToolResult } from "../tools/entities/file-tools";
 import { runCodeReviewTool } from "./code-reviewer";
 import { buildApprovalRequest, getBlockedCapability } from "./chat-approvals";
 import { createDriver } from "./driver-factory";
@@ -55,6 +58,214 @@ import { recordCodeEdit } from "../context/rag-metadata/code-edits";
 import { recordFileRead } from "../context/rag-metadata/file-reads";
 import { buildSystemPrompt } from "./system-prompt";
 import type { StreamChunk } from "../shared/runtime";
+import {
+  computeAdaptiveToolRoundLimit,
+  getToolRoundExtensionStep,
+  getToolRoundStallLimit,
+  isProductiveToolResult,
+} from "../shared/tool-budget";
+import { evaluateTestingCommandPolicy } from "../validation/workspace-topology";
+
+function shouldCompleteCodingAfterBoundaryTool(
+  role: string | undefined,
+  blockedCapability: string,
+  filesWrittenCount: number,
+): boolean {
+  const codingBoundaryCapabilities = new Set([
+    "runCommands",
+    "validation",
+    "review",
+    "webResearch",
+    "galaxyDesign",
+    "vscodeNative",
+  ]);
+  return (
+    role === "coding" &&
+    filesWrittenCount > 0 &&
+    codingBoundaryCapabilities.has(blockedCapability)
+  );
+}
+
+function buildBoundaryHandoffForBlockedTool(opts: {
+  role: string | undefined;
+  blockedCapability: string;
+  toolName: string;
+  filesWrittenCount: number;
+}): string | null {
+  if (
+    shouldCompleteCodingAfterBoundaryTool(
+      opts.role,
+      opts.blockedCapability,
+      opts.filesWrittenCount,
+    )
+  ) {
+    return "Coding changes were written. The blocked tool is outside the Coding Agent role boundary, so validation, review, web research, or environment execution is delegated to the next role that owns that capability.";
+  }
+  const readOnlyRoles = new Set(["ba", "profiler", "planning", "sa", "review"]);
+  const boundaryCapabilities = new Set([
+    "editFiles",
+    "runCommands",
+    "validation",
+    "review",
+  ]);
+  if (
+    opts.role &&
+    readOnlyRoles.has(opts.role) &&
+    boundaryCapabilities.has(opts.blockedCapability)
+  ) {
+    return [
+      `${opts.role} role attempted to use ${opts.toolName}, but that tool is outside the active role boundary.`,
+      "The blocked tool was not executed. Continue with the current role handoff and delegate implementation, validation, or review work to the next role that owns that capability.",
+    ].join(" ");
+  }
+  return null;
+}
+
+function buildUnavailableToolMessage(
+  toolName: string,
+  enabledToolNamesText: string,
+): string {
+  const guidance: string[] = [];
+  if (toolName === "edit" || toolName === "edit_file") {
+    guidance.push(
+      "For file edits, use multi_edit_file_ranges with one or more edits after a recent read_file result. For a coherent whole-file repair, read the file and use write_file with overwrite_existing=true.",
+    );
+  }
+  return [
+    `Tool call was not executed. Available tool names for this role are:\n${enabledToolNamesText}`,
+    "If the desired tool is not in this list, do not retry it with a synonym. Finish with write_agent_handoff when the needed capability belongs to another subagent role.",
+    ...guidance,
+  ].join("\n\n");
+}
+
+const VALIDATION_COMMAND_TOOLS = new Set([
+  "run_project_command",
+  "run_terminal_command",
+]);
+
+const READ_ONLY_HANDOFF_ROLES = new Set(["ba", "profiler", "planning", "sa", "review"]);
+const READ_ONLY_EVIDENCE_HANDOFF_THRESHOLD = Object.freeze({
+  ba: 4,
+  profiler: 6,
+  planning: 5,
+  sa: 6,
+  review: 4,
+} as const);
+
+function getReadOnlyEvidenceHandoffThreshold(role: string | undefined): number | null {
+  if (!role || !READ_ONLY_HANDOFF_ROLES.has(role)) {
+    return null;
+  }
+  return READ_ONLY_EVIDENCE_HANDOFF_THRESHOLD[role as keyof typeof READ_ONLY_EVIDENCE_HANDOFF_THRESHOLD] ?? null;
+}
+
+const VALIDATION_COMMAND_PATTERN = /\b(test|jest|vitest|typecheck|tsc|lint|eslint|build|check)\b/i;
+const TARGETED_EDIT_TOOLS = new Set([
+  "multi_edit_file_ranges",
+  "insert_file_at_line",
+]);
+const STALE_TARGETED_EDIT_PATTERN = /requires exact snapshot evidence|no longer matches the last read snapshot|read the file again/i;
+
+function inferValidationCommandCategory(command: string): string | null {
+  const lowered = command.trim().toLowerCase();
+  if (/\b(test|jest|vitest|playwright\s+test)\b/.test(lowered)) return "test";
+  if (/\b(typecheck|type-check|check-types|tsc)\b/.test(lowered)) return "static-check";
+  if (/\b(lint|eslint|biome|oxlint)\b/.test(lowered)) return "lint";
+  if (/\b(build|compile|next\s+build|vite\s+build|nest\s+build)\b/.test(lowered)) return "build";
+  if (/\b(npm|pnpm|yarn|bun)\s+(install|add|i)\b/.test(lowered)) return "setup";
+  return null;
+}
+
+function buildValidationCommandRetryKey(
+  toolName: string,
+  params: Readonly<Record<string, unknown>>,
+): string | null {
+  if (!VALIDATION_COMMAND_TOOLS.has(toolName)) {
+    return null;
+  }
+  const command = typeof params.command === "string"
+    ? params.command.replace(/\s+/g, " ").trim()
+    : "";
+  if (!command || !VALIDATION_COMMAND_PATTERN.test(command)) {
+    return null;
+  }
+  const cwd = typeof params.cwd === "string" && params.cwd.trim()
+    ? params.cwd.trim()
+    : ".";
+  return `${cwd} :: ${inferValidationCommandCategory(command) ?? "validation"}`;
+}
+
+function buildValidationRetryBlockedResult(key: string): ToolResult {
+  return Object.freeze({
+    success: false,
+    content: [
+      `Validation retry budget exhausted for ${key}.`,
+      "Record the latest command output and remaining blocker in write_agent_handoff instead of repeating the same package validation command.",
+    ].join("\n"),
+    error: "Repeated validation command failed in the same package.",
+    meta: Object.freeze({
+      validationRetryBlocked: true,
+      validationCommandKey: key,
+    }),
+  });
+}
+
+function shouldCompleteTestingAfterEnvironmentBlock(
+  role: string | undefined,
+  toolName: string,
+  result: ToolResult,
+): boolean {
+  if (role !== "testing") {
+    return false;
+  }
+  const meta = (result.meta ?? {}) as Readonly<Record<string, unknown>>;
+  if (meta.validationRetryBlocked === true) {
+    return true;
+  }
+  if (
+    meta.testingCommandBlocked === true &&
+    String(meta.category ?? "") === "setup"
+  ) {
+    return true;
+  }
+  if (!VALIDATION_COMMAND_TOOLS.has(toolName) || result.success) {
+    return false;
+  }
+  const text = `${result.error ?? ""}\n${result.content ?? ""}`;
+  return /(?:command not found|not found:|ERR_MODULE_NOT_FOUND|Cannot find package|Cannot find module|node_modules)/i.test(text);
+}
+
+function buildTestingEnvironmentBoundaryHandoff(toolName: string, result: ToolResult): string {
+  const meta = (result.meta ?? {}) as Readonly<Record<string, unknown>>;
+  const category = String(meta.category ?? "");
+  const packagePath = typeof meta.packagePath === "string" ? meta.packagePath : "";
+  return [
+    `Testing reached an environment/setup boundary while using ${toolName}${category ? ` (${category})` : ""}.`,
+    packagePath ? `Blocked scope: ${packagePath}.` : "",
+    "The command was not repeated. Testing should hand off the missing dependency/runtime/setup requirement and continue only with scopes already proven ready by the ProjectProfile/environment readiness evidence.",
+  ].filter(Boolean).join(" ");
+}
+
+function isStaleTargetedEditFailure(toolName: string, result: ToolResult, toolContent: string): boolean {
+  return (
+    !result.success &&
+    TARGETED_EDIT_TOOLS.has(toolName) &&
+    STALE_TARGETED_EDIT_PATTERN.test(`${result.error ?? ""}\n${toolContent}`)
+  );
+}
+
+function buildStaleTargetedEditRecoveryMessage(filePath: string, count: number): string {
+  const target = filePath || "the target file";
+  return [
+    `Stale targeted edit recovery (${count}): stop retrying the same range edit on ${target}.`,
+    "Read the current file again, then either use write_file with overwrite_existing=true for one coherent whole-file repair, or move on to remaining user-requested files/tests and hand off the blocker.",
+  ].join("\n");
+}
+
+function stringParam(params: Readonly<Record<string, unknown>>, name: string): string {
+  const value = params[name];
+  return typeof value === "string" ? value : "";
+}
 
 /**
  * Creates a stable-ish message id for transcript entries generated during one run.
@@ -63,6 +274,34 @@ import type { StreamChunk } from "../shared/runtime";
  */
 function createMessageId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildRuntimeAgentMetadata(
+  config: GalaxyConfig,
+  agentType: AgentType,
+): Readonly<{
+  agentRole: string;
+  agentModel: string;
+  phase: string;
+}> {
+  const roleId = config.activeSubagentRole;
+  const agentModel =
+    config.agent.find((agent) => agent.type === agentType)?.model ??
+    config.agent.find((agent) => agent.type === "manual")?.model ??
+    agentType;
+  if (roleId) {
+    const role = getSubagentRoleDefinition(roleId);
+    return Object.freeze({
+      agentRole: role.title,
+      agentModel,
+      phase: `Subagent: ${roleId}`,
+    });
+  }
+  return Object.freeze({
+    agentRole: "Main Agent",
+    agentModel,
+    phase: "Main turn",
+  });
 }
 
 /**
@@ -82,7 +321,15 @@ function formatToolResultContent(
   }>,
 ): string {
   if (!result.success) {
-    return `Error: ${result.error ?? (result.content || "Unknown error")}`;
+    const tailOutput =
+      typeof result.meta?.tailOutput === "string"
+        ? String(result.meta.tailOutput).trim()
+        : "";
+    const diagnosticOutput = result.content.trim() || tailOutput;
+    return [
+      `Error: ${result.error ?? "Unknown error"}`,
+      diagnosticOutput,
+    ].filter(Boolean).join("\n\n");
   }
 
   const commandState =
@@ -162,6 +409,7 @@ export async function runExtensionChat(opts: {
 }): Promise<RunResult> {
   const driver = createDriver(opts.config, opts.agentType, true);
   const workspacePath = opts.historyManager.getSessionMemory().workspacePath;
+  const runtimeMetadata = buildRuntimeAgentMetadata(opts.config, opts.agentType);
   appendTelemetryEvent(workspacePath, {
     kind: "capability_snapshot",
     source: "chat_turn",
@@ -174,13 +422,25 @@ export async function runExtensionChat(opts: {
     ),
   });
   const filesWritten = new Set<string>();
-  const maxToolRounds =
-    typeof opts.config.maxToolRounds === "number" &&
-    Number.isFinite(opts.config.maxToolRounds)
-      ? Math.max(1, Math.floor(opts.config.maxToolRounds))
-      : null;
+  let maxToolRounds = computeAdaptiveToolRoundLimit({
+    config: opts.config,
+    workspacePath,
+  });
+  const toolRoundExtensionStep = getToolRoundExtensionStep(opts.config);
+  const toolRoundStallLimit = getToolRoundStallLimit(opts.config);
+  let consecutiveNonProductiveRounds = 0;
+  let consecutiveUnavailableToolOnlyRounds = 0;
+  let boundaryHandoffText = "";
+  const validationCommandFailureCounts = new Map<string, number>();
+  const staleTargetedEditFailureCounts = new Map<string, number>();
+  const observedEvidenceKeys = new Set<string>();
+  const enabledToolDefinitions = getEnabledToolDefinitions(opts.config);
+  const enabledToolNameSet = new Set(enabledToolDefinitions.map((tool) => normalizeToolName(tool.name)));
+  const enabledToolNamesText = enabledToolDefinitions
+    .map((tool) => `- ${tool.name}`)
+    .join("\n") || "- none";
   const toolSchemaTokens = estimateTokens(
-    JSON.stringify(getEnabledToolDefinitions(opts.config)),
+    JSON.stringify(enabledToolDefinitions),
   );
 
   for (
@@ -268,6 +528,11 @@ export async function runExtensionChat(opts: {
     let roundThinking = "";
     let errorMessage = "";
     const pendingToolCalls: ToolCall[] = [];
+    const normalizedToolNamesThisRound: string[] = [];
+    let roundMadeProductiveProgress = false;
+    let roundExecutedKnownTools = false;
+    let roundBlockedUnavailableTool = false;
+    let shouldCompleteAfterBoundaryTool = false;
 
     await driver.chat(messages, async (chunk) => {
       if (chunk.type === "text") {
@@ -284,7 +549,9 @@ export async function runExtensionChat(opts: {
 
       if (chunk.type === "tool_call") {
         pendingToolCalls.push(chunk.call);
-        await opts.onStatus?.(`Tool: ${normalizeToolName(chunk.call.name)}`);
+        await opts.onStatus?.(
+          `${runtimeMetadata.agentRole} (${runtimeMetadata.agentModel}) tool: ${normalizeToolName(chunk.call.name)}`,
+        );
         return;
       }
 
@@ -328,6 +595,7 @@ export async function runExtensionChat(opts: {
       role: "assistant",
       content: roundText,
       agentType: opts.agentType,
+      ...runtimeMetadata,
       ...(roundThinking.trim() ? { thinking: roundThinking } : {}),
       toolCalls: Object.freeze(assistantToolCalls),
       timestamp: Date.now(),
@@ -343,17 +611,30 @@ export async function runExtensionChat(opts: {
       const call = pendingToolCalls[index]!;
       const toolCall = assistantToolCalls[index]!;
       const toolName = normalizeToolName(call.name);
+      normalizedToolNamesThisRound.push(toolName);
 
-      if (!isToolEnabled(toolName, opts.config)) {
+      if (!enabledToolNameSet.has(toolName)) {
+        roundBlockedUnavailableTool = true;
+        const blockedCapability = getBlockedCapability(toolName);
+        const blockedBoundaryHandoff = buildBoundaryHandoffForBlockedTool({
+          role: opts.config.activeSubagentRole,
+          blockedCapability,
+          toolName,
+          filesWrittenCount: filesWritten.size,
+        });
+        if (blockedBoundaryHandoff) {
+          shouldCompleteAfterBoundaryTool = true;
+          boundaryHandoffText = blockedBoundaryHandoff;
+        }
         appendTelemetryEvent(workspacePath, {
           kind: "blocked_tool",
           toolName,
-          capability: getBlockedCapability(toolName),
+          capability: blockedCapability,
         });
         const disabledToolMessage: ChatMessage = Object.freeze({
           id: createMessageId(),
           role: "tool",
-          content: `Error: ${toolName} is disabled in config.`,
+          content: buildUnavailableToolMessage(toolName, enabledToolNamesText),
           timestamp: Date.now(),
           toolName,
           toolParams: Object.freeze(call.params),
@@ -365,6 +646,7 @@ export async function runExtensionChat(opts: {
         continue;
       }
 
+      roundExecutedKnownTools = true;
       const approvalRequest = buildApprovalRequest({
         workspacePath,
         config: opts.config,
@@ -464,7 +746,9 @@ export async function runExtensionChat(opts: {
         continue;
       }
 
-      await opts.onStatus?.(`Executing: ${toolName}`);
+      await opts.onStatus?.(
+        `${runtimeMetadata.agentRole} (${runtimeMetadata.agentModel}) executing: ${toolName}`,
+      );
       const shouldTrackWorkspaceChanges = [
         "run_project_command",
         "galaxy_design_init",
@@ -473,27 +757,120 @@ export async function runExtensionChat(opts: {
       const workspaceSnapshotBefore = shouldTrackWorkspaceChanges
         ? captureWorkspaceSnapshot(workspacePath)
         : null;
-      const result =
-        toolName === "request_code_review"
-          ? await runCodeReviewTool({
-              workspacePath,
-              sessionFiles: getSessionFiles(),
-              config: opts.config,
-              agentType: opts.agentType,
-            })
-          : await executeToolAsync(
-              Object.freeze({
-                ...call,
-                params: Object.freeze({
-                  ...call.params,
-                  ...(toolName === "run_project_command" ||
-                  toolName === "run_terminal_command"
-                    ? { toolCallId: toolCall.id }
-                    : {}),
-                }),
+      const validationRetryKey = opts.config.activeSubagentRole === "testing"
+        ? buildValidationCommandRetryKey(toolName, call.params)
+        : null;
+      const testingCommandPolicy = opts.config.activeSubagentRole === "testing" && VALIDATION_COMMAND_TOOLS.has(toolName)
+        ? evaluateTestingCommandPolicy(
+            workspacePath,
+            stringParam(call.params, "command") || stringParam(call.params, "commandId"),
+            stringParam(call.params, "cwd") || ".",
+          )
+        : null;
+      let result: ToolResult =
+        testingCommandPolicy && !testingCommandPolicy.allowed
+          ? {
+              success: false,
+              content: testingCommandPolicy.reason ?? "Testing command blocked by validation topology.",
+              error: "Testing command blocked by validation topology.",
+              meta: Object.freeze({
+                testingCommandBlocked: true,
+                category: testingCommandPolicy.category,
+                packagePath: testingCommandPolicy.packagePath,
               }),
-              opts.toolContext,
-            );
+            }
+          : validationRetryKey && (validationCommandFailureCounts.get(validationRetryKey) ?? 0) >= 2
+          ? buildValidationRetryBlockedResult(validationRetryKey)
+          : toolName === "request_code_review"
+            ? await runCodeReviewTool({
+                workspacePath,
+                sessionFiles: getSessionFiles(),
+                config: opts.config.subagent
+                  ? buildSubagentRoleConfig(opts.config, "review")
+                  : opts.config,
+                agentType: opts.agentType,
+              })
+            : await executeToolAsync(
+                Object.freeze({
+                  ...call,
+                  params: Object.freeze({
+                    ...call.params,
+                    ...(toolName === "run_project_command" ||
+                    toolName === "run_terminal_command"
+                      ? { toolCallId: toolCall.id }
+                      : {}),
+                  }),
+                }),
+                opts.toolContext,
+              );
+      if (validationRetryKey) {
+        if (result.success) {
+          validationCommandFailureCounts.delete(validationRetryKey);
+        } else {
+          validationCommandFailureCounts.set(
+            validationRetryKey,
+            (validationCommandFailureCounts.get(validationRetryKey) ?? 0) + 1,
+          );
+        }
+      }
+      let toolContent = formatToolResultContent(toolName, result);
+      if (
+        !shouldCompleteAfterBoundaryTool &&
+        shouldCompleteTestingAfterEnvironmentBlock(
+          opts.config.activeSubagentRole,
+          toolName,
+          result,
+        )
+      ) {
+        shouldCompleteAfterBoundaryTool = true;
+        boundaryHandoffText = buildTestingEnvironmentBoundaryHandoff(toolName, result);
+        appendTelemetryEvent(workspacePath, {
+          kind: "blocked_tool",
+          toolName,
+          capability: "testingEnvironmentBoundary",
+        });
+      }
+      if (opts.config.activeSubagentRole === "coding" && isStaleTargetedEditFailure(toolName, result, toolContent)) {
+        const staleFilePath = getToolFilePath(call as ToolCall);
+        const staleKey = `${toolName}:${staleFilePath || "unknown"}`;
+        const staleCount = (staleTargetedEditFailureCounts.get(staleKey) ?? 0) + 1;
+        staleTargetedEditFailureCounts.set(staleKey, staleCount);
+        const recoveryMessage = buildStaleTargetedEditRecoveryMessage(staleFilePath, staleCount);
+        result = Object.freeze({
+          ...result,
+          content: [result.content ?? "", recoveryMessage].filter((part) => part.trim()).join("\n\n"),
+          meta: Object.freeze({
+            ...(result.meta ?? {}),
+            staleTargetedEditFailure: true,
+            staleTargetedEditCount: staleCount,
+            ...(staleFilePath ? { filePath: staleFilePath } : {}),
+          }),
+        });
+        toolContent = formatToolResultContent(toolName, result);
+        if (filesWritten.size > 0 && staleCount >= 3) {
+          shouldCompleteAfterBoundaryTool = true;
+          boundaryHandoffText = [
+            "Coding changes were partially written, but repeated stale targeted edits on the same file indicate the Coding Agent is stuck on edit mechanics.",
+            "Stop Coding here. The next role should read the current workspace, verify all user-requested source/test/config files exist, create any missing test files, and run validation/repair from current evidence.",
+          ].join(" ");
+          appendTelemetryEvent(workspacePath, {
+            kind: "blocked_tool",
+            toolName,
+            capability: "staleTargetedEditStall",
+          });
+        }
+      }
+      if (isProductiveToolResult({
+        role: opts.config.activeSubagentRole,
+        toolName,
+        success: result.success,
+        params: call.params,
+        content: result.success ? result.content : toolContent,
+        observedEvidenceKeys,
+        ...(result.meta ? { meta: result.meta } : {}),
+      })) {
+        roundMadeProductiveProgress = true;
+      }
       opts.historyManager.appendToolEvidence({
         call: Object.freeze({
           name: toolName,
@@ -710,11 +1087,16 @@ export async function runExtensionChat(opts: {
       const toolMessage: ChatMessage = Object.freeze({
         id: createMessageId(),
         role: "tool",
-        content: formatToolResultContent(toolName, result),
+        content: toolContent,
         timestamp: Date.now(),
         toolName,
         toolParams: Object.freeze(call.params),
-        ...(result.meta ? { toolMeta: result.meta } : {}),
+        toolMeta: Object.freeze({
+          ...(result.meta ?? {}),
+          agentRole: runtimeMetadata.agentRole,
+          agentModel: runtimeMetadata.agentModel,
+          phase: runtimeMetadata.phase,
+        }),
         toolSuccess: result.success,
         toolCallId: toolCall.id,
       });
@@ -723,13 +1105,78 @@ export async function runExtensionChat(opts: {
       await opts.onMessage(toolMessage);
     }
 
+    const readOnlyEvidenceThreshold = getReadOnlyEvidenceHandoffThreshold(opts.config.activeSubagentRole);
+    if (
+      !shouldCompleteAfterBoundaryTool &&
+      readOnlyEvidenceThreshold !== null &&
+      filesWritten.size === 0 &&
+      observedEvidenceKeys.size >= readOnlyEvidenceThreshold &&
+      !normalizedToolNamesThisRound.includes("write_agent_handoff")
+    ) {
+      shouldCompleteAfterBoundaryTool = true;
+      boundaryHandoffText = [
+        `${opts.config.activeSubagentRole} role collected ${observedEvidenceKeys.size} distinct evidence item(s) without emitting an explicit handoff.`,
+        "Stop this read-only role here and continue with the next subagent using the collected transcript evidence. Implementation, validation, and review work remain delegated to their own roles.",
+      ].join(" ");
+      appendTelemetryEvent(workspacePath, {
+        kind: "blocked_tool",
+        toolName: normalizedToolNamesThisRound.join(",") || "read_only_evidence",
+        capability: "readOnlyEvidenceHandoffFallback",
+      });
+    }
+
     opts.historyManager.incrementRound();
+    const roundOnlyUnavailableToolCalls =
+      pendingToolCalls.length > 0 &&
+      roundBlockedUnavailableTool &&
+      !roundExecutedKnownTools;
+    consecutiveUnavailableToolOnlyRounds = roundOnlyUnavailableToolCalls
+      ? consecutiveUnavailableToolOnlyRounds + 1
+      : 0;
+    if (
+      !shouldCompleteAfterBoundaryTool &&
+      opts.config.activeSubagentRole === "coding" &&
+      filesWritten.size > 0 &&
+      consecutiveUnavailableToolOnlyRounds >= 2
+    ) {
+      shouldCompleteAfterBoundaryTool = true;
+      boundaryHandoffText = "Coding changes were written, but the model repeatedly requested unavailable tools outside the Coding Agent schema. Stop Coding here and delegate validation, review, or environment execution to the next role that owns that capability.";
+      appendTelemetryEvent(workspacePath, {
+        kind: "blocked_tool",
+        toolName: normalizedToolNamesThisRound.join(",") || "unavailable_tool",
+        capability: "roleBoundaryStall",
+      });
+    }
+    if (shouldCompleteAfterBoundaryTool) {
+      return Object.freeze({
+        assistantText: boundaryHandoffText,
+        assistantThinking: "",
+        filesWritten: Object.freeze([...filesWritten]),
+      });
+    }
+    consecutiveNonProductiveRounds = roundMadeProductiveProgress
+      ? 0
+      : consecutiveNonProductiveRounds + 1;
+    if (
+      maxToolRounds !== null &&
+      round + 1 >= maxToolRounds
+    ) {
+      const canRecoverFromStall =
+        consecutiveNonProductiveRounds < toolRoundStallLimit &&
+        roundExecutedKnownTools;
+      if (roundMadeProductiveProgress || canRecoverFromStall) {
+        const extensionStep = roundMadeProductiveProgress
+          ? toolRoundExtensionStep
+          : Math.max(2, Math.floor(toolRoundExtensionStep / 2));
+        maxToolRounds += extensionStep;
+      }
+    }
   }
 
   return Object.freeze({
     assistantText: "",
     assistantThinking: "",
-    errorMessage: `Agent exceeded the configured maximum tool rounds (${maxToolRounds ?? "unlimited"}).`,
+    errorMessage: `Agent exceeded the adaptive tool budget (${maxToolRounds ?? "unlimited"}) after ${consecutiveNonProductiveRounds} non-productive round(s).`,
     filesWritten: Object.freeze([...filesWritten]),
   });
 }

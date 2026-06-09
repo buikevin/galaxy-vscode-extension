@@ -49,6 +49,11 @@ export function MessageCard(props: MessageCardProps) {
   const metaClassName = isUser
     ? "text-[color:color-mix(in_srgb,var(--gc-foreground)_72%,transparent)]"
     : "text-[color:var(--gc-muted)]";
+  const metadataBadges = [
+    props.message.phase,
+    props.message.agentRole,
+    props.message.agentModel,
+  ].filter((value): value is string => Boolean(value?.trim()));
 
   return (
     <div className={`w-full min-w-0 max-w-full overflow-x-hidden ${wrapperClassName}`}>
@@ -59,6 +64,15 @@ export function MessageCard(props: MessageCardProps) {
               <span className="truncate text-[11px] font-semibold uppercase tracking-[0.08em]">
                 {props.titleLabel}
               </span>
+              {metadataBadges.map((badge) => (
+                <span
+                  key={badge}
+                  className="max-w-[180px] truncate rounded-full border border-[color:var(--gc-border)] bg-[var(--gc-surface)] px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal text-[color:var(--gc-muted)]"
+                  title={badge}
+                >
+                  {badge}
+                </span>
+              ))}
               {props.pending ? (
                 <span className="rounded-full bg-[color:color-mix(in_srgb,var(--gc-surface)_92%,transparent)] px-2 py-0.5 text-[10px] font-medium normal-case tracking-normal">
                   Đang gửi

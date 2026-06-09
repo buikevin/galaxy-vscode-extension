@@ -204,17 +204,29 @@ export type InsertFileAtLineRequest = Readonly<{
 
 export type MultiEditFileRange = Readonly<{
   /** 1-based starting line to replace. */
-  start_line: number;
+  start_line?: number;
+  /** 1-based starting line to replace. */
+  startLine?: number;
   /** 1-based ending line to replace. */
-  end_line: number;
+  end_line?: number;
+  /** 1-based ending line to replace. */
+  endLine?: number;
   /** Replacement content for the target range. */
-  new_content: string;
+  new_content?: string;
+  /** Replacement content for the target range. */
+  newContent?: string;
   /** Exact content previously read for the target range. */
   expected_range_content?: string;
+  /** Exact content previously read for the target range. */
+  expectedRangeContent?: string;
   /** Exact line expected immediately before the target range. */
   anchor_before?: string;
+  /** Exact line expected immediately before the target range. */
+  anchorBefore?: string;
   /** Exact line expected immediately after the target range. */
   anchor_after?: string;
+  /** Exact line expected immediately after the target range. */
+  anchorAfter?: string;
 }>;
 
 export type WebSearchToolOptions = Readonly<{

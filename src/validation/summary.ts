@@ -9,6 +9,40 @@
 import { appendTelemetryEvent } from '../context/telemetry';
 import type { FinalValidationResult, ValidationCommand, ValidationProfileId } from '../shared/validation';
 
+const DEFAULT_VALIDATION_OUTPUT_PREVIEW_CHARS = 6000;
+
+/**
+ * Builds a bounded validation output preview that preserves the failure tail.
+ *
+ * Many test runners print passing tests first and the actionable compiler/runtime
+ * error near the end. Head-only truncation hides the real failure, so this keeps
+ * a small header plus a larger tail without assuming a language or framework.
+ *
+ * @param rawOutput Raw command output.
+ * @param maxChars Maximum characters to return.
+ * @returns Bounded diagnostic preview.
+ */
+export function formatValidationOutputPreview(
+  rawOutput: string,
+  maxChars = DEFAULT_VALIDATION_OUTPUT_PREVIEW_CHARS,
+): string {
+  const normalized = rawOutput.replace(/\r\n/g, '\n').trim();
+  if (!normalized || normalized.length <= maxChars) {
+    return normalized;
+  }
+
+  const markerBudget = 96;
+  const headChars = Math.max(400, Math.min(1200, Math.floor(maxChars * 0.22)));
+  const tailChars = Math.max(400, maxChars - headChars - markerBudget);
+  const omittedChars = Math.max(0, normalized.length - headChars - tailChars);
+
+  return [
+    normalized.slice(0, headChars).trimEnd(),
+    `...[truncated ${omittedChars} chars; showing tail for diagnostics]...`,
+    normalized.slice(-tailChars).trimStart(),
+  ].join('\n');
+}
+
 /**
  * Builds a human-readable summary of how the validator chose project commands.
  *
@@ -55,8 +89,13 @@ export function formatValidationSummary(result: FinalValidationResult): string {
   const lines: string[] = ['---', `Validation (${result.mode})`, '', result.summary];
   result.runs.forEach((run) => {
     lines.push(`- ${run.success ? 'PASS' : 'FAIL'} [${run.profile}/${run.category}] \`${run.command}\``);
+    run.issues
+      .filter((issue) => issue.severity === 'warning')
+      .forEach((issue) => {
+        lines.push(`  - WARNING: ${issue.message}`);
+      });
     if (!run.success && run.rawOutputPreview.trim()) {
-      lines.push('', '```text', run.rawOutputPreview.slice(0, 2000), '```');
+      lines.push('', '```text', formatValidationOutputPreview(run.rawOutputPreview), '```');
     }
   });
   return lines.join('\n').trim();

@@ -24,6 +24,10 @@ import {
   selectNodeValidationScripts,
 } from "./node";
 import { detectValidationProfiles, hasTrackedExtension } from "./profiles";
+import {
+  buildWorkspaceValidationTopology,
+  selectValidationPackagesForFiles,
+} from "./workspace-topology";
 
 /**
  * Reads a text file for validation heuristics and returns an empty string when unavailable.
@@ -76,12 +80,78 @@ function addProjectCommand(
   seen: Set<string>,
   command: ValidationCommand,
 ): void {
-  const dedupeKey = `${command.category}:${command.command}`;
+  const dedupeKey = `${command.category}:${command.cwd}:${command.command}`;
   if (seen.has(dedupeKey)) {
     return;
   }
   seen.add(dedupeKey);
   commands.push(command);
+}
+
+function sanitizeId(value: string): string {
+  return value.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "") || "root";
+}
+
+function addNodePackageValidationCommands(opts: {
+  commands: ValidationCommand[];
+  seenCommands: Set<string>;
+  packagePath: string;
+  packageIdPrefix: string;
+  sessionFiles: readonly TrackedFile[];
+  validationPreferences?: ValidationPreferencesConfig | undefined;
+}): void {
+  const packageScripts = parsePackageScripts(opts.packagePath);
+  const packageDependencyNames = parsePackageDependencyNames(opts.packagePath);
+  const nodePackageManager = detectNodePackageManager(opts.packagePath);
+  const profiles = new Set(detectValidationProfiles(opts.packagePath, opts.sessionFiles));
+  const selectedNodeScripts =
+    profiles.has("javascript") || profiles.has("typescript")
+      ? selectNodeValidationScripts(packageScripts, profiles, opts.validationPreferences)
+      : Object.freeze([]);
+
+  selectedNodeScripts.forEach((candidate) => {
+    addProjectCommand(opts.commands, opts.seenCommands, {
+      id: `${opts.packageIdPrefix}-${nodePackageManager}-${candidate.category}-${sanitizeId(candidate.scriptName)}`,
+      label: buildNodeScriptCommand(nodePackageManager, candidate.scriptName),
+      command: buildNodeScriptCommand(nodePackageManager, candidate.scriptName),
+      cwd: opts.packagePath,
+      kind: "project",
+      profile: candidate.profile,
+      category: candidate.category,
+    });
+  });
+
+  if (
+    (profiles.has("javascript") || profiles.has("typescript")) &&
+    !packageScripts.lint &&
+    packageDependencyNames.has("eslint")
+  ) {
+    addProjectCommand(opts.commands, opts.seenCommands, {
+      id: `${opts.packageIdPrefix}-${nodePackageManager}-eslint-fallback`,
+      label: buildNodeExecCommand(nodePackageManager, "eslint", ["."]),
+      command: buildNodeExecCommand(nodePackageManager, "eslint", ["."]),
+      cwd: opts.packagePath,
+      kind: "project",
+      profile: profiles.has("typescript") ? "typescript" : "javascript",
+      category: "lint",
+    });
+  }
+
+  if (
+    profiles.has("typescript") &&
+    hasFile(opts.packagePath, "tsconfig.json") &&
+    !selectedNodeScripts.some((candidate) => candidate.category === "static-check")
+  ) {
+    addProjectCommand(opts.commands, opts.seenCommands, {
+      id: `${opts.packageIdPrefix}-${nodePackageManager}-tsc-noemit`,
+      label: buildNodeExecCommand(nodePackageManager, "tsc", ["--noEmit"]),
+      command: buildNodeExecCommand(nodePackageManager, "tsc", ["--noEmit"]),
+      cwd: opts.packagePath,
+      kind: "project",
+      profile: "typescript",
+      category: "static-check",
+    });
+  }
 }
 
 /**
@@ -174,6 +244,25 @@ export function detectProjectCommands(
       kind: "project",
       profile: "typescript",
       category: "static-check",
+    });
+  }
+
+  const topology = buildWorkspaceValidationTopology(workspacePath);
+  for (const pkg of selectValidationPackagesForFiles(topology, sessionFiles)) {
+    if (pkg.path === workspacePath) {
+      continue;
+    }
+    const packageSessionFiles = sessionFiles.filter((file) => {
+      const absoluteFile = path.resolve(file.filePath);
+      return absoluteFile === pkg.path || absoluteFile.startsWith(`${pkg.path}${path.sep}`);
+    });
+    addNodePackageValidationCommands({
+      commands,
+      seenCommands,
+      packagePath: pkg.path,
+      packageIdPrefix: sanitizeId(pkg.relativePath),
+      sessionFiles: packageSessionFiles.length > 0 ? packageSessionFiles : sessionFiles,
+      validationPreferences,
     });
   }
 

@@ -20,6 +20,7 @@ import {
   MAX_AUTO_REPAIR_ATTEMPTS,
   MAX_AUTO_REVIEW_REPAIR_ATTEMPTS,
 } from "../shared/constants";
+import { buildSubagentRoleConfig } from "../shared/subagents";
 import type {
   ProjectMeta,
   ProjectStorageInfo,
@@ -47,6 +48,13 @@ const DOC_ONLY_EXTENSIONS = new Set([
   ".rst",
   ".adoc",
 ]);
+
+function buildQualityRoleConfig(
+  config: GalaxyConfig,
+  roleId: "testing" | "review" | "coding",
+): GalaxyConfig {
+  return config.subagent ? buildSubagentRoleConfig(config, roleId) : config;
+}
 
 /** Returns whether one tracked file should be treated as documentation-only for quality gating. */
 export function isDocumentationOnlyTrackedFile(filePath: string): boolean {
@@ -236,10 +244,14 @@ export async function runValidationAndReviewFlow(
         `Running blocking validation quality gate for ${sessionFiles.length} changed files.`,
       );
       await params.callbacks.updateStatus("Running validation quality gate");
+      const validationAgentConfig = buildQualityRoleConfig(
+        params.callbacks.getEffectiveConfig(),
+        "testing",
+      );
       const validationResult = await runFinalValidation({
         workspacePath: params.workspacePath,
         sessionFiles,
-        config: params.callbacks.getEffectiveConfig(),
+        config: validationAgentConfig,
         streamCallbacks: {
           onStart: async (payload) =>
             params.callbacks.emitCommandStreamStart(payload),
@@ -312,7 +324,10 @@ export async function runValidationAndReviewFlow(
         );
 
         const repairResult = await params.callbacks.runInternalRepairTurn({
-          config: params.callbacks.getEffectiveConfig(),
+          config: buildQualityRoleConfig(
+            params.callbacks.getEffectiveConfig(),
+            "testing",
+          ),
           agentType: params.agentType,
           userMessage: buildValidationRepairMessage(
             validationResult,
@@ -335,10 +350,14 @@ export async function runValidationAndReviewFlow(
         "review",
         "Running blocking review quality gate...",
       );
+      const reviewAgentConfig = buildQualityRoleConfig(
+        params.callbacks.getEffectiveConfig(),
+        "review",
+      );
       const reviewResult = await runCodeReview({
         workspacePath: params.workspacePath,
         sessionFiles,
-        config: params.callbacks.getEffectiveConfig(),
+        config: reviewAgentConfig,
         agentType: params.agentType,
         ...(validationSummary ? { validationSummary } : {}),
       });
@@ -420,7 +439,10 @@ export async function runValidationAndReviewFlow(
           );
 
           const repairResult = await params.callbacks.runInternalRepairTurn({
-            config: params.callbacks.getEffectiveConfig(),
+            config: buildQualityRoleConfig(
+              params.callbacks.getEffectiveConfig(),
+              "coding",
+            ),
             agentType: params.agentType,
             userMessage: buildReviewRepairMessage(
               reviewResult,

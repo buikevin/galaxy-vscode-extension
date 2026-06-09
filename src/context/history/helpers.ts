@@ -44,6 +44,70 @@ export function summarizeText(text: string, maxChars = 400): string {
     : normalized;
 }
 
+const MEMORY_SECTION_HEADERS_TO_DROP = new Set([
+  "AVAILABLE TOOLS",
+  "QUALITY TOOL GUIDANCE",
+  "HANDOFF OUTPUT CONTRACT",
+  "RULES",
+]);
+
+function extractPromptSection(content: string, header: string): string {
+  const marker = `[${header}]`;
+  const start = content.indexOf(marker);
+  if (start < 0) {
+    return "";
+  }
+  const bodyStart = start + marker.length;
+  const rest = content.slice(bodyStart);
+  const nextHeader = rest.match(/\n\[[A-Z0-9 _-]+\]/);
+  return (
+    nextHeader && typeof nextHeader.index === "number"
+      ? rest.slice(0, nextHeader.index)
+      : rest
+  ).trim();
+}
+
+function stripMemoryControlSections(content: string): string {
+  const lines: string[] = [];
+  let dropping = false;
+  for (const line of content.split(/\r?\n/)) {
+    const header = line.trim().match(/^\[([A-Z0-9 _-]+)\]$/)?.[1];
+    if (header) {
+      dropping = MEMORY_SECTION_HEADERS_TO_DROP.has(header);
+      if (!dropping) {
+        lines.push(line);
+      }
+      continue;
+    }
+    if (!dropping) {
+      lines.push(line);
+    }
+  }
+  return lines.join("\n").trim();
+}
+
+export function sanitizeMemoryUserMessage(userMessage: string): string {
+  const roleTitle = userMessage.match(/You are the ([^\n.]+)\./)?.[1]?.trim();
+  const originalRequest = extractPromptSection(userMessage, "ORIGINAL USER REQUEST");
+  const scope = extractPromptSection(userMessage, "YOUR SCOPE FOR THIS TURN");
+  if (userMessage.includes("[SYSTEM SUBTASK EXECUTION]") || roleTitle) {
+    const lines = ["[SUBAGENT MEMORY]"];
+    if (roleTitle) {
+      lines.push(`Role: ${roleTitle}`);
+    }
+    if (originalRequest) {
+      lines.push(`Original request: ${summarizeText(originalRequest, 1_000)}`);
+    }
+    if (scope) {
+      lines.push(`Scope: ${summarizeText(scope, 500)}`);
+    }
+    if (lines.length > 1) {
+      return lines.join("\n");
+    }
+  }
+  return summarizeText(stripMemoryControlSections(userMessage), 1_200);
+}
+
 /**
  * Reads a string-valued tool parameter from a chat message.
  *
@@ -399,7 +463,7 @@ export function compactProjectMemory(memory: ProjectMemory): ProjectMemory {
  */
 export function createSessionSummaryLine(digest: TurnDigest): string {
   return [
-    summarizeText(digest.userMessage, 120),
+    summarizeText(sanitizeMemoryUserMessage(digest.userMessage), 120),
     summarizeText(digest.assistantSummary, 160),
     digest.filesTouched.length > 0
       ? `files=${digest.filesTouched.slice(0, 5).join(", ")}`

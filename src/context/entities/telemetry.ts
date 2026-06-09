@@ -95,6 +95,27 @@ export type MultiAgentPlanTelemetryEvent = Readonly<{
   filesWritten: number;
 }>;
 
+export type SubagentRoutingTelemetryEvent = Readonly<{
+  /** Stable event identifier. */
+  id: string;
+  /** Discriminator for subagent routing telemetry. */
+  kind: "subagent_routing";
+  /** Timestamp when the event was captured. */
+  capturedAt: number;
+  /** Whether subagent orchestration was enabled for the turn. */
+  enabled: boolean;
+  /** Agent provider active when routing was evaluated. */
+  agentType: string;
+  /** Whether the request was routed to a selective subagent plan. */
+  routed: boolean;
+  /** Short human-readable reason for the routing decision. */
+  reason: string;
+  /** Role ids selected for the plan, if any. */
+  roles: readonly string[];
+  /** Number of subtasks selected for the plan, if any. */
+  subtaskCount: number;
+}>;
+
 export type SubAgentTurnTelemetryEvent = Readonly<{
   /** Stable event identifier. */
   id: string;
@@ -108,6 +129,23 @@ export type SubAgentTurnTelemetryEvent = Readonly<{
   filesWritten: number;
   /** Whether the sub-agent encountered an error. */
   hadError: boolean;
+}>;
+
+export type ClarificationRequestedTelemetryEvent = Readonly<{
+  /** Stable event identifier. */
+  id: string;
+  /** Discriminator for clarification telemetry. */
+  kind: "clarification_requested";
+  /** Timestamp when the event was captured. */
+  capturedAt: number;
+  /** Agent provider active when the clarification was requested. */
+  agentType: string;
+  /** Missing decision ids that blocked implementation. */
+  decisions: readonly string[];
+  /** Number of options presented to the user. */
+  optionCount: number;
+  /** Human-readable reason for asking instead of guessing. */
+  reason: string;
 }>;
 
 export type UserRevertTelemetryEvent = Readonly<{
@@ -190,7 +228,9 @@ export type TelemetryEvent =
   | WorkingTurnCompactedTelemetryEvent
   | ToolEvidenceTelemetryEvent
   | MultiAgentPlanTelemetryEvent
+  | SubagentRoutingTelemetryEvent
   | SubAgentTurnTelemetryEvent
+  | ClarificationRequestedTelemetryEvent
   | UserRevertTelemetryEvent
   | CapabilitySnapshotTelemetryEvent
   | ValidationSelectionTelemetryEvent
@@ -202,7 +242,9 @@ export type TelemetryEventInput =
   | Omit<WorkingTurnCompactedTelemetryEvent, "id" | "capturedAt">
   | Omit<ToolEvidenceTelemetryEvent, "id" | "capturedAt">
   | Omit<MultiAgentPlanTelemetryEvent, "id" | "capturedAt">
+  | Omit<SubagentRoutingTelemetryEvent, "id" | "capturedAt">
   | Omit<SubAgentTurnTelemetryEvent, "id" | "capturedAt">
+  | Omit<ClarificationRequestedTelemetryEvent, "id" | "capturedAt">
   | Omit<UserRevertTelemetryEvent, "id" | "capturedAt">
   | Omit<CapabilitySnapshotTelemetryEvent, "id" | "capturedAt">
   | Omit<ValidationSelectionTelemetryEvent, "id" | "capturedAt">
@@ -232,8 +274,14 @@ export type TelemetrySummary = Readonly<{
   multiAgentPlans: number;
   /** Number of successful multi-agent plans. */
   multiAgentSuccesses: number;
+  /** Number of subagent routing decisions recorded. */
+  subagentRoutingDecisions: number;
+  /** Number of routing decisions that activated a subagent plan. */
+  subagentRoutedTurns: number;
   /** Number of sub-agent turns executed. */
   subAgentTurns: number;
+  /** Number of blocking clarification requests shown to the user. */
+  clarificationRequests: number;
   /** Number of user revert events observed. */
   userReverts: number;
   /** Number of capability snapshot events recorded. */

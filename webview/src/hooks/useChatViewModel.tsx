@@ -15,6 +15,7 @@ import type {
   FigmaAttachment,
   QualityDetails,
   QualityPreferences,
+  SubagentPreferences,
   ToolCapabilities,
   ToolToggles,
   WebviewMessage,
@@ -70,6 +71,8 @@ type UseChatViewModelOptions = Readonly<{
   shellNow: number;
   /** Review/validate/full-access settings mirrored from the host. */
   qualityPreferences: QualityPreferences;
+  /** Subagent enablement and per-role model preferences. */
+  subagentPreferences: SubagentPreferences;
   /** Latest quality details including persisted review findings. */
   qualityDetails: QualityDetails;
   /** Capability groups shown in Configure Tools. */
@@ -144,6 +147,8 @@ type UseChatViewModelOptions = Readonly<{
   handleComposerPaste: ComposerContextValue["onPaste"];
   /** Update quality preferences. */
   updateQualityPreferences: (next: QualityPreferences) => void;
+  /** Update subagent preferences. */
+  updateSubagentPreferences: (next: SubagentPreferences) => void;
   /** Update tool capability preferences. */
   updateToolCapabilities: (next: ToolCapabilities) => void;
   /** Update individual tool preferences. */
@@ -357,6 +362,7 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
     selectedAgent: options.selectedAgent,
     agents: options.agents,
     qualityPreferences: options.qualityPreferences,
+    subagentPreferences: options.subagentPreferences,
     qualityDetails: options.qualityDetails,
     toolCapabilities: options.toolCapabilities,
     toolToggles: options.toolToggles,
@@ -427,6 +433,7 @@ export function useChatViewModel(options: UseChatViewModelOptions): ChatViewMode
       options.setIsPlusMenuOpen((current) => !current),
     onOpenFilePicker: () => options.fileInputRef.current?.click(),
     onUpdateQualityPreferences: options.updateQualityPreferences,
+    onUpdateSubagentPreferences: options.updateSubagentPreferences,
     onUpdateToolCapabilities: options.updateToolCapabilities,
     onUpdateToolToggles: options.updateToolToggles,
     onUpdateExtensionToolToggles: options.updateExtensionToolToggles,

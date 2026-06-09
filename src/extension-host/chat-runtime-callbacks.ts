@@ -249,6 +249,9 @@ export function createChatRuntimeCallbacks(
       }
     },
     requestToolApproval: params.requestToolApproval,
+    askUserClarification: params.askUserClarification,
+    askArchitectureApproval: params.askArchitectureApproval,
+    askEnvironmentSetupDecision: params.askEnvironmentSetupDecision,
     showWorkbenchError: params.showWorkbenchError,
     postErrorMessage: async (message) => {
       await params.postMessage({
@@ -287,6 +290,9 @@ export function createProviderChatRuntimeCallbacks(
     writeDebug: bindings.writeDebug,
     writeDebugBlock: bindings.writeDebugBlock,
     requestToolApproval: bindings.requestToolApproval,
+    askUserClarification: bindings.askUserClarification,
+    askArchitectureApproval: bindings.askArchitectureApproval,
+    askEnvironmentSetupDecision: bindings.askEnvironmentSetupDecision,
     showWorkbenchError: bindings.showWorkbenchError,
     shouldGateAssistantFinalMessage: bindings.shouldGateAssistantFinalMessage,
     getEffectiveConfig: bindings.getEffectiveConfig,

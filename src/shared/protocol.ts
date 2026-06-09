@@ -71,8 +71,16 @@ export type ChatMessage = Readonly<{
   role: "assistant" | "user" | "tool";
   /** Main message body shown in the transcript. */
   content: string;
+  /** Optional memory-safe content persisted into session/task memory instead of raw orchestration text. */
+  memoryContent?: string;
   /** Optional agent type that produced the assistant message. */
   agentType?: AgentType;
+  /** User-facing role name that produced the message. */
+  agentRole?: string;
+  /** Runtime model that produced the message. */
+  agentModel?: string;
+  /** Runtime phase or handoff phase associated with the message. */
+  phase?: string;
   /** Attachments associated with the transcript message. */
   attachments?: readonly MessageAttachment[];
   /** Optional chain-of-thought preview shown in the UI when available. */
@@ -159,6 +167,41 @@ export type QualityPreferences = Readonly<{
   fullAccessEnabled: boolean;
 }>;
 
+/** Role ids used by the subagent preference UI. */
+export type SubagentRoleKey =
+  | "main"
+  | "ba"
+  | "profiler"
+  | "planning"
+  | "sa"
+  | "coding"
+  | "testing"
+  | "review";
+
+/** Effective model preference for one subagent role. */
+export type SubagentRolePreference = Readonly<{
+  /** Stable subagent role id. */
+  role: SubagentRoleKey;
+  /** Human-readable role title shown in settings. */
+  title: string;
+  /** Effective model used by this role. */
+  model: string;
+  /** Built-in default model for reset actions. */
+  defaultModel: string;
+  /** Effective base URL used by manual hosted models. */
+  baseUrl?: string;
+  /** Built-in default base URL for reset actions. */
+  defaultBaseUrl?: string;
+}>;
+
+/** User-facing subagent orchestration preferences. */
+export type SubagentPreferences = Readonly<{
+  /** Whether selective subagent orchestration is enabled. */
+  enabled: boolean;
+  /** Per-role model preferences. */
+  roles: readonly SubagentRolePreference[];
+}>;
+
 /** Effective high-level capability switches for the current runtime session. */
 export type ToolCapabilities = Readonly<{
   /** Whether the runtime may inspect project files. */
@@ -187,6 +230,11 @@ export type ToolToggleKey =
   | "get_latest_review_findings"
   | "get_next_review_finding"
   | "dismiss_review_finding"
+  | "get_change_summary"
+  | "query_shared_memory"
+  | "write_agent_handoff"
+  | "query_workflow_graph"
+  | "claim_file_scope"
   | "write_file"
   | "create_drawio_diagram"
   | "convert_drawio_diagram"
@@ -201,6 +249,7 @@ export type ToolToggleKey =
   | "head"
   | "tail"
   | "read_document"
+  | "inspect_workspace_environment"
   | "search_web"
   | "extract_web"
   | "map_web"
@@ -218,6 +267,7 @@ export type ToolToggleKey =
   | "git_checkout"
   | "run_project_command"
   | "validate_code"
+  | "run_validation_suite"
   | "request_code_review"
   | "vscode_open_diff"
   | "vscode_start_frontend_preview"
@@ -344,6 +394,8 @@ export type SessionInitPayload = Readonly<{
   qualityDetails: QualityDetails;
   /** User-selected quality preferences. */
   qualityPreferences: QualityPreferences;
+  /** User-selected subagent enablement and model overrides. */
+  subagentPreferences: SubagentPreferences;
   /** Effective tool capability flags. */
   toolCapabilities: ToolCapabilities;
   /** Effective per-tool toggles. */
@@ -565,6 +617,10 @@ export type HostMessage =
       type: "quality-preferences-updated";
       payload: QualityPreferences;
     }>
+  | Readonly<{
+      type: "subagent-preferences-updated";
+      payload: SubagentPreferences;
+    }>
   | Readonly<{ type: "tool-capabilities-updated"; payload: ToolCapabilities }>
   | Readonly<{ type: "tool-toggles-updated"; payload: ToolToggles }>
   | Readonly<{
@@ -633,6 +689,7 @@ export type WebviewMessage =
       };
     }>
   | Readonly<{ type: "quality-set"; payload: QualityPreferences }>
+  | Readonly<{ type: "subagent-set"; payload: SubagentPreferences }>
   | Readonly<{ type: "tool-capabilities-set"; payload: ToolCapabilities }>
   | Readonly<{ type: "tool-toggles-set"; payload: ToolToggles }>
   | Readonly<{

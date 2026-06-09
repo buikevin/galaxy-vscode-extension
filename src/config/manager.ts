@@ -15,9 +15,12 @@ import type {
   AgentConfig,
   GalaxyConfig,
   RawGalaxyConfig,
+  SubagentRoleOverrideConfig,
+  SubagentRoleOverridesConfig,
   ToolCapabilityConfig,
   ValidationPreferencesConfig,
 } from '../shared/config';
+import { isSubagentRoleId } from '../shared/subagents';
 
 /**
  * Normalizes tool-capability flags while keeping dependent quality and safety toggles in sync.
@@ -95,6 +98,34 @@ function normalizeValidationConfig(input: Partial<ValidationPreferencesConfig> |
   });
 }
 
+function normalizeSubagentRoles(input: unknown): SubagentRoleOverridesConfig {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return Object.freeze({});
+  }
+
+  const entries = Object.entries(input as Record<string, unknown>)
+    .filter(([role]) => isSubagentRoleId(role))
+    .map(([role, raw]) => {
+      const value =
+        raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? (raw as Partial<SubagentRoleOverrideConfig>)
+          : {};
+      const model = typeof value.model === 'string' ? value.model.trim() : '';
+      const baseUrl =
+        typeof value.baseUrl === 'string' ? value.baseUrl.trim() : '';
+      return [
+        role,
+        Object.freeze({
+          ...(model ? { model } : {}),
+          ...(baseUrl ? { baseUrl } : {}),
+        }),
+      ] as const;
+    })
+    .filter(([, value]) => Boolean(value.model || value.baseUrl));
+
+  return Object.freeze(Object.fromEntries(entries));
+}
+
 /**
  * Resolves the per-user Galaxy config directory for the current operating system.
  *
@@ -165,6 +196,7 @@ export function loadConfig(): GalaxyConfig {
         typeof parsed.subagent === 'boolean'
           ? parsed.subagent
           : DEFAULT_CONFIG.subagent,
+      subagentRoles: normalizeSubagentRoles(parsed.subagentRoles),
       quality,
       validation: normalizeValidationConfig(parsed.validation),
       maxToolRounds:
@@ -197,13 +229,18 @@ export function saveConfig(config: GalaxyConfig): void {
 
   const normalizedConfig: GalaxyConfig = {
     ...config,
+    subagentRoles: normalizeSubagentRoles(config.subagentRoles),
     toolCapabilities: normalizeToolCapabilities(config.toolCapabilities, config),
     validation: normalizeValidationConfig(config.validation),
     toolToggles: normalizeToolToggles(config.toolToggles),
     extensionToolToggles: normalizeExtensionToolToggles(config.extensionToolToggles),
   };
 
-  const { availableExtensionToolGroups: _availableExtensionToolGroups, ...persistedConfig } = normalizedConfig;
+  const {
+    activeSubagentRole: _activeSubagentRole,
+    availableExtensionToolGroups: _availableExtensionToolGroups,
+    ...persistedConfig
+  } = normalizedConfig;
 
   fs.writeFileSync(
     configPath,

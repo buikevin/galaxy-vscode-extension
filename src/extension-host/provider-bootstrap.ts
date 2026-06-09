@@ -57,6 +57,7 @@ import type { ProviderWorkspaceToolActions } from "../shared/workspace-tooling";
 import type { WebviewActionCallbacks } from "../shared/webview-actions";
 import type { ChatRuntimeCallbacks } from "../shared/chat-runtime";
 import { refreshExtensionToolGroups as refreshExtensionToolCatalog } from "./extension-tool-catalog";
+import { buildClarificationAnswer } from "../shared/clarification";
 import {
   buildContinueMessage as buildHostedContinueMessage,
   shouldGateAssistantFinalMessage as shouldHostedGateAssistantFinalMessage,
@@ -78,6 +79,7 @@ import {
 import { loadOlderTranscriptMessages as loadHostedOlderTranscriptMessages } from "./session-lifecycle";
 import { refreshProviderExtensionToolGroups as refreshHostedProviderExtensionToolGroups } from "./workspace-actions";
 import { createProviderWebviewActionCallbacks as createHostedProviderWebviewActionCallbacks } from "./webview-actions";
+import { applySubagentPreferencesState } from "./subagent-settings";
 import {
   getEffectiveConfigForWorkspace as getHostedEffectiveConfig,
   getQualityPreferencesForWorkspace,
@@ -531,6 +533,17 @@ export function initializeGalaxyChatViewProvider(
     appendLog: provider.runtimeActions.appendLog,
     clearPendingApprovalState: () => provider.clearPendingApprovalState(),
     applyQualityPreferences: provider.qualityActions.applyQualityPreferences,
+    applySubagentPreferences: async (next, opts) => {
+      const applied = applySubagentPreferencesState(next);
+      await provider.sessionActions.postMessage({
+        type: "subagent-preferences-updated",
+        payload: applied,
+      });
+      if (opts?.logMessage) {
+        provider.runtimeActions.appendLog("info", opts.logMessage);
+      }
+      await provider.sessionActions.postInit();
+    },
     applyToolCapabilities: provider.qualityActions.applyToolCapabilities,
     applyToolToggles: provider.qualityActions.applyToolToggles,
     applyExtensionToolToggles:
@@ -568,6 +581,68 @@ export function initializeGalaxyChatViewProvider(
     debugChatMessage: (message) =>
       provider.messageActions.debugChatMessage(message),
     requestToolApproval: provider.runtimeActions.requestToolApproval,
+    askUserClarification: async (request) => {
+      const selected = await vscode.window.showQuickPick(
+        request.options.map((option) => ({
+          label: option.recommended ? `${option.label} (Recommended)` : option.label,
+          description: option.description,
+          optionId: option.id,
+        })),
+        {
+          title: request.title,
+          placeHolder: request.question,
+          ignoreFocusOut: true,
+        },
+      );
+      if (!selected) {
+        return null;
+      }
+      const option = request.options.find((candidate) => candidate.id === selected.optionId);
+      if (!option) {
+        return null;
+      }
+      const customAnswer = option.answerText
+        ? undefined
+        : await vscode.window.showInputBox({
+            title: request.title,
+            prompt: request.customAnswerPrompt,
+            placeHolder: "Example: Next.js + TypeScript, full-stack MVP, PostgreSQL, email login, mock checkout, Vercel later.",
+            ignoreFocusOut: true,
+          });
+      return buildClarificationAnswer(request, option.id, customAnswer);
+    },
+    askArchitectureApproval: async (request) => {
+      const items = request.options.map((option) => ({
+          label: option.label,
+          description: option.description,
+          decision: option.decision,
+      }));
+      const selected = await vscode.window.showQuickPick<typeof items[number]>(
+        items,
+        {
+          title: request.title,
+          placeHolder: request.question,
+          ignoreFocusOut: true,
+        },
+      );
+      return selected?.decision ?? null;
+    },
+    askEnvironmentSetupDecision: async (request) => {
+      const items = request.options.map((option) => ({
+        label: option.label,
+        description: option.description,
+        decision: option.decision,
+      }));
+      const selected = await vscode.window.showQuickPick<typeof items[number]>(
+        items,
+        {
+          title: request.title,
+          placeHolder: request.question,
+          ignoreFocusOut: true,
+        },
+      );
+      return selected?.decision ?? null;
+    },
     showWorkbenchError: (message) =>
       provider.workbenchActions.showWorkbenchError(message),
     writeDebug: (scope, message) =>

@@ -381,6 +381,40 @@ export function parseReviewFindings(reviewText: string): readonly RuntimeReviewF
   return Object.freeze(findings);
 }
 
+function resolveReviewerConnection(config: GalaxyConfig): Readonly<{
+  host: string;
+  model: string;
+  apiKey: string;
+}> {
+  if (config.activeSubagentRole === 'review') {
+    const manualAgent = config.agent.find((agent) => agent.type === 'manual');
+    if (manualAgent?.model) {
+      return Object.freeze({
+        host: manualAgent.baseUrl ?? REVIEWER_HOST,
+        model: manualAgent.model,
+        apiKey: manualAgent.apiKey ?? REVIEWER_API_KEY,
+      });
+    }
+  }
+
+  return Object.freeze({
+    host: REVIEWER_HOST,
+    model: REVIEWER_MODEL,
+    apiKey: REVIEWER_API_KEY,
+  });
+}
+
+function createReviewerClient(
+  connection: ReturnType<typeof resolveReviewerConnection>,
+): Ollama {
+  return new Ollama({
+    host: connection.host,
+    ...(connection.apiKey
+      ? { headers: { Authorization: `Bearer ${connection.apiKey}` } }
+      : {}),
+  });
+}
+
 /**
  * Executes the hosted reviewer for the files changed in the current session.
  *
@@ -405,10 +439,8 @@ async function runReviewer(opts: {
     return null;
   }
 
-  const client = new Ollama({
-    host: REVIEWER_HOST,
-    headers: { Authorization: `Bearer ${REVIEWER_API_KEY}` },
-  });
+  const reviewerConnection = resolveReviewerConnection(opts.config);
+  const client = createReviewerClient(reviewerConnection);
   const reviewChunks: string[] = [];
   const findings: RuntimeReviewFinding[] = [];
   let filesReviewed = 0;
@@ -431,7 +463,7 @@ async function runReviewer(opts: {
 
     try {
       const stream = await client.chat({
-        model: REVIEWER_MODEL,
+        model: reviewerConnection.model,
         messages: reviewMessages.map((message) => ({
           role: message.role,
           content: message.content,

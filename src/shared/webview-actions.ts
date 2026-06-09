@@ -12,6 +12,7 @@ import type {
   LocalAttachmentPayload,
   LogEntry,
   QualityPreferences,
+  SubagentPreferences,
   ToolApprovalDecision,
   ToolCapabilities,
   ToolToggles,
@@ -59,6 +60,11 @@ export type WebviewActionCallbacks = Readonly<{
   applyQualityPreferences: (
     next: QualityPreferences,
     opts?: Readonly<{ syncVsCodeSettings?: boolean; logMessage?: string }>,
+  ) => Promise<void>;
+  /** Applies updated subagent preferences coming from the webview. */
+  applySubagentPreferences: (
+    next: SubagentPreferences,
+    opts?: Readonly<{ logMessage?: string }>,
   ) => Promise<void>;
   /** Applies updated tool capabilities coming from the webview. */
   applyToolCapabilities: (
@@ -132,6 +138,8 @@ export type CreateWebviewActionCallbacksParams = Readonly<{
   clearPendingApprovalState: () => void;
   /** Applies updated quality preferences. */
   applyQualityPreferences: WebviewActionCallbacks["applyQualityPreferences"];
+  /** Applies updated subagent preferences. */
+  applySubagentPreferences: WebviewActionCallbacks["applySubagentPreferences"];
   /** Applies updated tool capabilities. */
   applyToolCapabilities: WebviewActionCallbacks["applyToolCapabilities"];
   /** Applies updated core tool toggles. */
@@ -180,6 +188,8 @@ export type ProviderWebviewActionBindings = Readonly<{
   clearPendingApprovalState: () => void;
   /** Applies updated quality preferences. */
   applyQualityPreferences: WebviewActionCallbacks["applyQualityPreferences"];
+  /** Applies updated subagent preferences. */
+  applySubagentPreferences: WebviewActionCallbacks["applySubagentPreferences"];
   /** Applies updated tool capabilities. */
   applyToolCapabilities: WebviewActionCallbacks["applyToolCapabilities"];
   /** Applies updated core tool toggles. */

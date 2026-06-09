@@ -38,16 +38,22 @@ export function normalizeToolName(raw: string): string {
     case "exportworkflowmermaiddiagram":
     case "createworkflowmermaiddiagram":
       return "export_workflow_mermaid_diagram";
+    case "edit_file_at_line":
+    case "editfileatline":
     case "insertfileatline":
       return "insert_file_at_line";
     case "listdir":
       return "list_dir";
+    case "edit":
+      return "multi_edit_file_ranges";
     case "editfile":
       return "edit_file";
     case "multieditfileranges":
       return "multi_edit_file_ranges";
     case "validatecode":
       return "validate_code";
+    case "runinterminal":
+      return "run_in_terminal";
     case "runterminalcommand":
       return "run_terminal_command";
     case "awaitterminalcommand":
@@ -94,6 +100,22 @@ export function normalizeToolName(raw: string): string {
       return "get_next_review_finding";
     case "dismissreviewfinding":
       return "dismiss_review_finding";
+    case "getchangesummary":
+      return "get_change_summary";
+    case "runvalidationsuite":
+      return "run_validation_suite";
+    case "claimfilescope":
+      return "claim_file_scope";
+    case "querysharedmemory":
+      return "query_shared_memory";
+    case "writeagenthandoff":
+      return "write_agent_handoff";
+    case "queryworkflowgraph":
+      return "query_workflow_graph";
+    case "inspectworkspaceenvironment":
+    case "inspectenvironment":
+    case "checkworkspaceenvironment":
+      return "inspect_workspace_environment";
     case "vscodeopendiff":
       return "vscode_open_diff";
     case "vscodestartfrontendpreview":
@@ -123,7 +145,13 @@ export function normalizeToolName(raw: string): string {
  * @returns Trimmed path string or an empty string when the tool has no path parameter.
  */
 export function getToolFilePath(call: ToolCall): string {
-  return String(call.params.path ?? "").trim();
+  return String(
+    call.params.path ??
+      call.params.file_path ??
+      call.params.filePath ??
+      call.params.filepath ??
+      "",
+  ).trim();
 }
 
 /**

@@ -22,6 +22,7 @@ import type {
   FigmaAttachment,
   QualityDetails,
   QualityPreferences,
+  SubagentPreferences,
   ToolCapabilities,
   ToolToggles,
 } from "@shared/protocol";
@@ -61,6 +62,8 @@ export type ComposerContextValue = Readonly<{
   agents: readonly AgentType[];
   /** Review/validate/full-access preferences. */
   qualityPreferences: QualityPreferences;
+  /** Subagent enablement and per-role model preferences. */
+  subagentPreferences: SubagentPreferences;
   /** Latest quality output including persisted review findings. */
   qualityDetails: QualityDetails;
   /** Capability groups shown in Configure Tools. */
@@ -115,6 +118,8 @@ export type ComposerContextValue = Readonly<{
   onOpenFilePicker: () => void;
   /** Apply new quality preference values. */
   onUpdateQualityPreferences: (next: QualityPreferences) => void;
+  /** Apply new subagent preference values. */
+  onUpdateSubagentPreferences: (next: SubagentPreferences) => void;
   /** Apply new tool capability values. */
   onUpdateToolCapabilities: (next: ToolCapabilities) => void;
   /** Apply new tool toggle values. */

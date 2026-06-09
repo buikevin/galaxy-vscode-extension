@@ -14,6 +14,7 @@ import type {
   MessageAttachment,
   QualityDetails,
   QualityPreferences,
+  SubagentPreferences,
   ToolCapabilities,
   ToolToggles,
   ToolApprovalDecision,
@@ -49,6 +50,8 @@ type UseComposerActionsOptions = Readonly<{
   localAttachments: readonly LocalAttachment[];
   /** Current review/validate/full-access preference snapshot. */
   qualityPreferences: QualityPreferences;
+  /** Current subagent orchestration preferences. */
+  subagentPreferences: SubagentPreferences;
   /** Current quality details mirrored from the host. */
   qualityDetails: QualityDetails;
   /** Current tool capability groups. */
@@ -99,6 +102,8 @@ type UseComposerActionsOptions = Readonly<{
   setIsPlusMenuOpen: Dispatch<SetStateAction<boolean>>;
   /** Update quality preferences state. */
   setQualityPreferences: Dispatch<SetStateAction<QualityPreferences>>;
+  /** Update subagent preferences state. */
+  setSubagentPreferences: Dispatch<SetStateAction<SubagentPreferences>>;
   /** Update tool capability state. */
   setToolCapabilities: Dispatch<SetStateAction<ToolCapabilities>>;
   /** Update tool toggle state. */
@@ -119,6 +124,14 @@ export function useComposerActions(options: UseComposerActionsOptions) {
     options.setQualityPreferences(next);
     postHostMessage({
       type: "quality-set",
+      payload: next,
+    } satisfies WebviewMessage);
+  }
+
+  function updateSubagentPreferences(next: SubagentPreferences): void {
+    options.setSubagentPreferences(next);
+    postHostMessage({
+      type: "subagent-set",
       payload: next,
     } satisfies WebviewMessage);
   }
@@ -444,6 +457,7 @@ export function useComposerActions(options: UseComposerActionsOptions) {
 
   return {
     updateQualityPreferences,
+    updateSubagentPreferences,
     updateToolCapabilities,
     updateToolToggles,
     updateExtensionToolToggles,

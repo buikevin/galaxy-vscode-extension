@@ -120,7 +120,7 @@ export type TaskMemoryEntryRecord = Readonly<{
   /** Turn identifier. */
   turnId: string;
   /** High-level turn classification. */
-  turnKind: 'analysis' | 'implementation' | 'review' | 'validation' | 'repair' | 'subagent_handoff';
+  turnKind: 'analysis' | 'implementation' | 'review' | 'validation' | 'repair' | 'subagent_handoff' | 'clarification';
   /** User request summarized for retrieval. */
   userIntent: string;
   /** Final assistant conclusion captured for the turn. */

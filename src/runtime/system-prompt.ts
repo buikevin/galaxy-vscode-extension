@@ -9,6 +9,73 @@
 import type { GalaxyConfig } from "../shared/config";
 import type { AgentType } from "../shared/protocol";
 import type { PromptContextHints } from "../shared/runtime";
+import {
+  formatSubagentSystemPromptSection,
+  getSubagentRoleDefinition,
+} from "../shared/subagents";
+import { getEnabledToolDefinitions } from "../tools/file/definitions";
+
+function formatAvailableTools(config: GalaxyConfig): string {
+  const tools = getEnabledToolDefinitions(config);
+  if (tools.length === 0) {
+    return "- none";
+  }
+  return tools
+    .map((tool) => `- ${tool.name}: ${tool.description}`)
+    .join("\n");
+}
+
+function formatForbiddenToolGuidance(config: GalaxyConfig): string {
+  const disabledCapabilities = Object.entries(config.toolCapabilities)
+    .filter(([, enabled]) => !enabled)
+    .map(([capability]) => capability)
+    .sort();
+  const disabledText = disabledCapabilities.length > 0
+    ? disabledCapabilities.join(", ")
+    : "none";
+  return [
+    "## Forbidden Tools",
+    `- Disabled capability groups for this role: ${disabledText}.`,
+    "- If a tool name is absent from Available Tools, do not retry it with a synonym or provider-style alias.",
+    "- When the needed capability is disabled for this role, finish with write_agent_handoff and delegate that work to the next role that owns it.",
+  ].join("\n");
+}
+
+function buildSubagentSystemPrompt(config: GalaxyConfig): string | null {
+  if (!config.activeSubagentRole) {
+    return null;
+  }
+  const capabilities = config.toolCapabilities;
+  const activeRole = getSubagentRoleDefinition(config.activeSubagentRole);
+  const workflowLines = [
+    "- Start from the assigned subtask scope and current workspace evidence.",
+    capabilities.readProject
+      ? "- Use only the listed read/memory tools when project evidence is needed."
+      : "",
+    capabilities.editFiles
+      ? "- For existing files, prefer multi_edit_file_ranges with fresh expected content or anchors; use write_file for new files or coherent whole-file replacement after reading the file."
+      : "",
+    capabilities.runCommands || capabilities.validation
+      ? "- Use the listed validation/command tools for focused checks, then record the result in the handoff."
+      : "- Record validation needs or blockers in the handoff for the role that can validate.",
+    "- Finish with a concise handoff when write_agent_handoff is available.",
+  ].filter(Boolean).join("\n");
+
+  return `You are the ${activeRole.title}, a specialized Galaxy Code subagent. You help users understand, write, and analyze code and documents.
+
+## Available Tools
+
+${formatAvailableTools(config)}
+
+${formatForbiddenToolGuidance(config)}
+
+${formatSubagentSystemPromptSection(config.activeSubagentRole)}
+
+## Role Workflow
+${workflowLines}
+
+Respond in the same language as the user.`;
+}
 
 /**
  * Builds the full system prompt for the selected runtime agent.
@@ -23,11 +90,24 @@ export function buildSystemPrompt(
   config: GalaxyConfig,
   hints?: PromptContextHints,
 ): string {
+  const subagentPrompt = buildSubagentSystemPrompt(config);
+  if (subagentPrompt) {
+    return subagentPrompt;
+  }
+
   const capabilities = config.toolCapabilities;
+  const activeRole = config.activeSubagentRole
+    ? getSubagentRoleDefinition(config.activeSubagentRole)
+    : null;
   const identityLine =
-    agentType === "manual"
-      ? "You are Galaxy Code, created by engineer Kevinbui, an AI coding agent."
-      : "You are an AI coding agent.";
+    activeRole
+      ? `You are the ${activeRole.title}, a specialized Galaxy Code subagent.`
+      : agentType === "manual"
+        ? "You are Galaxy Code, created by engineer Kevinbui, an AI coding agent."
+        : "You are an AI coding agent.";
+  const subagentSection = config.activeSubagentRole
+    ? `${formatSubagentSystemPromptSection(config.activeSubagentRole)}\n\n`
+    : "";
   const promptHints = hints ?? {
     hasImages: false,
     hasWorkflowContext: false,
@@ -54,7 +134,7 @@ export function buildSystemPrompt(
 - Inspect existing app files before writing new ones.
 - Verify package names, framework APIs, and setup state from project files, Galaxy Design output, or official docs. Never invent them.
 - Avoid creating summary/documentation files unless the user explicitly asks.
-- Prefer direct commands for run_terminal_command/run_project_command. Do not add tail/head/tee pipes just to trim output.
+${capabilities.runCommands ? "- Prefer direct commands for project command tools. Do not add tail/head/tee pipes just to trim output." : ""}
 
 `
       : "";
@@ -73,7 +153,7 @@ export function buildSystemPrompt(
 
   if (capabilities.readProject) {
     sections.push(`### Reading
-- The tool schema already contains exact names, parameters, and descriptions. Use it as the source of truth.
+- Use the Available Tools list and provider tool schema as the source of truth for exact names, parameters, and descriptions.
 - Prefer targeted reads: shallow list_dir, focused grep, then chunked read_file/read_document.
 - For documents, prefer read_document(path, query=...) for requirement lookup. Use offset/maxChars only for exact sequential wording.
 ${
@@ -94,10 +174,10 @@ ${
 
   if (capabilities.editFiles) {
     sections.push(`### Writing & Editing
-- Prefer targeted range edits for existing files after a recent read_file result.
+- Prefer multi_edit_file_ranges for targeted changes in existing files after a recent read_file result. Use a single-element edits array for one change.
 - Pass exact expected_range_content or nearby anchors from a fresh read_file result. expected_total_lines is optional extra guard data.
 - If a prior edit shifted line numbers, reuse the same snapshot evidence and let the edit tools relocate the target block instead of rereading the whole file immediately.
-- Use write_file only for brand new files.
+- Use write_file for brand new files. For an existing file, use write_file only when overwrite_existing=true, after reading the current file, and when a coherent whole-file replacement is safer than repeated stale range edits.
 `);
   }
 
@@ -114,6 +194,7 @@ ${
 
   if (capabilities.validation) {
     sections.push(`### Validation
+- run_validation_suite(paths?) is the preferred project-level check when you need explicit lint, typecheck, test, build, or fallback validation evidence.
 - validate_code(path) is a lightweight single-file fallback, not a mandatory always-run step.
 `);
   }
@@ -154,6 +235,7 @@ ${
 
   if (capabilities.review && promptHints.hasReviewContext) {
     sections.push(`### Review
+- Use get_change_summary() first when you need a compact view of session diffs before judging review findings.
 - When review is enabled, prefer request_code_review() before final test execution.
 `);
   }
@@ -168,10 +250,10 @@ ${
     "1. Use the enabled read/search tools to understand the current code, attached documents, or web context just in time.",
     ...(capabilities.editFiles
       ? [
-          "2. Prefer edit_file_range or multi_edit_file_ranges when you know the exact lines to replace from a recent read_file result. Use write_file only for brand new files.",
+          "2. Prefer multi_edit_file_ranges when you know one or more exact ranges to replace in a recently read file. Use a single-element edits array for one change. Pass exact expected_range_content or nearby anchors so stale line numbers can be relocated safely. expected_total_lines is optional extra guard data. Use write_file for new files; for existing files, use write_file with overwrite_existing=true only after reading current content and only for coherent whole-file replacement.",
         ]
       : [
-          "2. Editing tools are disabled. Do not propose or call file-writing tools.",
+          "2. Provide analysis, planning, review, or handoff output within the current role scope.",
         ]),
     ...(capabilities.validation
       ? [
@@ -192,6 +274,10 @@ ${
 
 ## Available Tools
 
+${formatAvailableTools(config)}
+
+${subagentSection}
+## Tool Usage Notes
 ${sections.join("\n")}${manualSection}
 ## Workflow for Code Changes
 ${workflowLines.join("\n")}

@@ -23,6 +23,7 @@ import type {
   HostMessage,
   QualityPreferences,
   QualityDetails,
+  SubagentPreferences,
   ToolCapabilities,
   ToolToggles,
   WebviewMessage,
@@ -96,6 +97,8 @@ type UseHostMessagesOptions = Readonly<{
   setSelectedFiles: Dispatch<SetStateAction<string[]>>;
   /** Update quality preferences from host. */
   setQualityPreferences: Dispatch<SetStateAction<QualityPreferences>>;
+  /** Update subagent preferences from host. */
+  setSubagentPreferences: Dispatch<SetStateAction<SubagentPreferences>>;
   /** Update latest quality details from host. */
   setQualityDetails: Dispatch<SetStateAction<QualityDetails>>;
   /** Update tool capabilities from host. */
@@ -236,6 +239,7 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
             .map((file: FileItem) => file.path),
         );
         options.setQualityPreferences(message.payload.qualityPreferences);
+        options.setSubagentPreferences(message.payload.subagentPreferences);
         options.setQualityDetails(message.payload.qualityDetails);
         options.setToolCapabilities(message.payload.toolCapabilities);
         options.setToolToggles(message.payload.toolToggles);
@@ -402,6 +406,9 @@ export function useHostMessages(options: UseHostMessagesOptions): void {
         return;
       case "quality-preferences-updated":
         options.setQualityPreferences(message.payload);
+        return;
+      case "subagent-preferences-updated":
+        options.setSubagentPreferences(message.payload);
         return;
       case "quality-updated":
         options.setQualityDetails(message.payload);

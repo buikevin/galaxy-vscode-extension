@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import type {
   ExtensionToolGroup,
+  SubagentPreferences,
+  SubagentRoleKey,
   ToolCapabilities,
   ToolToggleKey,
   ToolToggles,
@@ -27,6 +29,8 @@ type PlusMenuProps = Readonly<{
   anchorRef: Ref<HTMLDivElement>;
   /** Whether the popup is currently visible. */
   isOpen: boolean;
+  /** Current subagent orchestration preferences. */
+  subagentPreferences: SubagentPreferences;
   /** Current capability-group settings. */
   toolCapabilities: ToolCapabilities;
   /** Current individual tool settings. */
@@ -37,6 +41,8 @@ type PlusMenuProps = Readonly<{
   extensionToolToggles: Readonly<Record<string, boolean>>;
   /** Toggle the popup open or closed. */
   onToggleOpen: () => void;
+  /** Apply new subagent preferences. */
+  onUpdateSubagentPreferences: (next: SubagentPreferences) => void;
   /** Apply new capability-group values. */
   onUpdateToolCapabilities: (next: ToolCapabilities) => void;
   /** Apply new individual tool values. */
@@ -103,6 +109,11 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
         description: "Ẩn một review finding theo id.",
       },
       {
+        key: "get_change_summary",
+        label: "Tóm tắt thay đổi",
+        description: "Lấy diff preview và thống kê file đã sửa.",
+      },
+      {
         key: "read_document",
         label: "Đọc tài liệu",
         description: "Đọc tài liệu như docx hoặc pdf theo từng phần.",
@@ -134,6 +145,11 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
     label: "Sửa file",
     description: "Cho phép agent sửa hoặc tạo file.",
     tools: [
+      {
+        key: "claim_file_scope",
+        label: "Khóa phạm vi file",
+        description: "Claim file trước khi sửa để phát hiện xung đột subagent.",
+      },
       {
         key: "insert_file_at_line",
         label: "Chèn vào file",
@@ -259,6 +275,11 @@ const CAPABILITY_GROUPS: readonly CapabilityGroup[] = [
         key: "validate_code",
         label: "Validate code",
         description: "Chọn validator theo ngôn ngữ và loại dự án.",
+      },
+      {
+        key: "run_validation_suite",
+        label: "Validation suite",
+        description: "Chạy lint, typecheck, test, build phù hợp dự án.",
       },
     ],
   },
@@ -482,6 +503,37 @@ export function PlusMenu(props: PlusMenuProps) {
     });
   }
 
+  function updateSubagentEnabled(enabled: boolean): void {
+    props.onUpdateSubagentPreferences({
+      ...props.subagentPreferences,
+      enabled,
+    });
+  }
+
+  function updateSubagentRoleModel(role: SubagentRoleKey, model: string): void {
+    props.onUpdateSubagentPreferences({
+      ...props.subagentPreferences,
+      roles: props.subagentPreferences.roles.map((item) =>
+        item.role === role ? { ...item, model } : item,
+      ),
+    });
+  }
+
+  function resetSubagentRoleModel(role: SubagentRoleKey): void {
+    props.onUpdateSubagentPreferences({
+      ...props.subagentPreferences,
+      roles: props.subagentPreferences.roles.map((item) =>
+        item.role === role
+          ? {
+              ...item,
+              model: item.defaultModel,
+              ...(item.defaultBaseUrl ? { baseUrl: item.defaultBaseUrl } : {}),
+            }
+          : item,
+      ),
+    });
+  }
+
   return (
     <div className="relative" ref={props.anchorRef}>
       <button
@@ -517,6 +569,62 @@ export function PlusMenu(props: PlusMenuProps) {
 
             <div className="flex-1 overflow-y-auto p-2">
               <div className="space-y-1">
+                <div className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--gc-muted)]">
+                  Subagent
+                </div>
+                <div className="mb-3 rounded-xl border border-[color:var(--gc-border)] bg-[var(--gc-surface)]">
+                  <div className="grid grid-cols-[20px_minmax(0,1fr)] items-start gap-3 px-3 py-2">
+                    <TreeCheckbox
+                      checked={props.subagentPreferences.enabled}
+                      onClick={() =>
+                        updateSubagentEnabled(!props.subagentPreferences.enabled)
+                      }
+                      title="Bật subagent"
+                    />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium text-[color:var(--gc-foreground)]">
+                        Điều phối subagent
+                      </div>
+                      <div className="text-xs text-[color:var(--gc-muted)]">
+                        Khi tắt, Galaxy dùng lại luồng một agent hiện tại.
+                      </div>
+                    </div>
+                  </div>
+
+                  {props.subagentPreferences.roles.length > 0 ? (
+                    <div className="space-y-2 border-t border-[color:var(--gc-border)] px-3 py-3">
+                      {props.subagentPreferences.roles.map((role) => (
+                        <label
+                          key={role.role}
+                          className="grid grid-cols-[minmax(110px,160px)_minmax(0,1fr)_auto] items-center gap-2 text-xs max-[560px]:grid-cols-1"
+                        >
+                          <span className="min-w-0 truncate font-medium text-[color:var(--gc-foreground)]">
+                            {role.title}
+                          </span>
+                          <input
+                            value={role.model}
+                            onChange={(event) =>
+                              updateSubagentRoleModel(
+                                role.role,
+                                event.currentTarget.value,
+                              )
+                            }
+                            className="h-8 min-w-0 rounded-lg border border-[color:var(--gc-border)] bg-[var(--gc-bg)] px-2 text-xs text-[color:var(--gc-foreground)] outline-none transition-colors placeholder:text-[color:var(--gc-muted)] focus:border-[color:var(--gc-accent)]"
+                            placeholder={role.defaultModel}
+                          />
+                          <button
+                            type="button"
+                            className="h-8 rounded-lg border border-[color:var(--gc-border)] px-2 text-xs text-[color:var(--gc-muted)] transition-colors hover:bg-[var(--gc-surface-elevated)] hover:text-[color:var(--gc-foreground)]"
+                            onClick={() => resetSubagentRoleModel(role.role)}
+                          >
+                            Reset
+                          </button>
+                        </label>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+
                 <div className="mb-2 px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-[color:var(--gc-muted)]">
                   Tích hợp sẵn
                 </div>

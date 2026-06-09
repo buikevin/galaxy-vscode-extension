@@ -10,6 +10,46 @@ import type { ToolDefinition } from '../../entities/file-tools';
 
 export const ACTION_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
   Object.freeze({
+    name: 'run_in_terminal',
+    description: 'Run a safe read-only terminal command to inspect the workspace or toolchain. Use only for information gathering, not for modifying files or validation execution.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        command: Object.freeze({ type: 'string', description: 'Read-only command to run, for example pwd, ls, rg pattern src, git status --short, or version checks' }),
+        cwd: Object.freeze({ type: 'string', description: 'Optional working directory inside the workspace' }),
+        timeoutMs: Object.freeze({ type: 'number', description: 'Timeout in milliseconds, default 8000, max 20000' }),
+        maxChars: Object.freeze({ type: 'number', description: 'Maximum output characters to return, default 4000' }),
+      }),
+      required: Object.freeze(['command']),
+    }),
+  }),
+  Object.freeze({
+    name: 'inspect_workspace_environment',
+    description: 'Read-only profiler primitive for environment evidence. Checks requested workspace paths, environment variable presence, and command availability/version without shell syntax, installs, validation, or file writes. The tool does not infer language/framework; the Profiler Agent interprets the returned evidence.',
+    parameters: Object.freeze({
+      type: 'object',
+      properties: Object.freeze({
+        cwd: Object.freeze({ type: 'string', description: 'Optional workspace-relative directory used for command checks.' }),
+        paths: Object.freeze({ type: 'array', items: Object.freeze({ type: 'string' }), description: 'Workspace-relative files or directories to check for existence/type, for example package.json, apps/api/node_modules, .env.example.' }),
+        env_vars: Object.freeze({ type: 'array', items: Object.freeze({ type: 'string' }), description: 'Environment variable names to check for presence. Secret-looking values are hidden.' }),
+        command_checks: Object.freeze({
+          type: 'array',
+          items: Object.freeze({
+            type: 'object',
+            properties: Object.freeze({
+              command: Object.freeze({ type: 'string', description: 'Single binary name to check, for example node, npm, java, go, python3.' }),
+              args: Object.freeze({ type: 'array', items: Object.freeze({ type: 'string' }), description: 'Optional safe version/info args only, for example --version, -version, version, --info.' }),
+            }),
+            required: Object.freeze(['command']),
+          }),
+          description: 'Command availability or version checks. Commands are run without a shell and only safe version/info args are accepted.',
+        }),
+        maxChars: Object.freeze({ type: 'number', description: 'Maximum JSON output characters, default 8000.' }),
+      }),
+      required: Object.freeze([]),
+    }),
+  }),
+  Object.freeze({
     name: 'run_terminal_command',
     description: 'Start a terminal command in the workspace and return immediately with a command id. Prefer this over run_project_command for long-running commands.',
     parameters: Object.freeze({

@@ -29,60 +29,97 @@ export type ChatApprovalRequestOptions = Readonly<{
  * @returns Capability key that must be enabled before the tool may run.
  */
 export function getBlockedCapability(toolName: string): string {
-  if (toolName === "request_code_review") {
+  const normalized = toolName.trim().toLowerCase().replace(/[-\s]+/g, "_");
+  if (
+    normalized === "request_code_review" ||
+    normalized === "review" ||
+    normalized === "code_review"
+  ) {
     return "review";
   }
-  if (toolName === "validate_code") {
+  if (
+    normalized === "validate_code" ||
+    normalized === "run_validation_suite" ||
+    normalized === "validate" ||
+    normalized === "validation" ||
+    normalized === "test" ||
+    normalized === "tests" ||
+    normalized === "npm_test" ||
+    normalized === "pytest" ||
+    normalized === "jest" ||
+    normalized === "vitest" ||
+    normalized === "typecheck" ||
+    normalized === "type_check" ||
+    normalized === "check_types" ||
+    normalized === "lint" ||
+    normalized === "build"
+  ) {
     return "validation";
   }
   if (
-    toolName === "search_web" ||
-    toolName === "extract_web" ||
-    toolName === "map_web" ||
-    toolName === "crawl_web"
+    normalized === "search_web" ||
+    normalized === "extract_web" ||
+    normalized === "map_web" ||
+    normalized === "crawl_web" ||
+    normalized === "web_search" ||
+    normalized === "web" ||
+    normalized === "browser"
   ) {
     return "webResearch";
   }
-  if (toolName.startsWith("vscode_")) {
+  if (normalized.startsWith("vscode_")) {
     return "vscodeNative";
   }
   if (
-    toolName === "search_extension_tools" ||
-    toolName === "activate_extension_tools"
+    normalized === "search_extension_tools" ||
+    normalized === "activate_extension_tools"
   ) {
     return "vscodeNative";
   }
-  if (toolName.startsWith("galaxy_design")) {
+  if (normalized.startsWith("galaxy_design")) {
     return "galaxyDesign";
   }
   if (
-    toolName === "write_file" ||
-    toolName === "create_drawio_diagram" ||
-    toolName === "convert_drawio_diagram" ||
-    toolName === "export_drawio_diagram" ||
-    toolName === "export_workflow_drawio_diagram" ||
-    toolName === "export_workflow_mermaid_diagram" ||
-    toolName === "edit_file" ||
-    toolName === "edit_file_range" ||
-    toolName === "multi_edit_file_ranges" ||
-    toolName === "revert_file" ||
-    toolName === "diff_file"
+    normalized === "write_file" ||
+    normalized === "claim_file_scope" ||
+    normalized === "create_drawio_diagram" ||
+    normalized === "convert_drawio_diagram" ||
+    normalized === "export_drawio_diagram" ||
+    normalized === "export_workflow_drawio_diagram" ||
+    normalized === "export_workflow_mermaid_diagram" ||
+    normalized === "edit_file" ||
+    normalized === "edit_file_range" ||
+    normalized === "multi_edit_file_ranges" ||
+    normalized === "insert_file_at_line" ||
+    normalized === "revert_file" ||
+    normalized === "diff_file"
   ) {
     return "editFiles";
   }
   if (
-    toolName === "run_project_command" ||
-    toolName === "run_terminal_command" ||
-    toolName === "await_terminal_command" ||
-    toolName === "get_terminal_output" ||
-    toolName === "kill_terminal_command" ||
-    toolName === "git_status" ||
-    toolName === "git_diff" ||
-    toolName === "git_add" ||
-    toolName === "git_commit" ||
-    toolName === "git_push" ||
-    toolName === "git_pull" ||
-    toolName === "git_checkout"
+    normalized === "run_in_terminal" ||
+    normalized === "run_project_command" ||
+    normalized === "run_terminal_command" ||
+    normalized === "run_shell_command" ||
+    normalized === "shell_command" ||
+    normalized === "terminal_command" ||
+    normalized === "run_command" ||
+    normalized === "exec_command" ||
+    normalized === "execute_command" ||
+    normalized === "shell" ||
+    normalized === "bash" ||
+    normalized === "terminal" ||
+    normalized === "command" ||
+    normalized === "await_terminal_command" ||
+    normalized === "get_terminal_output" ||
+    normalized === "kill_terminal_command" ||
+    normalized === "git_status" ||
+    normalized === "git_diff" ||
+    normalized === "git_add" ||
+    normalized === "git_commit" ||
+    normalized === "git_push" ||
+    normalized === "git_pull" ||
+    normalized === "git_checkout"
   ) {
     return "runCommands";
   }

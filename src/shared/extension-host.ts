@@ -159,6 +159,8 @@ export type RepairTurnRequest = Readonly<{
   userMessage: ChatMessage;
   /** Whether the internal repair prompt should also be mirrored into the visible transcript. */
   showUserMessageInTranscript?: boolean;
+  /** Suppresses assistant stream and final assistant transcript for internal subagent turns. */
+  suppressAssistantTranscript?: boolean;
   /** Optional prompt context note appended ahead of the repair turn. */
   contextNote?: string;
   /** Optional empty-result retry counter carried across auto-continue attempts. */

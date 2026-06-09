@@ -242,7 +242,7 @@ export async function runProjectCommandTool(
         success,
         content: success
           ? "Command completed. Use View terminal for the full output."
-          : "Command failed. Use View terminal for the full output.",
+          : tailOutput,
         ...(success
           ? {}
           : {

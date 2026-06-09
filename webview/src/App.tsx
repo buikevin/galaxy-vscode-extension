@@ -16,6 +16,7 @@ import type {
   FigmaAttachment,
   QualityDetails,
   QualityPreferences,
+  SubagentPreferences,
   ToolCapabilities,
   ToolToggles,
 } from "@shared/protocol";
@@ -62,6 +63,11 @@ const DEFAULT_TOOL_TOGGLES: ToolToggles = {
   get_latest_review_findings: true,
   get_next_review_finding: true,
   dismiss_review_finding: true,
+  get_change_summary: true,
+  query_shared_memory: true,
+  write_agent_handoff: true,
+  query_workflow_graph: true,
+  claim_file_scope: true,
   write_file: true,
   create_drawio_diagram: true,
   convert_drawio_diagram: true,
@@ -76,6 +82,7 @@ const DEFAULT_TOOL_TOGGLES: ToolToggles = {
   head: true,
   tail: true,
   read_document: true,
+  inspect_workspace_environment: true,
   search_web: true,
   extract_web: true,
   map_web: true,
@@ -93,6 +100,7 @@ const DEFAULT_TOOL_TOGGLES: ToolToggles = {
   git_checkout: true,
   run_project_command: true,
   validate_code: true,
+  run_validation_suite: true,
   request_code_review: true,
   vscode_open_diff: true,
   vscode_start_frontend_preview: true,
@@ -105,6 +113,11 @@ const DEFAULT_TOOL_TOGGLES: ToolToggles = {
   galaxy_design_registry: true,
   galaxy_design_init: true,
   galaxy_design_add: true,
+};
+
+const DEFAULT_SUBAGENT_PREFERENCES: SubagentPreferences = {
+  enabled: true,
+  roles: [],
 };
 
 /**
@@ -174,6 +187,8 @@ export function App() {
       validateEnabled: true,
       fullAccessEnabled: false,
     });
+  const [subagentPreferences, setSubagentPreferences] =
+    useState<SubagentPreferences>(DEFAULT_SUBAGENT_PREFERENCES);
   const [qualityDetails, setQualityDetails] = useState<QualityDetails>({
     validationSummary: "",
     reviewSummary: "",
@@ -447,6 +462,7 @@ export function App() {
     setManualPromptPlan,
     setSelectedFiles,
     setQualityPreferences,
+    setSubagentPreferences,
     setQualityDetails,
     setToolCapabilities,
     setToolToggles,
@@ -464,6 +480,7 @@ export function App() {
    */
   const {
     updateQualityPreferences,
+    updateSubagentPreferences,
     updateToolCapabilities,
     updateToolToggles,
     updateExtensionToolToggles,
@@ -484,6 +501,7 @@ export function App() {
     figmaAttachments,
     localAttachments,
     qualityPreferences,
+    subagentPreferences,
     qualityDetails,
     toolCapabilities,
     toolToggles,
@@ -507,6 +525,7 @@ export function App() {
     setInput,
     setIsPlusMenuOpen,
     setQualityPreferences,
+    setSubagentPreferences,
     setToolCapabilities,
     setToolToggles,
     setExtensionToolToggles,
@@ -575,6 +594,7 @@ export function App() {
     activeShellSessions,
     shellNow,
     qualityPreferences,
+    subagentPreferences,
     qualityDetails,
     toolCapabilities,
     toolToggles,
@@ -612,6 +632,7 @@ export function App() {
     handleFileSelection,
     handleComposerPaste,
     updateQualityPreferences: handleQualityPreferencesChange,
+    updateSubagentPreferences,
     updateToolCapabilities,
     updateToolToggles,
     updateExtensionToolToggles,

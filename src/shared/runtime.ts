@@ -163,10 +163,30 @@ export type CommandTerminalRecord = Readonly<{
 }>;
 
 /** Role identifiers supported by the role-aware sub-agent orchestrator. */
-export type SubagentRoleId = "main" | "ba" | "planning" | "sa" | "coding" | "testing" | "review";
+export type SubagentRoleId = "main" | "ba" | "profiler" | "planning" | "sa" | "coding" | "testing" | "review";
 
 /** Runtime tool profile assigned to one sub-agent role. */
 export type SubagentToolProfile = GalaxyConfig["toolCapabilities"];
+
+/** Turn kinds persisted in shared task memory. */
+export type TaskMemoryTurnKind =
+  | "analysis"
+  | "implementation"
+  | "review"
+  | "validation"
+  | "repair"
+  | "subagent_handoff"
+  | "clarification";
+
+/** Role-specific shared-memory read profile. */
+export type SubagentMemoryProfile = Readonly<{
+  /** Task-memory turn kinds this role may read by default. */
+  readableTurnKinds: readonly TaskMemoryTurnKind[];
+  /** Whether the role should verify referenced files before acting on memory. */
+  mustVerifyWorkspaceEvidence: boolean;
+  /** Short usage guidance injected into scoped prompts. */
+  guidance: string;
+}>;
 
 /** Model routing profile assigned to one sub-agent role. */
 export type SubagentModelProfile = Readonly<{
@@ -190,6 +210,8 @@ export type SubagentRoleDefinition = Readonly<{
   model: SubagentModelProfile;
   /** Maximum tool surface exposed to the role. */
   toolProfile: SubagentToolProfile;
+  /** Shared-memory read policy assigned to the role. */
+  memoryProfile: SubagentMemoryProfile;
   /** Whether the role is allowed to ask the user for missing decisions. */
   canAskUser: boolean;
   /** Whether the role is expected to write project files. */
@@ -199,6 +221,7 @@ export type SubagentRoleDefinition = Readonly<{
 /** Scope bucket used to split a broad task into selective multi-agent subtasks. */
 export type SubtaskScope =
   | "ba"
+  | "profiler"
   | "planning"
   | "sa"
   | "coding"
@@ -232,6 +255,31 @@ export type SelectiveMultiAgentPlan = Readonly<{
   summary: string;
   /** Ordered subtask list to execute or display. */
   subtasks: readonly SelectiveMultiAgentSubtask[];
+  /** Semantic architecture impact classified by the router. */
+  architectureImpact?: "none" | "local" | "module_boundary" | "system";
+  /** Whether user approval is required before the Coding Agent starts. */
+  requiresArchitectureApproval?: boolean;
+  /** Router-provided reason for requesting architecture approval. */
+  architectureApprovalReason?: string;
+}>;
+
+export type ArchitectureApprovalDecision = "approve" | "revise" | "cancel";
+
+export type ArchitectureApprovalOption = Readonly<{
+  id: string;
+  label: string;
+  description: string;
+  decision: ArchitectureApprovalDecision;
+}>;
+
+export type ArchitectureApprovalRequest = Readonly<{
+  id: string;
+  title: string;
+  question: string;
+  reason: string;
+  planSummary: string;
+  completedHandoffs: readonly string[];
+  options: readonly ArchitectureApprovalOption[];
 }>;
 
 /** Completion status for one sub-agent handoff record. */
@@ -275,6 +323,65 @@ export type SubagentHandoffRecord = Readonly<{
   startedAt: number;
   /** Timestamp when the sub-agent turn completed. */
   completedAt: number;
+}>;
+
+/** High-impact product or architecture decision that should not be guessed. */
+export type ClarificationDecisionKind =
+  | "framework"
+  | "scope"
+  | "database"
+  | "auth"
+  | "payment"
+  | "deployment";
+
+/** One selectable answer offered when the runtime needs user clarification. */
+export type ClarificationOption = Readonly<{
+  /** Stable option id. */
+  id: string;
+  /** User-facing option label. */
+  label: string;
+  /** Short explanation of the tradeoff. */
+  description: string;
+  /** Whether this option should be presented first as the recommended path. */
+  recommended?: boolean;
+  /** Full answer text persisted when this option is selected. */
+  answerText: string;
+}>;
+
+/** Runtime request to ask the user for a blocking product or architecture decision. */
+export type ClarificationRequest = Readonly<{
+  /** Stable request id. */
+  id: string;
+  /** Short title shown in UI prompts. */
+  title: string;
+  /** User-facing question text. */
+  question: string;
+  /** Why this question is required before implementation. */
+  reason: string;
+  /** Missing decision categories covered by this request. */
+  decisions: readonly ClarificationDecisionKind[];
+  /** Suggested choices. */
+  options: readonly ClarificationOption[];
+  /** Whether free-form input is allowed. */
+  allowCustomAnswer: boolean;
+  /** Prompt shown when the user chooses a custom answer. */
+  customAnswerPrompt: string;
+}>;
+
+/** User answer returned from a clarification prompt. */
+export type ClarificationAnswer = Readonly<{
+  /** Request id being answered. */
+  requestId: string;
+  /** Missing decision categories covered by the answer. */
+  decisions: readonly ClarificationDecisionKind[];
+  /** Selected option id, when a predefined option was chosen. */
+  selectedOptionId?: string;
+  /** Selected option label, when a predefined option was chosen. */
+  selectedLabel?: string;
+  /** Final answer text injected into downstream agent context and memory. */
+  answerText: string;
+  /** Timestamp when the answer was captured. */
+  answeredAt: number;
 }>;
 
 /** Parsed review finding extracted from reviewer output. */

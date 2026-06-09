@@ -12,7 +12,10 @@ import {
   findProjectCommand,
   getOrCreateProjectCommandProfile,
 } from "../../context/project-command-store";
-import type { ProjectCommandDefinition } from "../../context/entities/project-command";
+import type {
+  ProjectCommandCategory,
+  ProjectCommandDefinition,
+} from "../../context/entities/project-command";
 import { tryResolveDirectCommand } from "../../runtime/direct-command";
 import { checkCommandAvailability } from "../../runtime/shell-resolver";
 import type { ToolResult } from "../entities/file-tools";
@@ -154,6 +157,37 @@ export function isAsyncFiniteCommand(commandText: string): boolean {
 }
 
 /**
+ * Infers the semantic category for a raw command string.
+ *
+ * @param commandText Raw command text.
+ * @returns Project command category used by validation and role-boundary checks.
+ */
+export function inferProjectCommandCategory(
+  commandText: string,
+): ProjectCommandCategory {
+  const normalized = commandText.trim().toLowerCase();
+  if (!normalized) {
+    return "custom";
+  }
+  if (/\b(?:test|vitest|jest|playwright|cypress|cargo test|go test)\b/.test(normalized)) {
+    return "test";
+  }
+  if (/\b(?:lint|eslint|stylelint|ruff check)\b/.test(normalized)) {
+    return "lint";
+  }
+  if (/\b(?:typecheck|tsc\b|mypy\b|pyright\b|cargo check|check-types)\b/.test(normalized)) {
+    return "typecheck";
+  }
+  if (/\b(?:format(?:-check)?|prettier\b.*--check|ruff format --check)\b/.test(normalized)) {
+    return "format-check";
+  }
+  if (/\b(?:build|compile|bundle|webpack|rollup|vite build|next build|nuxt build|astro build|tsup)\b/.test(normalized)) {
+    return "build";
+  }
+  return "custom";
+}
+
+/**
  * Returns the persisted project-command profile for one workspace.
  *
  * @param workspacePath Absolute workspace root.
@@ -219,7 +253,7 @@ export function resolveProjectCommandExecution(
   const command = resolveProjectCommand(workspacePath, commandId);
   const commandText = command?.command ?? commandOrId.trim();
   const commandLabel = command?.label ?? commandText;
-  const commandCategory = command?.category ?? "custom";
+  const commandCategory = command?.category ?? inferProjectCommandCategory(commandText);
   const commandCwd = command?.cwd ?? resolvedCwd;
   const directCommand = tryResolveDirectCommand(commandText, commandCwd);
   const effectiveCommandText = directCommand?.displayCommandText ?? commandText;

@@ -12,6 +12,24 @@ export const GREP_INCLUDE_EXTS = new Set([
   '.py', '.go', '.rs', '.java', '.kt', '.rb', '.php', '.sh', '.bash', '.zsh', '.yaml', '.yml', '.toml', '.dart',
 ]);
 
+/** Denylist for read-only terminal inspection. */
+export const TERMINAL_DENYLIST = [
+  /\b(?:rm|rmdir|mv|cp|chmod|chown|kill|pkill|killall|sudo|su)\b/i,
+  /\bgit\s+(?:reset|checkout|restore|clean|rebase|push|pull|merge|commit)\b/i,
+  /\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|remove|update|upgrade|publish|run)\b/i,
+  /\b(?:pip|pip3|uv)\s+(?:install|sync|remove|uninstall)\b/i,
+  /\b(?:cargo|go|dotnet|mvn|gradle|make)\s+(?:build|run|test|clean|install)\b/i,
+  /[><|;&`]/,
+  /\$\(/,
+];
+
+/** Allowed leading commands for read-only terminal inspection. */
+export const TERMINAL_ALLOWED_COMMANDS = new Set([
+  "pwd", "ls", "find", "rg", "grep", "head", "tail", "sed", "cat", "wc", "stat", "file", "tree",
+  "which", "env", "printenv", "git", "node", "npm", "pnpm", "yarn", "bun", "python", "python3", "ruby",
+  "php", "go", "cargo", "rustc", "javac", "java", "dotnet", "mvn", "gradle", "shellcheck", "ruff", "mypy",
+]);
+
 /** Maximum entries returned by `list_dir`. */
 export const MAX_LIST_DIR_ENTRIES = 100;
 /** Maximum recursive depth allowed by `list_dir`. */

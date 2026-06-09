@@ -28,6 +28,8 @@ import type {
 } from "../entities/file-tools";
 
 const LIST_DIR_SUMMARY_ENTRY_LIMIT = 40;
+const TRUNCATED_PATH_MARKERS = ["...", "…"] as const;
+type ExpectedPathKind = "any" | "file" | "dir";
 
 function shouldSkipDirectoryEntry(entry: fs.Dirent): boolean {
   return (
@@ -102,6 +104,26 @@ function normalizeLookupKey(value: string): string {
     .replace(/[^a-zA-Z0-9]+/g, "")
     .toLowerCase()
     .trim();
+}
+
+function hasTruncatedPathMarker(rawPath: string): boolean {
+  return TRUNCATED_PATH_MARKERS.some((marker) => rawPath.includes(marker));
+}
+
+function normalizePathForCompare(rawPath: string): string {
+  return rawPath.replace(/\\/g, "/").replace(/\/+/g, "/");
+}
+
+function pathMatchesKind(filePath: string, expectedKind: ExpectedPathKind): boolean {
+  try {
+    const stat = fs.statSync(filePath);
+    return (
+      expectedKind === "any" ||
+      (expectedKind === "file" ? stat.isFile() : stat.isDirectory())
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -272,6 +294,155 @@ function findWorkspacePathByApproximateName(
   return bestMatch.filePath;
 }
 
+function candidateSuffixesFromTruncatedPath(
+  workspaceRoot: string,
+  rawPath: string,
+): readonly string[] {
+  const normalized = normalizePathForCompare(rawPath.trim());
+  if (!hasTruncatedPathMarker(normalized)) {
+    return Object.freeze([]);
+  }
+
+  const suffixes = new Set<string>();
+  const workspaceName = path.basename(workspaceRoot);
+  for (const marker of TRUNCATED_PATH_MARKERS) {
+    let searchStart = 0;
+    while (searchStart < normalized.length) {
+      const markerIndex = normalized.indexOf(marker, searchStart);
+      if (markerIndex < 0) {
+        break;
+      }
+      const afterMarker = normalized
+        .slice(markerIndex + marker.length)
+        .replace(/^\/+/, "");
+      if (afterMarker) {
+        suffixes.add(afterMarker);
+        const segments = afterMarker.split("/").filter(Boolean);
+        const workspaceIndex = segments.indexOf(workspaceName);
+        if (workspaceIndex >= 0 && workspaceIndex < segments.length - 1) {
+          suffixes.add(segments.slice(workspaceIndex + 1).join("/"));
+        }
+      }
+      searchStart = markerIndex + marker.length;
+    }
+  }
+
+  return Object.freeze([...suffixes].filter(Boolean));
+}
+
+function findWorkspacePathBySuffix(
+  workspaceRoot: string,
+  rawSuffix: string,
+  expectedKind: ExpectedPathKind,
+): readonly string[] {
+  const suffix = normalizePathForCompare(rawSuffix).replace(/^\/+/, "");
+  if (!suffix) {
+    return Object.freeze([]);
+  }
+
+  const direct = path.resolve(workspaceRoot, suffix);
+  if (fs.existsSync(direct) && pathMatchesKind(direct, expectedKind)) {
+    return Object.freeze([direct]);
+  }
+
+  const matches = new Set<string>();
+  const skipDirs = new Set([
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    "coverage",
+    ".next",
+    ".nuxt",
+    ".turbo",
+    "target",
+    ".galaxy",
+  ]);
+  const stack = [workspaceRoot];
+  let visited = 0;
+  while (stack.length > 0 && visited < 8_000) {
+    const currentDir = stack.pop()!;
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        if (!skipDirs.has(entry.name)) {
+          stack.push(entryPath);
+        }
+        if (expectedKind === "dir" || expectedKind === "any") {
+          const relative = normalizePathForCompare(
+            path.relative(workspaceRoot, entryPath),
+          );
+          if (relative === suffix || relative.endsWith(`/${suffix}`)) {
+            matches.add(entryPath);
+          }
+        }
+        continue;
+      }
+
+      visited += 1;
+      if (expectedKind === "dir") {
+        continue;
+      }
+      const relative = normalizePathForCompare(
+        path.relative(workspaceRoot, entryPath),
+      );
+      if (relative === suffix || relative.endsWith(`/${suffix}`)) {
+        matches.add(entryPath);
+      }
+    }
+  }
+
+  return Object.freeze([...matches].sort());
+}
+
+function resolveTruncatedWorkspacePath(
+  workspaceRoot: string,
+  rawPath: string,
+  expectedKind: ExpectedPathKind,
+): Readonly<{ filePath?: string; error?: string }> {
+  if (!hasTruncatedPathMarker(rawPath)) {
+    return Object.freeze({});
+  }
+
+  const matches = new Set<string>();
+  for (const suffix of candidateSuffixesFromTruncatedPath(
+    workspaceRoot,
+    rawPath,
+  )) {
+    for (const candidate of findWorkspacePathBySuffix(
+      workspaceRoot,
+      suffix,
+      expectedKind,
+    )) {
+      matches.add(candidate);
+    }
+  }
+
+  const candidates = [...matches].sort();
+  const onlyCandidate = candidates[0];
+  if (candidates.length === 1 && onlyCandidate) {
+    return Object.freeze({ filePath: onlyCandidate });
+  }
+  if (candidates.length > 1) {
+    return Object.freeze({
+      error: `Path appears truncated and is ambiguous: ${rawPath}. Matching workspace paths: ${candidates
+        .slice(0, 8)
+        .map((candidate) => path.relative(workspaceRoot, candidate))
+        .join(", ")}`,
+    });
+  }
+  return Object.freeze({
+    error: `Path appears truncated and could not be resolved: ${rawPath}. Use a full absolute path or a workspace-relative path from ${workspaceRoot}.`,
+  });
+}
+
 /**
  * Resolves a workspace-relative path while enforcing workspace boundaries.
  *
@@ -286,6 +457,23 @@ export function resolveWorkspacePath(
   const candidate = path.isAbsolute(rawPath)
     ? path.resolve(rawPath)
     : path.resolve(workspaceRoot, rawPath);
+
+  if (hasTruncatedPathMarker(rawPath)) {
+    const recovered = resolveTruncatedWorkspacePath(
+      workspaceRoot,
+      rawPath,
+      "any",
+    );
+    if (recovered.filePath) {
+      return recovered.filePath;
+    }
+    if (!isWithinWorkspace(candidate, workspaceRoot) || !fs.existsSync(candidate)) {
+      throw new Error(
+        recovered.error ??
+          `Path appears truncated and could not be resolved: ${rawPath}`,
+      );
+    }
+  }
 
   if (!isWithinWorkspace(candidate, workspaceRoot)) {
     throw new Error(`Path must stay inside the workspace: ${rawPath}`);
@@ -311,6 +499,15 @@ export function resolveReadablePath(
       return workspacePath;
     }
   } catch {}
+
+  const truncatedPath = resolveTruncatedWorkspacePath(
+    workspaceRoot,
+    rawPath,
+    "any",
+  );
+  if (truncatedPath.filePath) {
+    return truncatedPath.filePath;
+  }
 
   const attachmentPath = resolveAttachmentStoredPath(workspaceRoot, rawPath);
   if (attachmentPath) {

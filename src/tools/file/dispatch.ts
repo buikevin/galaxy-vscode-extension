@@ -35,6 +35,13 @@ import {
   toDisplayPath,
 } from "./path-read";
 import { crawlWebTool, extractWebTool, mapWebTool, searchWebTool } from "./web";
+import { runInTerminalTool } from "./terminal";
+import { inspectWorkspaceEnvironmentTool } from "./environment";
+import {
+  querySharedMemoryTool,
+  queryWorkflowGraphTool,
+  writeAgentHandoffTool,
+} from "./memory";
 import type {
   EditFileRangeRequest,
   FileToolContext,
@@ -62,9 +69,84 @@ import {
   killManagedProjectCommandTool,
   runProjectCommandTool,
 } from "../project-command";
+import { inferProjectCommandCategory } from "../project-command/core";
 import { validateCodeTool } from "./diff-validate";
 import { findDiscoveredExtensionTool } from "./definitions";
+import { getChangeSummaryTool, runValidationSuiteTool } from "./quality";
 import { normalizeToolName } from "./tooling";
+import {
+  claimFileScope,
+  recordSubagentFileEdit,
+} from "../../context/file-scope-locks";
+
+const VALIDATION_COMMAND_CATEGORIES: ReadonlySet<string> = new Set([
+  "build",
+  "test",
+  "lint",
+  "typecheck",
+  "format-check",
+]);
+
+function blockCodingAgentValidationCommand(
+  config: FileToolContext["config"],
+  commandText: string,
+): ToolResult | null {
+  if (config.activeSubagentRole !== "coding") {
+    return null;
+  }
+  const category = inferProjectCommandCategory(commandText);
+  if (!VALIDATION_COMMAND_CATEGORIES.has(category)) {
+    return null;
+  }
+  return Object.freeze({
+    success: false,
+    content: [
+      "Project validation commands are handled by Testing Agent in subagent mode.",
+      "Add the recommended command, observed failure, or validation risk to write_agent_handoff so Testing Agent can choose the correct framework/language-specific test strategy.",
+    ].join("\n"),
+    error: "Validation command belongs to Testing Agent.",
+    meta: Object.freeze({
+      blockedBy: "subagent_role_boundary",
+      role: "coding",
+      category,
+    }),
+  });
+}
+
+function coerceMultiEditRanges(params: Readonly<Record<string, unknown>>): readonly MultiEditFileRange[] {
+  if (Array.isArray(params.edits)) {
+    return params.edits as readonly MultiEditFileRange[];
+  }
+  if (Array.isArray(params.ranges)) {
+    return params.ranges as readonly MultiEditFileRange[];
+  }
+  const startLine = Number(params.start_line ?? params.startLine);
+  const endLine = Number(params.end_line ?? params.endLine);
+  const newContent = params.new_content ?? params.newContent ?? params.content;
+  if (
+    Number.isFinite(startLine) &&
+    Number.isFinite(endLine) &&
+    typeof newContent === "string"
+  ) {
+    return Object.freeze([
+      Object.freeze({
+        start_line: startLine,
+        end_line: endLine,
+        new_content: newContent,
+        ...(typeof (params.expected_range_content ?? params.expectedRangeContent) === "string"
+          ? { expected_range_content: String(params.expected_range_content ?? params.expectedRangeContent) }
+          : {}),
+        ...(typeof (params.anchor_before ?? params.anchorBefore) === "string"
+          ? { anchor_before: String(params.anchor_before ?? params.anchorBefore) }
+          : {}),
+        ...(typeof (params.anchor_after ?? params.anchorAfter) === "string"
+          ? { anchor_after: String(params.anchor_after ?? params.anchorAfter) }
+          : {}),
+      }) as MultiEditFileRange,
+    ]);
+  }
+  return Object.freeze([]);
+}
 
 /**
  * Reads one string parameter from a tool call.
@@ -75,7 +157,66 @@ import { normalizeToolName } from "./tooling";
  * @returns Trimmed parameter string.
  */
 function p(call: ToolCall, key: string, fallback = ""): string {
+  if (key === "path") {
+    return String(
+      call.params.path ??
+      call.params.file_path ??
+      call.params.filePath ??
+      call.params.filepath ??
+      fallback,
+    ).trim();
+  }
   return String(call.params[key] ?? fallback).trim();
+}
+
+function n(call: ToolCall, key: string, fallback = 0): number {
+  if (key === "line") {
+    return Number(call.params.line ?? call.params.line_number ?? call.params.lineNumber ?? fallback);
+  }
+  if (key === "start_line") {
+    return Number(call.params.start_line ?? call.params.startLine ?? call.params.start ?? fallback);
+  }
+  if (key === "end_line") {
+    return Number(call.params.end_line ?? call.params.endLine ?? call.params.end ?? fallback);
+  }
+  return Number(call.params[key] ?? fallback);
+}
+
+function annotateFileScopeConflicts(
+  toolContext: FileToolContext,
+  toolName: string,
+  result: ToolResult,
+): ToolResult {
+  if (
+    !result.success ||
+    !toolContext.config.activeSubagentRole ||
+    typeof result.meta?.filePath !== "string"
+  ) {
+    return result;
+  }
+  const conflicts = recordSubagentFileEdit({
+    workspacePath: toolContext.workspaceRoot,
+    filePath: result.meta.filePath,
+    role: toolContext.config.activeSubagentRole,
+    toolName,
+  });
+  if (conflicts.length === 0) {
+    return result;
+  }
+  const conflictText = conflicts
+    .map(
+      (conflict) =>
+        `- ${conflict.filePath}: ${conflict.existingRole} already touched this scope (${conflict.reason})`,
+    )
+    .join("\n");
+  return Object.freeze({
+    ...result,
+    content: `${result.content}\n\n[FILE SCOPE CONFLICT]\n${conflictText}`,
+    meta: Object.freeze({
+      ...(result.meta ?? {}),
+      fileScopeConflicts: conflicts,
+    }),
+  });
 }
 
 /**
@@ -385,19 +526,87 @@ export async function executeToolAsync(
             error:
               "Dismissing review findings is not available in this context.",
           });
+    case "query_shared_memory":
+      return querySharedMemoryTool(toolContext.workspaceRoot, {
+        query: p(call, "query"),
+        role: p(call, "role") || undefined,
+        fallbackRole: toolContext.config.activeSubagentRole,
+        limit: Number(call.params.limit ?? 4),
+        turnKinds: Array.isArray(call.params.turn_kinds)
+          ? call.params.turn_kinds as readonly unknown[]
+          : Array.isArray(call.params.turnKinds)
+            ? call.params.turnKinds as readonly unknown[]
+            : undefined,
+      });
+    case "write_agent_handoff":
+      return writeAgentHandoffTool(toolContext.workspaceRoot, {
+        role: p(call, "role") || undefined,
+        fallbackRole: toolContext.config.activeSubagentRole,
+        summary: p(call, "summary"),
+        status: p(call, "status") || undefined,
+        nextRole: p(call, "next_role") || p(call, "nextRole") || undefined,
+        files: Array.isArray(call.params.files) ? call.params.files as readonly unknown[] : undefined,
+        planId: p(call, "plan_id") || p(call, "planId") || undefined,
+      });
+    case "query_workflow_graph":
+      return queryWorkflowGraphTool(toolContext.workspaceRoot, {
+        query: p(call, "query"),
+      });
+    case "inspect_workspace_environment":
+      return inspectWorkspaceEnvironmentTool({
+        workspacePath: toolContext.workspaceRoot,
+        cwd: p(call, "cwd") || undefined,
+        paths: Array.isArray(call.params.paths)
+          ? call.params.paths as readonly unknown[]
+          : undefined,
+        envVars: Array.isArray(call.params.env_vars)
+          ? call.params.env_vars as readonly unknown[]
+          : Array.isArray(call.params.envVars)
+            ? call.params.envVars as readonly unknown[]
+            : undefined,
+        commandChecks: Array.isArray(call.params.command_checks)
+          ? call.params.command_checks as readonly { command?: unknown; binary?: unknown; args?: unknown }[]
+          : Array.isArray(call.params.commandChecks)
+            ? call.params.commandChecks as readonly { command?: unknown; binary?: unknown; args?: unknown }[]
+            : undefined,
+        maxChars: Number(call.params.maxChars ?? call.params.max_chars ?? 8_000),
+      });
+    case "claim_file_scope": {
+      const files = Array.isArray(call.params.files)
+        ? call.params.files.map((item) => String(item ?? "").trim()).filter(Boolean)
+        : [];
+      const result = claimFileScope({
+        workspacePath: toolContext.workspaceRoot,
+        files,
+        role: p(call, "role") || toolContext.config.activeSubagentRole || "main",
+        reason: p(call, "reason") || "claimed by claim_file_scope",
+        force: Boolean(call.params.force ?? false),
+      });
+      return Object.freeze({
+        success: result.success,
+        content: result.content,
+        ...(result.success ? {} : { error: "File scope conflict detected." }),
+        meta: Object.freeze({
+          claimedFiles: result.claimedFiles,
+          conflicts: result.conflicts,
+        }),
+      });
+    }
     case "write_file": {
-      const result = executeWriteFileTool(
+      let result = executeWriteFileTool(
         toolContext.workspaceRoot,
         p(call, "path"),
         String(call.params.content ?? ""),
+        Boolean(call.params.overwrite_existing ?? call.params.overwriteExisting ?? call.params.overwrite ?? call.params.replace ?? false),
       );
+      result = annotateFileScopeConflicts(toolContext, toolName, result);
       if (result.success && typeof result.meta?.filePath === "string") {
         await toolContext.refreshWorkspaceFiles();
       }
       return result;
     }
     case "create_drawio_diagram": {
-      const result = executeCreateDrawioDiagramTool(
+      let result = executeCreateDrawioDiagramTool(
         toolContext.workspaceRoot,
         p(call, "path"),
         {
@@ -409,13 +618,14 @@ export async function executeToolAsync(
             : {}),
         },
       );
+      result = annotateFileScopeConflicts(toolContext, toolName, result);
       if (result.success && typeof result.meta?.filePath === "string") {
         await toolContext.refreshWorkspaceFiles();
         if (call.params.open !== false && toolContext.openDrawioDiagram) {
           const openResult = await toolContext.openDrawioDiagram(
             result.meta.filePath as string,
           );
-          return Object.freeze({
+          return annotateFileScopeConflicts(toolContext, toolName, Object.freeze({
             success: true,
             content: `${result.content}\n${openResult.content}`,
             meta: Object.freeze({
@@ -423,13 +633,13 @@ export async function executeToolAsync(
               opened: true,
               fallbackToText: openResult.meta?.fallbackToText === true,
             }),
-          });
+          }));
         }
       }
       return result;
     }
     case "export_workflow_drawio_diagram": {
-      const result = await createWorkflowDrawioDiagramTool(
+      let result = await createWorkflowDrawioDiagramTool(
         toolContext.workspaceRoot,
         p(call, "path"),
         {
@@ -465,13 +675,14 @@ export async function executeToolAsync(
             : {}),
         },
       );
+      result = annotateFileScopeConflicts(toolContext, toolName, result);
       if (result.success && typeof result.meta?.filePath === "string") {
         await toolContext.refreshWorkspaceFiles();
         if (call.params.open !== false && toolContext.openDrawioDiagram) {
           const openResult = await toolContext.openDrawioDiagram(
             result.meta.filePath as string,
           );
-          return Object.freeze({
+          return annotateFileScopeConflicts(toolContext, toolName, Object.freeze({
             success: true,
             content: `${result.content}\n${openResult.content}`,
             meta: Object.freeze({
@@ -479,13 +690,13 @@ export async function executeToolAsync(
               opened: true,
               fallbackToText: openResult.meta?.fallbackToText === true,
             }),
-          });
+          }));
         }
       }
       return result;
     }
     case "export_workflow_mermaid_diagram": {
-      const result = await createWorkflowMermaidDiagramTool(
+      let result = await createWorkflowMermaidDiagramTool(
         toolContext.workspaceRoot,
         p(call, "path"),
         {
@@ -521,11 +732,12 @@ export async function executeToolAsync(
             : {}),
         },
       );
+      result = annotateFileScopeConflicts(toolContext, toolName, result);
       if (result.success && typeof result.meta?.filePath === "string") {
         await toolContext.refreshWorkspaceFiles();
         if (call.params.open !== false) {
           await toolContext.revealFile(result.meta.filePath as string);
-          return Object.freeze({
+          return annotateFileScopeConflicts(toolContext, toolName, Object.freeze({
             success: true,
             content: `${result.content}\nOpened ${toDisplayPath(
               result.meta.filePath as string,
@@ -535,7 +747,7 @@ export async function executeToolAsync(
               ...result.meta,
               opened: true,
             }),
-          });
+          }));
         }
       }
       return result;
@@ -546,7 +758,7 @@ export async function executeToolAsync(
       return executeDrawioNativeActionTool("export", call, toolContext);
     case "insert_file_at_line": {
       const request: InsertFileAtLineRequest = Object.freeze({
-        line: Number(call.params.line ?? 0),
+        line: n(call, "line"),
         contentToInsert: String(call.params.content ?? ""),
         ...(typeof call.params.expected_total_lines === "number" &&
         Number.isFinite(call.params.expected_total_lines) &&
@@ -560,24 +772,26 @@ export async function executeToolAsync(
           ? { anchorAfter: String(call.params.anchor_after) }
           : {}),
       });
-      const result = executeInsertFileAtLineTool(
+      let result = executeInsertFileAtLineTool(
         toolContext.workspaceRoot,
         p(call, "path"),
         request,
       );
+      result = annotateFileScopeConflicts(toolContext, toolName, result);
       if (result.success && typeof result.meta?.filePath === "string") {
         await toolContext.refreshWorkspaceFiles();
       }
       return result;
     }
     case "edit_file": {
-      const result = executeEditFileTool(
+      let result = executeEditFileTool(
         toolContext.workspaceRoot,
         p(call, "path"),
         String(call.params.old_string ?? ""),
         String(call.params.new_string ?? ""),
         Boolean(call.params.replace_all ?? false),
       );
+      result = annotateFileScopeConflicts(toolContext, toolName, result);
       if (result.success && typeof result.meta?.filePath === "string") {
         await toolContext.refreshWorkspaceFiles();
       }
@@ -585,43 +799,45 @@ export async function executeToolAsync(
     }
     case "edit_file_range": {
       const request: EditFileRangeRequest = Object.freeze({
-        startLine: Number(call.params.start_line ?? 0),
-        endLine: Number(call.params.end_line ?? 0),
-        newContent: String(call.params.new_content ?? ""),
-        ...(typeof call.params.expected_total_lines === "number" &&
-        Number.isFinite(call.params.expected_total_lines) &&
-        Number(call.params.expected_total_lines) > 0
-          ? { expectedTotalLines: Number(call.params.expected_total_lines) }
+        startLine: n(call, "start_line"),
+        endLine: n(call, "end_line"),
+        newContent: String(
+          call.params.new_content ?? call.params.newContent ?? call.params.content ?? "",
+        ),
+        ...(typeof (call.params.expected_total_lines ?? call.params.expectedTotalLines) === "number" &&
+        Number.isFinite(call.params.expected_total_lines ?? call.params.expectedTotalLines) &&
+        Number(call.params.expected_total_lines ?? call.params.expectedTotalLines) > 0
+          ? { expectedTotalLines: Number(call.params.expected_total_lines ?? call.params.expectedTotalLines) }
           : {}),
-        ...(typeof call.params.expected_range_content === "string"
-          ? { expectedRangeContent: String(call.params.expected_range_content) }
+        ...(typeof (call.params.expected_range_content ?? call.params.expectedRangeContent) === "string"
+          ? { expectedRangeContent: String(call.params.expected_range_content ?? call.params.expectedRangeContent) }
           : {}),
-        ...(typeof call.params.anchor_before === "string"
-          ? { anchorBefore: String(call.params.anchor_before) }
+        ...(typeof (call.params.anchor_before ?? call.params.anchorBefore) === "string"
+          ? { anchorBefore: String(call.params.anchor_before ?? call.params.anchorBefore) }
           : {}),
-        ...(typeof call.params.anchor_after === "string"
-          ? { anchorAfter: String(call.params.anchor_after) }
+        ...(typeof (call.params.anchor_after ?? call.params.anchorAfter) === "string"
+          ? { anchorAfter: String(call.params.anchor_after ?? call.params.anchorAfter) }
           : {}),
       });
-      const result = executeEditFileRangeTool(
+      let result = executeEditFileRangeTool(
         toolContext.workspaceRoot,
         p(call, "path"),
         request,
       );
+      result = annotateFileScopeConflicts(toolContext, toolName, result);
       if (result.success && typeof result.meta?.filePath === "string") {
         await toolContext.refreshWorkspaceFiles();
       }
       return result;
     }
     case "multi_edit_file_ranges": {
-      const result = executeMultiEditFileRangesTool(
+      let result = executeMultiEditFileRangesTool(
         toolContext.workspaceRoot,
         p(call, "path"),
-        (Array.isArray(call.params.edits)
-          ? call.params.edits
-          : []) as readonly MultiEditFileRange[],
-        Number(call.params.expected_total_lines ?? 0),
+        coerceMultiEditRanges(call.params),
+        Number(call.params.expected_total_lines ?? call.params.expectedTotalLines ?? 0),
       );
+      result = annotateFileScopeConflicts(toolContext, toolName, result);
       if (result.success && typeof result.meta?.filePath === "string") {
         await toolContext.refreshWorkspaceFiles();
       }
@@ -755,11 +971,37 @@ export async function executeToolAsync(
           error: String(error),
         });
       }
+    case "run_validation_suite":
+      return runValidationSuiteTool(toolContext.workspaceRoot, toolContext.config, {
+        paths: Array.isArray(call.params.paths)
+          ? (call.params.paths as readonly unknown[])
+          : undefined,
+      });
+    case "get_change_summary":
+      return getChangeSummaryTool(toolContext.workspaceRoot);
+    case "run_in_terminal":
+      return runInTerminalTool(
+        toolContext.workspaceRoot,
+        p(call, "command"),
+        {
+          cwd: p(call, "cwd"),
+          timeoutMs: Number(call.params.timeoutMs ?? 8_000),
+          maxChars: Number(call.params.maxChars ?? 4_000),
+        },
+      );
     case "run_project_command":
-    case "run_terminal_command":
+    case "run_terminal_command": {
+      const commandText = p(call, "command", p(call, "commandId"));
+      const blocked = blockCodingAgentValidationCommand(
+        toolContext.config,
+        commandText,
+      );
+      if (blocked) {
+        return blocked;
+      }
       return runProjectCommandTool(
         toolContext.workspaceRoot,
-        p(call, "command", p(call, "commandId")),
+        commandText,
         {
           cwd: p(call, "cwd"),
           maxChars: Number(call.params.maxChars ?? 8_000),
@@ -821,6 +1063,7 @@ export async function executeToolAsync(
               : undefined,
         },
       );
+    }
     case "await_terminal_command":
       return awaitManagedProjectCommandTool(p(call, "commandId"), {
         timeoutMs: Number(call.params.timeoutMs ?? 15_000),

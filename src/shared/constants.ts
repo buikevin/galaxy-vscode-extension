@@ -83,21 +83,23 @@ export const COMMAND_AVAILABILITY_TIMEOUT_MS = 5_000;
 /** Hosted model used by the main manual agent. */
 export const MAIN_SUB_AGENT_MODEL = "qwen3.5:397b-cloud";
 /** Hosted model used for business-analysis turns. */
-export const BA_SUB_AGENT_MODEL = "gemini-3-flash-preview:cloud";
+export const BA_SUB_AGENT_MODEL = "gemma4:31b-cloud";
+/** Hosted model used for project profiling turns. */
+export const PROFILER_SUB_AGENT_MODEL = "gpt-oss:120b-cloud";
 /** Hosted model used for planning turns. */
-export const PLANNING_SUB_AGENT_MODEL = "qwen3.5:397b-cloud";
+export const PLANNING_SUB_AGENT_MODEL = "gpt-oss:120b-cloud";
 /** Hosted model used for solution-architecture turns. */
-export const SA_SUB_AGENT_MODEL = "deepseek-v4-pro:cloud";
+export const SA_SUB_AGENT_MODEL = "gpt-oss:120b-cloud";
 /** Hosted model used for scoped coder sub-agent turns. */
 export const CODER_SUB_AGENT_MODEL = "qwen3-coder-next:cloud";
 /** Hosted model used for testing sub-agent turns. */
 export const TESTING_SUB_AGENT_MODEL = "qwen3-coder-next:cloud";
 /** Hosted model used for review sub-agent turns. */
-export const REVIEW_SUB_AGENT_MODEL = "deepseek-v4-pro:cloud";
+export const REVIEW_SUB_AGENT_MODEL = "gemma4:31b-cloud";
 /** Feature flag controlling whether selective multi-agent planning is active. */
 export const ENABLE_SELECTIVE_MULTI_AGENT = true;
 /** Number of retry attempts for the manual driver when transient network errors occur. */
-export const MANUAL_DRIVER_RETRY_ATTEMPTS = 2;
+export const MANUAL_DRIVER_RETRY_ATTEMPTS = 3;
 /** Base delay in milliseconds between manual driver retries. */
 export const MANUAL_DRIVER_RETRY_DELAY_MS = 800;
 /** Maximum number of characters per file passed to the reviewer. */
@@ -288,6 +290,7 @@ export const DEFAULT_CONFIG: GalaxyConfig = {
     { type: "ollama", model: "llama3.2", baseUrl: "http://localhost:11434" },
   ],
   subagent: true,
+  subagentRoles: {},
   quality: {
     review: true,
     test: true,
@@ -315,6 +318,11 @@ export const DEFAULT_CONFIG: GalaxyConfig = {
     get_latest_review_findings: true,
     get_next_review_finding: true,
     dismiss_review_finding: true,
+    get_change_summary: true,
+    query_shared_memory: true,
+    write_agent_handoff: true,
+    query_workflow_graph: true,
+    claim_file_scope: true,
     write_file: true,
     create_drawio_diagram: true,
     convert_drawio_diagram: true,
@@ -329,6 +337,7 @@ export const DEFAULT_CONFIG: GalaxyConfig = {
     head: true,
     tail: true,
     read_document: true,
+    inspect_workspace_environment: true,
     search_web: true,
     extract_web: true,
     map_web: true,
@@ -346,6 +355,7 @@ export const DEFAULT_CONFIG: GalaxyConfig = {
     git_checkout: true,
     run_project_command: true,
     validate_code: true,
+    run_validation_suite: true,
     request_code_review: true,
     vscode_open_diff: true,
     vscode_start_frontend_preview: true,

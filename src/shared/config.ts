@@ -7,6 +7,7 @@
  */
 
 import type { AgentType, ExtensionToolGroup, ToolToggles } from './protocol';
+import type { SubagentRoleId } from './runtime';
 
 /** Provider-specific configuration for one supported agent. */
 export interface AgentConfig {
@@ -84,12 +85,29 @@ export interface ValidationPreferencesConfig {
   build: readonly string[];
 }
 
+/** Optional per-role model override for role-based subagent orchestration. */
+export interface SubagentRoleOverrideConfig {
+  /** Hosted or local model name used by this role. */
+  model?: string;
+  /** Optional provider base URL for Ollama-compatible hosted models. */
+  baseUrl?: string;
+}
+
+/** Optional model override map keyed by subagent role id. */
+export type SubagentRoleOverridesConfig = Partial<
+  Record<SubagentRoleId, SubagentRoleOverrideConfig>
+>;
+
 /** Complete persisted configuration for the VS Code extension. */
 export interface GalaxyConfig {
   /** Agent provider configurations available to the extension. */
   agent: AgentConfig[];
   /** Whether subagent orchestration is enabled. */
   subagent: boolean;
+  /** Optional per-role subagent model overrides. */
+  subagentRoles: SubagentRoleOverridesConfig;
+  /** Runtime-only role marker used while one sub-agent is executing. */
+  activeSubagentRole?: SubagentRoleId;
   /** Quality-gate preferences. */
   quality: QualityConfig;
   /** Tool-safety preferences. */

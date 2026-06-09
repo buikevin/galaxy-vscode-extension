@@ -7,6 +7,7 @@
  */
 
 import type { ReadPlanProgressItem } from "../entities/history";
+import { sanitizeMemoryUserMessage } from "../history/helpers";
 import { resolveShellProfile } from "../../runtime/shell-resolver";
 import type {
   ManualReadPlanStep,
@@ -31,7 +32,7 @@ export function buildTaskMemoryContent(opts: {
   const lines: string[] = ["[RELEVANT PRIOR TASK MEMORY]"];
   opts.entries.slice(0, 3).forEach((entry, index) => {
     lines.push(
-      `${index + 1}. [${entry.turnKind}] User intent: ${entry.userIntent}`,
+      `${index + 1}. [${entry.turnKind}] User intent: ${sanitizeMemoryUserMessage(entry.userIntent)}`,
     );
     lines.push(`   Conclusion: ${entry.assistantConclusion}`);
     if (entry.files.length > 0) {

@@ -93,9 +93,121 @@ export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
     }),
   }),
   Object.freeze({
+    name: "query_shared_memory",
+    description:
+      "Query shared long-term task memory for prior decisions, clarifications, sub-agent handoffs, project profiles, implementation notes, reviews, and validation results. The result includes role-based filtering and stale/missing workspace evidence warnings.",
+    parameters: Object.freeze({
+      type: "object",
+      properties: Object.freeze({
+        query: Object.freeze({
+          type: "string",
+          description: "Natural-language memory query for the current task or feature",
+        }),
+        role: Object.freeze({
+          type: "string",
+          description:
+            "Optional role id: main, ba, profiler, planning, sa, coding, testing, or review. Defaults to the active sub-agent role.",
+        }),
+        limit: Object.freeze({
+          type: "number",
+          description: "Maximum memory entries to return (default 4, max 12)",
+        }),
+        turn_kinds: Object.freeze({
+          type: "array",
+          items: Object.freeze({ type: "string" }),
+          description:
+            "Optional narrower turn kinds to read, for example clarification, subagent_handoff, implementation, review, validation",
+        }),
+      }),
+      required: Object.freeze(["query"]),
+    }),
+  }),
+  Object.freeze({
+    name: "write_agent_handoff",
+    description:
+      "Persist a concise sub-agent handoff into shared long-term task memory so later roles and future turns can reuse the decision, status, files, project profile, and next-step context.",
+    parameters: Object.freeze({
+      type: "object",
+      properties: Object.freeze({
+        role: Object.freeze({
+          type: "string",
+          description:
+            "Role producing the handoff: main, ba, profiler, planning, sa, coding, testing, or review. Defaults to the active sub-agent role.",
+        }),
+        summary: Object.freeze({
+          type: "string",
+          description:
+            "Concise handoff summary including completed work, blockers, project profile when relevant, and what the next role should verify",
+        }),
+        status: Object.freeze({
+          type: "string",
+          description: "Handoff status: completed, failed, or needs_user_input",
+        }),
+        next_role: Object.freeze({
+          type: "string",
+          description: "Optional next role expected to consume this handoff",
+        }),
+        files: Object.freeze({
+          type: "array",
+          items: Object.freeze({ type: "string" }),
+          description: "Workspace file paths touched or relevant to this handoff",
+        }),
+        plan_id: Object.freeze({
+          type: "string",
+          description: "Optional orchestration plan id for grouping related handoffs",
+        }),
+      }),
+      required: Object.freeze(["summary"]),
+    }),
+  }),
+  Object.freeze({
+    name: "query_workflow_graph",
+    description:
+      "Query GraphRAG workflow memory as text context instead of creating a diagram. Use for routes, screens, services, data flow, and module relationships; verify exact source files before editing when evidence is stale or ambiguous.",
+    parameters: Object.freeze({
+      type: "object",
+      properties: Object.freeze({
+        query: Object.freeze({
+          type: "string",
+          description: "Natural-language workflow or architecture query",
+        }),
+      }),
+      required: Object.freeze(["query"]),
+    }),
+  }),
+  Object.freeze({
+    name: "claim_file_scope",
+    description:
+      "Claim a file-edit scope for the active subagent before editing. Use this before multi-file coding work so Galaxy can detect same-file conflicts between subagents.",
+    parameters: Object.freeze({
+      type: "object",
+      properties: Object.freeze({
+        files: Object.freeze({
+          type: "array",
+          items: Object.freeze({ type: "string" }),
+          description: "Workspace file paths this agent plans to edit",
+        }),
+        role: Object.freeze({
+          type: "string",
+          description: "Optional role id. Defaults to the active subagent role.",
+        }),
+        reason: Object.freeze({
+          type: "string",
+          description: "Short reason for the claim",
+        }),
+        force: Object.freeze({
+          type: "boolean",
+          description:
+            "Override an existing role claim after rechecking the conflict",
+        }),
+      }),
+      required: Object.freeze(["files"]),
+    }),
+  }),
+  Object.freeze({
     name: "write_file",
     description:
-      "Create a new file. This tool refuses to overwrite an existing file.",
+      "Create a new file, or replace an existing file only when overwrite_existing=true. For existing files, prefer multi_edit_file_ranges first. Use overwrite_existing only after reading the current file and when replacing the whole file is the safest repair.",
     parameters: Object.freeze({
       type: "object",
       properties: Object.freeze({
@@ -106,6 +218,10 @@ export const FILE_TOOL_DEFINITIONS: readonly ToolDefinition[] = Object.freeze([
         content: Object.freeze({
           type: "string",
           description: "Full file content to write",
+        }),
+        overwrite_existing: Object.freeze({
+          type: "boolean",
+          description: "Set true to replace an existing file after reading it. Defaults false.",
         }),
       }),
       required: Object.freeze(["path", "content"]),

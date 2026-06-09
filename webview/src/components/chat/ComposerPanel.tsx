@@ -159,11 +159,13 @@ export function ComposerPanel() {
           <PlusMenu
             anchorRef={composer.plusMenuAnchorRef}
             isOpen={composer.isPlusMenuOpen}
+            subagentPreferences={composer.subagentPreferences}
             toolCapabilities={composer.toolCapabilities}
             toolToggles={composer.toolToggles}
             extensionToolGroups={composer.extensionToolGroups}
             extensionToolToggles={composer.extensionToolToggles}
             onToggleOpen={composer.onTogglePlusMenu}
+            onUpdateSubagentPreferences={composer.onUpdateSubagentPreferences}
             onUpdateToolCapabilities={composer.onUpdateToolCapabilities}
             onUpdateToolToggles={composer.onUpdateToolToggles}
             onUpdateExtensionToolToggles={composer.onUpdateExtensionToolToggles}

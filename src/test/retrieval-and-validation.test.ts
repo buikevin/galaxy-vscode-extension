@@ -4,8 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Webview } from "vscode";
+import { getBlockedCapability } from "../runtime/chat-approvals";
 import { DEFAULT_CONFIG } from "../shared/constants";
 import type { GalaxyConfig } from "../shared/config";
+import { buildSubagentRoleConfig } from "../shared/subagents";
+import { isProductiveToolResult } from "../shared/tool-budget";
 import {
   createDraftLocalAttachment,
   listDraftLocalAttachments,
@@ -22,7 +25,7 @@ import {
   cosineSimilarityEmbedding,
   embedTexts,
 } from "../context/gemini-embeddings";
-import { createToolDigest } from "../context/history/helpers";
+import { createToolDigest, sanitizeMemoryUserMessage } from "../context/history/helpers";
 import { createHistoryManager } from "../context/history-manager";
 import { buildPromptContext } from "../context/prompt-builder";
 import {
@@ -168,6 +171,7 @@ import { commandExists } from "../tools/project-command/core";
 import { runProjectCommandTool } from "../tools/project-command/execute";
 import { managedCommands } from "../tools/project-command/state";
 import { derivePromptContextHints } from "../runtime/drivers/message-builders";
+import { buildSelectiveMultiAgentSubtaskMessage } from "../runtime/selective-multi-agent";
 import { buildSystemPrompt } from "../runtime/system-prompt";
 import { detectProjectCommands } from "../validation/command-detection";
 import { parseIssuesWithCwd } from "../validation/issues";
@@ -560,6 +564,9 @@ suite("Retrieval And Validation", () => {
       onToolCalls: async () => {},
       onEvidenceContext: async () => {},
       requestToolApproval: async () => "allow",
+      askUserClarification: async () => null,
+      askArchitectureApproval: async () => "approve",
+      askEnvironmentSetupDecision: async () => "code_without_verified_environment",
       showWorkbenchError: (message) => {
         errors.push(message);
       },
@@ -646,6 +653,88 @@ suite("Retrieval And Validation", () => {
 
     assert.strictEqual(digest.success, false);
     assert.deepStrictEqual(digest.filesWritten, []);
+  });
+
+  test("sanitizeMemoryUserMessage strips subagent tool schemas", () => {
+    const sanitized = sanitizeMemoryUserMessage([
+      "[SYSTEM SUBTASK EXECUTION]",
+      "You are the Coding Agent.",
+      "",
+      "[AVAILABLE TOOLS]",
+      "- read_file: Read file content.",
+      "- multi_edit_file_ranges: Apply multiple targeted line-range edits.",
+      "- write_file: Create a new file.",
+      "",
+      "[ORIGINAL USER REQUEST]",
+      "Thêm warranty pricing cho checkout.",
+      "",
+      "[YOUR SCOPE FOR THIS TURN]",
+      "Implement the requested code changes.",
+      "",
+      "[RULES]",
+      "- Before editing planned files, use claim_file_scope.",
+    ].join("\n"));
+
+    assert.match(sanitized, /\[SUBAGENT MEMORY\]/);
+    assert.match(sanitized, /Role: Coding Agent/);
+    assert.match(sanitized, /Original request: Thêm warranty pricing cho checkout\./);
+    assert.match(sanitized, /Scope: Implement the requested code changes\./);
+    assert.doesNotMatch(sanitized, /\[AVAILABLE TOOLS\]/);
+    assert.doesNotMatch(sanitized, /multi_edit_file_ranges/);
+    assert.doesNotMatch(sanitized, /write_file: Create a new file/);
+    assert.doesNotMatch(sanitized, /\[RULES\]/);
+  });
+
+  test("subagent task payload excludes role tool contract while system prompt owns it", () => {
+    const originalUserMessage: ChatMessage = Object.freeze({
+      id: "user-1",
+      role: "user",
+      content: "Thêm warranty pricing cho checkout.",
+      timestamp: Date.now(),
+    });
+    const subtaskMessage = buildSelectiveMultiAgentSubtaskMessage({
+      config: DEFAULT_CONFIG,
+      originalUserMessage,
+      subtask: Object.freeze({
+        id: "coding",
+        role: "coding",
+        title: "Implementation",
+        objective: "Implement warranty pricing in checkout.",
+        acceptanceCriteria: Object.freeze([
+          "Checkout supports warranty pricing.",
+        ]),
+      }),
+    });
+
+    assert.match(subtaskMessage.content, /\[SUBAGENT TASK\]/);
+    assert.match(subtaskMessage.content, /\[ORIGINAL USER REQUEST\]/);
+    assert.match(subtaskMessage.content, /\[ASSIGNED SCOPE\]/);
+    assert.strictEqual(subtaskMessage.memoryContent, subtaskMessage.content);
+    assert.doesNotMatch(subtaskMessage.content, /\[AVAILABLE TOOLS\]/);
+    assert.doesNotMatch(subtaskMessage.content, /\[QUALITY TOOL GUIDANCE\]/);
+    assert.doesNotMatch(subtaskMessage.content, /\[HANDOFF OUTPUT CONTRACT\]/);
+    assert.doesNotMatch(subtaskMessage.content, /\[RULES\]/);
+    assert.doesNotMatch(subtaskMessage.content, /multi_edit_file_ranges/);
+
+    const systemPrompt = buildSystemPrompt(
+      "manual",
+      buildSubagentRoleConfig(DEFAULT_CONFIG, "coding"),
+    );
+
+    assert.match(systemPrompt, /You are the Coding Agent, a specialized Galaxy Code subagent\./);
+    assert.match(systemPrompt, /## Active Subagent Role/);
+    assert.match(systemPrompt, /Role: Coding Agent \(coding\)/);
+    assert.match(systemPrompt, /## Available Tools/);
+    assert.match(systemPrompt, /## Forbidden Tools/);
+    assert.match(systemPrompt, /Disabled capability groups.*runCommands/);
+    assert.match(systemPrompt, /multi_edit_file_ranges/);
+    assert.match(systemPrompt, /### Handoff Output Contract/);
+    assert.doesNotMatch(systemPrompt, /## Manual Agent Guidance/);
+    assert.doesNotMatch(systemPrompt, /## Tool Usage Notes/);
+    assert.doesNotMatch(systemPrompt, /## Context Engineering Principles/);
+    assert.doesNotMatch(systemPrompt, /search_web/);
+    assert.doesNotMatch(systemPrompt, /galaxy_design_init/);
+    assert.doesNotMatch(systemPrompt, /get_next_review_finding/);
   });
 
   test("deriveStaleEvidence does not invalidate prior reads after a failed edit attempt", () => {
@@ -836,6 +925,9 @@ suite("Retrieval And Validation", () => {
           debugBlocks.push({ scope, content });
         },
         requestToolApproval: async () => "allow",
+        askUserClarification: async () => null,
+        askArchitectureApproval: async () => "approve",
+        askEnvironmentSetupDecision: async () => "code_without_verified_environment",
         showWorkbenchError: () => {},
         shouldGateAssistantFinalMessage: () => false,
         getEffectiveConfig: () => DEFAULT_CONFIG,
@@ -958,6 +1050,9 @@ suite("Retrieval And Validation", () => {
           debugBlocks.push({ scope, content });
         },
         requestToolApproval: async () => "allow",
+        askUserClarification: async () => null,
+        askArchitectureApproval: async () => "approve",
+        askEnvironmentSetupDecision: async () => "code_without_verified_environment",
         showWorkbenchError: () => {},
         shouldGateAssistantFinalMessage: () => false,
         getEffectiveConfig: () => DEFAULT_CONFIG,
@@ -1659,6 +1754,304 @@ suite("Retrieval And Validation", () => {
       updated.includes("  const display = formatDateUrD('2026-03-22');"),
       true,
     );
+
+    cleanupTempWorkspace(workspacePath);
+  });
+
+  test("editFileRangeTool relocates an outside stale range using exact snapshot evidence", () => {
+    const workspacePath = createTempWorkspace();
+    const filePath = path.join(workspacePath, "src/checkout.js");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(
+      filePath,
+      [
+        "const subtotal = 100;",
+        "const discount = 10;",
+        "const total = subtotal - discount;",
+        "export { total };",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const result = editFileRangeTool(workspacePath, "src/checkout.js", {
+      startLine: 99,
+      endLine: 99,
+      newContent: "const total = subtotal - discount + warrantyCost;",
+      expectedRangeContent: "const total = subtotal - discount;",
+      anchorBefore: "const discount = 10;",
+      anchorAfter: "export { total };",
+    });
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(
+      (result.meta as { relocated?: boolean } | undefined)?.relocated,
+      true,
+    );
+    assert.strictEqual(
+      fs.readFileSync(filePath, "utf-8"),
+      [
+        "const subtotal = 100;",
+        "const discount = 10;",
+        "const total = subtotal - discount + warrantyCost;",
+        "export { total };",
+      ].join("\n"),
+    );
+
+    cleanupTempWorkspace(workspacePath);
+  });
+
+  test("writeFileTool creates nested files and refuses accidental overwrites", () => {
+    const workspacePath = createTempWorkspace();
+    const filePath = path.join(workspacePath, "src/checkout.js");
+
+    const created = writeFileTool(
+      workspacePath,
+      "src/checkout.js",
+      "export const total = 100;\n",
+    );
+
+    assert.strictEqual(created.success, true);
+    assert.strictEqual(
+      fs.readFileSync(filePath, "utf-8"),
+      "export const total = 100;\n",
+    );
+    assert.strictEqual(
+      (created.meta as { operation?: string } | undefined)?.operation,
+      "create",
+    );
+    assert.strictEqual(
+      (created.meta as { existedBefore?: boolean } | undefined)?.existedBefore,
+      false,
+    );
+
+    const refused = writeFileTool(
+      workspacePath,
+      "src/checkout.js",
+      "export const total = 200;\n",
+    );
+
+    assert.strictEqual(refused.success, false);
+    assert.match(refused.error ?? "", /Refusing to overwrite existing file/i);
+    assert.strictEqual(
+      fs.readFileSync(filePath, "utf-8"),
+      "export const total = 100;\n",
+    );
+
+    cleanupTempWorkspace(workspacePath);
+  });
+
+  test("role-aware progress treats read-only evidence as productive only for read-only roles", () => {
+    const observedEvidenceKeys = new Set<string>();
+    const firstProfilerGrep = isProductiveToolResult({
+      role: "profiler",
+      toolName: "grep",
+      success: true,
+      params: { path: "/workspace", pattern: "SKU" },
+      content: "(no matches)",
+      observedEvidenceKeys,
+    });
+    const duplicateProfilerGrep = isProductiveToolResult({
+      role: "profiler",
+      toolName: "grep",
+      success: true,
+      params: { path: "/workspace", pattern: "SKU" },
+      content: "(no matches)",
+      observedEvidenceKeys,
+    });
+    const newProfilerRead = isProductiveToolResult({
+      role: "profiler",
+      toolName: "read_file",
+      success: true,
+      params: { path: "/workspace/package.json" },
+      content: "{}",
+      meta: { filePath: "/workspace/package.json", readMode: "full" },
+      observedEvidenceKeys,
+    });
+    const codingRead = isProductiveToolResult({
+      role: "coding",
+      toolName: "read_file",
+      success: true,
+      params: { path: "/workspace/package.json" },
+      content: "{}",
+      meta: { filePath: "/workspace/package.json", readMode: "full" },
+      observedEvidenceKeys: new Set<string>(),
+    });
+    const codingWrite = isProductiveToolResult({
+      role: "coding",
+      toolName: "write_file",
+      success: true,
+      params: { path: "/workspace/package.json" },
+      content: "Written",
+      observedEvidenceKeys: new Set<string>(),
+    });
+
+    assert.strictEqual(firstProfilerGrep, true);
+    assert.strictEqual(duplicateProfilerGrep, false);
+    assert.strictEqual(newProfilerRead, true);
+    assert.strictEqual(codingRead, false);
+    assert.strictEqual(codingWrite, true);
+  });
+
+  test("writeFileTool overwrites existing files only when explicitly requested", () => {
+    const workspacePath = createTempWorkspace();
+    const filePath = path.join(workspacePath, "src/checkout.js");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, "export const total = 100;\n", "utf-8");
+
+    const overwritten = writeFileTool(
+      workspacePath,
+      "src/checkout.js",
+      "export const total = 200;\n",
+      true,
+    );
+
+    assert.strictEqual(overwritten.success, true);
+    assert.strictEqual(
+      fs.readFileSync(filePath, "utf-8"),
+      "export const total = 200;\n",
+    );
+    assert.strictEqual(
+      (overwritten.meta as { operation?: string } | undefined)?.operation,
+      "overwrite",
+    );
+    assert.strictEqual(
+      (overwritten.meta as { existedBefore?: boolean } | undefined)
+        ?.existedBefore,
+      true,
+    );
+
+    cleanupTempWorkspace(workspacePath);
+  });
+
+  test("editFileTool applies exact replacements and protects ambiguous edits", () => {
+    const workspacePath = createTempWorkspace();
+    const filePath = path.join(workspacePath, "src/pricing.js");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const original = [
+      "const tax = 10;",
+      "const discount = 10;",
+      "export const total = 100 - discount + tax;",
+    ].join("\n");
+    fs.writeFileSync(filePath, original, "utf-8");
+
+    const ambiguous = editFileTool(
+      workspacePath,
+      "src/pricing.js",
+      " = 10;",
+      " = 20;",
+    );
+
+    assert.strictEqual(ambiguous.success, false);
+    assert.match(ambiguous.error ?? "", /appears 2 times/i);
+    assert.strictEqual(fs.readFileSync(filePath, "utf-8"), original);
+
+    const exact = editFileTool(
+      workspacePath,
+      "src/pricing.js",
+      "const discount = 10;",
+      "const discount = 20;",
+    );
+
+    assert.strictEqual(exact.success, true);
+    assert.strictEqual(
+      fs.readFileSync(filePath, "utf-8"),
+      [
+        "const tax = 10;",
+        "const discount = 20;",
+        "export const total = 100 - discount + tax;",
+      ].join("\n"),
+    );
+
+    cleanupTempWorkspace(workspacePath);
+  });
+
+  test("multiEditFileRangesTool accepts camelCase aliases and relocates outside stale ranges", () => {
+    const workspacePath = createTempWorkspace();
+    const filePath = path.join(workspacePath, "src/checkout.js");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(
+      filePath,
+      [
+        "const subtotal = 100;",
+        "const discount = 10;",
+        "const total = subtotal - discount;",
+        "const receipt = { total };",
+        "export { receipt };",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const result = multiEditFileRangesTool(
+      workspacePath,
+      "src/checkout.js",
+      [
+        {
+          startLine: 99,
+          endLine: 99,
+          newContent: "const total = subtotal - discount + warrantyCost;",
+          expectedRangeContent: "const total = subtotal - discount;",
+          anchorBefore: "const discount = 10;",
+          anchorAfter: "const receipt = { total };",
+        },
+        {
+          start_line: 100,
+          end_line: 100,
+          new_content: "const receipt = { total, warrantyCost };",
+          expected_range_content: "const receipt = { total };",
+          anchor_before: "const total = subtotal - discount;",
+          anchor_after: "export { receipt };",
+        },
+      ],
+      5,
+    );
+
+    assert.strictEqual(result.success, true);
+    assert.strictEqual(
+      fs.readFileSync(filePath, "utf-8"),
+      [
+        "const subtotal = 100;",
+        "const discount = 10;",
+        "const total = subtotal - discount + warrantyCost;",
+        "const receipt = { total, warrantyCost };",
+        "export { receipt };",
+      ].join("\n"),
+    );
+
+    cleanupTempWorkspace(workspacePath);
+  });
+
+  test("multiEditFileRangesTool does not partially write when any edit cannot be resolved", () => {
+    const workspacePath = createTempWorkspace();
+    const filePath = path.join(workspacePath, "src/checkout.js");
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const original = [
+      "const subtotal = 100;",
+      "const discount = 10;",
+      "const total = subtotal - discount;",
+      "export { total };",
+    ].join("\n");
+    fs.writeFileSync(filePath, original, "utf-8");
+
+    const result = multiEditFileRangesTool(workspacePath, "src/checkout.js", [
+      {
+        start_line: 3,
+        end_line: 3,
+        new_content: "const total = subtotal - discount + warrantyCost;",
+        expected_range_content: "const total = subtotal - discount;",
+        anchor_before: "const discount = 10;",
+        anchor_after: "export { total };",
+      },
+      {
+        start_line: 99,
+        end_line: 99,
+        new_content: "export { total, warrantyCost };",
+        expected_range_content: "export { missing };",
+      },
+    ]);
+
+    assert.strictEqual(result.success, false);
+    assert.match(result.error ?? "", /could not be relocated|no longer matches/i);
+    assert.strictEqual(fs.readFileSync(filePath, "utf-8"), original);
 
     cleanupTempWorkspace(workspacePath);
   });
@@ -2667,6 +3060,73 @@ suite("Retrieval And Validation", () => {
     }
   });
 
+  test("file tools recover uniquely resolvable truncated workspace paths", () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      const routePath = path.join(
+        workspacePath,
+        "apps",
+        "next-phone",
+        "app",
+        "api",
+        "products",
+        "route.ts",
+      );
+      fs.mkdirSync(path.dirname(routePath), { recursive: true });
+      fs.writeFileSync(routePath, "export const route = 'products';\n", "utf-8");
+
+      const truncatedFilePath = `${path.dirname(workspacePath)}${path.sep}workspace...${path.sep}apps${path.sep}next-phone${path.sep}app${path.sep}api${path.sep}products${path.sep}route.ts`;
+      const read = readFileTool(workspacePath, truncatedFilePath);
+
+      assert.strictEqual(read.success, true);
+      assert.match(read.content, /products/);
+      assert.strictEqual(
+        (read.meta as { filePath?: string } | undefined)?.filePath,
+        routePath,
+      );
+
+      const listed = listDirTool(
+        workspacePath,
+        `${path.dirname(workspacePath)}${path.sep}workspace...${path.sep}apps${path.sep}next-phone${path.sep}app${path.sep}api`,
+        { depth: 2 },
+      );
+
+      assert.strictEqual(listed.success, true);
+      assert.match(listed.content, /products\//);
+      assert.strictEqual(
+        (listed.meta as { directoryPath?: string } | undefined)?.directoryPath,
+        path.join(workspacePath, "apps", "next-phone", "app", "api"),
+      );
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
+  test("file tools reject ambiguous truncated workspace paths", () => {
+    const workspacePath = createTempWorkspace();
+    try {
+      for (const app of ["web-vite", "api-nest"]) {
+        const routePath = path.join(workspacePath, "apps", app, "src", "route.ts");
+        fs.mkdirSync(path.dirname(routePath), { recursive: true });
+        fs.writeFileSync(routePath, `export const app = '${app}';\n`, "utf-8");
+      }
+
+      const result = readFileTool(
+        workspacePath,
+        `${path.dirname(workspacePath)}${path.sep}workspace...${path.sep}route.ts`,
+      );
+
+      assert.strictEqual(result.success, false);
+      assert.match(result.error ?? "", /ambiguous/i);
+      assert.match(
+        result.error ?? "",
+        /apps\/api-nest\/src\/route\.ts|apps\/web-vite\/src\/route\.ts/,
+      );
+    } finally {
+      cleanupTempWorkspace(workspacePath);
+    }
+  });
+
   test("listDirTool preserves top-level project visibility when nested results are truncated", () => {
     const workspacePath = createTempWorkspace();
     try {
@@ -2777,8 +3237,50 @@ suite("Retrieval And Validation", () => {
     const names = definitions.map((definition) => definition.name);
     assert.ok(names.includes("read_file"));
     assert.ok(!names.includes("search_web"));
+    assert.ok(names.includes("multi_edit_file_ranges"));
+    assert.ok(!names.includes("edit_file_range"));
     assert.ok(names.includes("vscode_start_frontend_preview"));
     assert.ok(names.includes("sample_open_diff"));
+  });
+
+  test("subagent tool definitions hide command and validation tools from Coding but expose them to Testing", () => {
+    assert.strictEqual(getBlockedCapability("run_shell_command"), "runCommands");
+    assert.strictEqual(getBlockedCapability("bash"), "runCommands");
+    assert.strictEqual(getBlockedCapability("npm_test"), "validation");
+    assert.strictEqual(getBlockedCapability("typecheck"), "validation");
+
+    const codingNames = getEnabledToolDefinitions(
+      buildSubagentRoleConfig(DEFAULT_CONFIG, "coding"),
+    ).map((definition) => definition.name);
+    const profilerNames = getEnabledToolDefinitions(
+      buildSubagentRoleConfig(DEFAULT_CONFIG, "profiler"),
+    ).map((definition) => definition.name);
+    const testingNames = getEnabledToolDefinitions(
+      buildSubagentRoleConfig(DEFAULT_CONFIG, "testing"),
+    ).map((definition) => definition.name);
+
+    assert.ok(profilerNames.includes("inspect_workspace_environment"));
+    assert.ok(!profilerNames.includes("run_project_command"));
+    assert.ok(!profilerNames.includes("multi_edit_file_ranges"));
+
+    assert.ok(codingNames.includes("multi_edit_file_ranges"));
+    assert.ok(codingNames.includes("write_agent_handoff"));
+    assert.ok(!codingNames.includes("run_project_command"));
+    assert.ok(!codingNames.includes("run_terminal_command"));
+    assert.ok(!codingNames.includes("run_validation_suite"));
+    assert.ok(!codingNames.includes("search_web"));
+    assert.ok(!codingNames.includes("galaxy_design_init"));
+    assert.ok(!codingNames.includes("request_code_review"));
+    assert.ok(!codingNames.includes("get_next_review_finding"));
+    assert.ok(!codingNames.includes("dismiss_review_finding"));
+
+    assert.ok(testingNames.includes("multi_edit_file_ranges"));
+    assert.ok(testingNames.includes("run_in_terminal"));
+    assert.ok(testingNames.includes("run_project_command"));
+    assert.ok(testingNames.includes("run_terminal_command"));
+    assert.ok(testingNames.includes("run_validation_suite"));
+    assert.ok(!testingNames.includes("inspect_workspace_environment"));
+    assert.ok(!testingNames.includes("request_code_review"));
   });
 
   test("executeToolAsync starts frontend preview through the shared tool context", async () => {

@@ -25,40 +25,7 @@ export function derivePromptContextHints(
     (total, message) => total + (message.images?.length ?? 0),
     0,
   );
-  const documentationMentions = [
-    ".md",
-    ".mdx",
-    ".txt",
-    ".rst",
-    ".adoc",
-    "[document semantic snippets]",
-  ].filter((pattern) => loweredContent.includes(pattern)).length;
-  const diagramMentions = [
-    "draw.io",
-    "drawio",
-    ".drawio",
-    "mermaid",
-    "diagram",
-    "flowchart",
-    "uml",
-    "erd",
-    "sequence diagram",
-    "architecture diagram",
-    "swimlane",
-  ].some((pattern) => loweredContent.includes(pattern));
-  const frontendPreviewMentions = [
-    "frontend preview",
-    "local preview",
-    "preview ui",
-    "ui preview",
-    "preview screenshot",
-    "localhost preview",
-    "dev server",
-    "bun run dev",
-    "yarn dev",
-    "pnpm dev",
-    "npm run dev",
-  ].some((pattern) => loweredContent.includes(pattern));
+  const hasDocumentContext = joinedContent.includes("[DOCUMENT SEMANTIC SNIPPETS]");
 
   return Object.freeze({
     hasImages: imageCount > 0,
@@ -66,33 +33,26 @@ export function derivePromptContextHints(
     hasPlatformContext: joinedContent.includes("[SYSTEM PLATFORM CONTEXT]"),
     hasBaseComponentProfile: joinedContent.includes("[BASE COMPONENT PROFILE]"),
     mentionsGalaxyDesign:
-      loweredContent.includes("galaxy design") ||
       loweredContent.includes("galaxy_design_") ||
       joinedContent.includes("[BASE COMPONENT PROFILE]"),
     mentionsDiagrams:
-      diagramMentions ||
       loweredContent.includes("create_drawio_diagram") ||
       loweredContent.includes("convert_drawio_diagram") ||
       loweredContent.includes("export_drawio_diagram") ||
       loweredContent.includes("export_workflow_drawio_diagram") ||
       loweredContent.includes("export_workflow_mermaid_diagram"),
     mentionsFrontendPreview:
-      frontendPreviewMentions ||
-      loweredContent.includes("vscode_start_frontend_preview") ||
-      loweredContent.includes("test preview ui") ||
-      loweredContent.includes("frontend screenshot"),
+      loweredContent.includes("vscode_start_frontend_preview"),
     mentionsExtensionTools:
       loweredContent.includes("search_extension_tools") ||
       loweredContent.includes("activate_extension_tools") ||
-      loweredContent.includes("vscode_") ||
-      loweredContent.includes("problems panel") ||
-      loweredContent.includes("references provider"),
+      loweredContent.includes("vscode_"),
     hasReviewContext:
       joinedContent.includes("[SYSTEM CODE REVIEW FEEDBACK]") ||
       joinedContent.includes("[OPEN FINDINGS TO CONTINUE]") ||
       joinedContent.includes("[LATEST REVIEW FINDINGS]"),
     hasDocumentEditLoop:
-      documentationMentions > 0 &&
+      hasDocumentContext &&
       loweredContent.includes("[relevant tool evidence]") &&
       loweredContent.includes("batch"),
   });

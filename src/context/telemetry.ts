@@ -23,7 +23,10 @@ const EMPTY_SUMMARY: TelemetrySummary = Object.freeze({
   grepEvents: 0,
   multiAgentPlans: 0,
   multiAgentSuccesses: 0,
+  subagentRoutingDecisions: 0,
+  subagentRoutedTurns: 0,
   subAgentTurns: 0,
+  clarificationRequests: 0,
   userReverts: 0,
   capabilitySnapshots: 0,
   validationSelections: 0,
@@ -78,7 +81,10 @@ export function formatTelemetrySummary(summary: TelemetrySummary): string {
     `Grep events: ${summary.grepEvents}`,
     `Multi-agent plans: ${summary.multiAgentPlans}`,
     `Multi-agent successes: ${summary.multiAgentSuccesses}`,
+    `Subagent routing decisions: ${summary.subagentRoutingDecisions}`,
+    `Subagent routed turns: ${summary.subagentRoutedTurns}`,
     `Sub-agent turns: ${summary.subAgentTurns}`,
+    `Clarification requests: ${summary.clarificationRequests}`,
     `User reverts: ${summary.userReverts}`,
     `Capability snapshots: ${summary.capabilitySnapshots}`,
     `Validation selections: ${summary.validationSelections}`,
@@ -139,7 +145,13 @@ function updateSummary(summary: TelemetrySummary, event: TelemetryEvent): Teleme
     multiAgentPlans: summary.multiAgentPlans + (event.kind === 'multi_agent_plan' ? 1 : 0),
     multiAgentSuccesses:
       summary.multiAgentSuccesses + (event.kind === 'multi_agent_plan' && event.completed ? 1 : 0),
+    subagentRoutingDecisions:
+      summary.subagentRoutingDecisions + (event.kind === 'subagent_routing' ? 1 : 0),
+    subagentRoutedTurns:
+      summary.subagentRoutedTurns + (event.kind === 'subagent_routing' && event.routed ? 1 : 0),
     subAgentTurns: summary.subAgentTurns + (event.kind === 'sub_agent_turn' ? 1 : 0),
+    clarificationRequests:
+      summary.clarificationRequests + (event.kind === 'clarification_requested' ? 1 : 0),
     userReverts: summary.userReverts + (event.kind === 'user_revert' ? event.fileCount : 0),
     capabilitySnapshots: summary.capabilitySnapshots + (event.kind === 'capability_snapshot' ? 1 : 0),
     validationSelections: summary.validationSelections + (event.kind === 'validation_selection' ? 1 : 0),

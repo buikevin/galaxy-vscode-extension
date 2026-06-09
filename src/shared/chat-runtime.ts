@@ -16,7 +16,19 @@ import type {
   EvidenceContextPayload,
   ToolApprovalDecision,
 } from "./protocol";
-import type { PendingActionApproval, RunResult, StreamChunk } from "./runtime";
+import type {
+  ArchitectureApprovalDecision,
+  ArchitectureApprovalRequest,
+  ClarificationAnswer,
+  ClarificationRequest,
+  PendingActionApproval,
+  RunResult,
+  StreamChunk,
+} from "./runtime";
+import type {
+  EnvironmentSetupDecision,
+  EnvironmentSetupDecisionRequest,
+} from "./environment-preflight";
 
 /** Request used to run one selective multi-agent plan outside the main provider class. */
 export type SelectiveMultiAgentPlanRequest = Readonly<{
@@ -121,6 +133,18 @@ export type ChatRuntimeCallbacks = Readonly<{
   requestToolApproval: (
     approval: PendingActionApproval,
   ) => Promise<ToolApprovalDecision>;
+  /** Requests a blocking product or architecture clarification from the user. */
+  askUserClarification: (
+    request: ClarificationRequest,
+  ) => Promise<ClarificationAnswer | null>;
+  /** Requests user approval after planning/architecture handoff and before coding starts. */
+  askArchitectureApproval: (
+    request: ArchitectureApprovalRequest,
+  ) => Promise<ArchitectureApprovalDecision | null>;
+  /** Requests an explicit user decision when required development tools are missing. */
+  askEnvironmentSetupDecision: (
+    request: EnvironmentSetupDecisionRequest,
+  ) => Promise<EnvironmentSetupDecision | null>;
   /** Shows one workbench error toast and reveals the relevant UI. */
   showWorkbenchError: (message: string) => void;
   /** Posts one error payload into the webview message channel. */

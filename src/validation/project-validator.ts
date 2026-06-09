@@ -23,13 +23,15 @@ import type {
   FinalValidationResult,
   ValidationCommand,
   ValidationCommandStreamCallbacks,
+  ValidationIssue,
   ValidationRunResult,
 } from "../shared/validation";
 import { detectProjectCommands } from "./command-detection";
 import { parseIssuesWithCwd } from "./issues";
 import { detectValidationProfiles } from "./profiles";
-import { buildValidationSelectionSummary } from "./summary";
+import { buildValidationSelectionSummary, formatValidationOutputPreview } from "./summary";
 import { MAX_VALIDATION_CAPTURE_CHARS } from "../shared/constants";
+import { collectValidationContractIssues } from "./workspace-topology";
 
 /**
  * Checks whether a required binary is available from the command runtime environment.
@@ -165,6 +167,22 @@ function isCommandAvailable(command: ValidationCommand): boolean {
   return true;
 }
 
+function buildValidationWarnings(command: ValidationCommand, rawOutput: string): readonly ValidationIssue[] {
+  if (command.category !== "test") {
+    return Object.freeze([]);
+  }
+  if (!/(?:^|\n)\s*(?:ℹ\s*)?tests?\s+0\b/i.test(rawOutput) && !/\b0\s+tests?\b/i.test(rawOutput)) {
+    return Object.freeze([]);
+  }
+  return Object.freeze([
+    Object.freeze({
+      severity: "warning" as const,
+      message: "Test command passed, but no tests were executed.",
+      source: command.id,
+    }),
+  ]);
+}
+
 /**
  * Executes one project-level validation command and streams output back to the caller when requested.
  *
@@ -246,6 +264,9 @@ async function runProjectCommand(
       settled = true;
       clearTimeout(timeout);
       const durationMs = Date.now() - startedAt;
+      const issues = success
+        ? buildValidationWarnings(command, rawOutput)
+        : parseIssuesWithCwd(rawOutput, command.id, command.cwd);
       void callbacks?.onEnd?.({
         toolCallId,
         exitCode,
@@ -260,11 +281,11 @@ async function runProjectCommand(
           profile: command.profile,
           category: command.category,
           durationMs,
-          summary: `${command.label} ${suffix}`,
-          issues: success
-            ? Object.freeze([])
-            : parseIssuesWithCwd(rawOutput, command.id, command.cwd),
-          rawOutputPreview: rawOutput.slice(0, 4000),
+          summary: success && issues.length > 0
+            ? `${command.label} passed with ${issues.length} warning(s)`
+            : `${command.label} ${suffix}`,
+          issues,
+          rawOutputPreview: success && issues.length === 0 ? "" : formatValidationOutputPreview(rawOutput),
         }),
       );
     };
@@ -335,7 +356,7 @@ function runFileSafetyNetValidation(
               "validate_code",
               process.cwd(),
             ),
-        rawOutputPreview: (result.content || result.error || "").slice(0, 4000),
+        rawOutputPreview: formatValidationOutputPreview(result.content || result.error || ""),
       }),
     );
   }
@@ -415,6 +436,10 @@ export async function runFinalValidation(opts: {
     opts.sessionFiles,
     opts.config?.validation,
   ).filter(isCommandAvailable);
+  const contractIssues = collectValidationContractIssues(
+    opts.workspacePath,
+    opts.sessionFiles,
+  );
   const lintCommands = commands.filter(
     (command) => command.category === "lint",
   );
@@ -424,6 +449,9 @@ export async function runFinalValidation(opts: {
   const testCommands = commands.filter(
     (command) => command.category === "test",
   );
+  const buildCommands = commands.filter(
+    (command) => command.category === "build",
+  );
   const runs: ValidationRunResult[] = [];
   const shouldRunFileSafetyNet = staticCommands.length === 0;
   const selectionSummary = buildValidationSelectionSummary(
@@ -432,6 +460,30 @@ export async function runFinalValidation(opts: {
     commands,
     shouldRunFileSafetyNet,
   );
+
+  if (contractIssues.length > 0) {
+    const rawOutput = contractIssues
+      .map((issue, index) => `${index + 1}. ${issue.filePath ? `${issue.filePath}: ` : ""}${issue.message}`)
+      .join("\n");
+    const run: ValidationRunResult = Object.freeze({
+      success: false,
+      commandId: "workspace-validation-contract",
+      command: "validate_workspace_contract",
+      profile: profiles.includes("typescript") ? "typescript" : (profiles[0] ?? "javascript"),
+      category: "static-check",
+      durationMs: 0,
+      summary: `Workspace validation contract failed with ${contractIssues.length} issue(s)`,
+      issues: contractIssues,
+      rawOutputPreview: rawOutput,
+    });
+    return Object.freeze({
+      success: false,
+      mode: "project",
+      selectionSummary,
+      runs: Object.freeze([run]),
+      summary: run.summary,
+    });
+  }
 
   if (lintCommands.length > 0 || staticCommands.length > 0) {
     const [lintRuns, staticRuns] = await Promise.all([
@@ -468,6 +520,25 @@ export async function runFinalValidation(opts: {
         selectionSummary,
         runs: Object.freeze(runs),
         summary: failedTest.summary,
+      });
+    }
+  }
+
+  if (buildCommands.length > 0) {
+    const buildRuns = await runCommandPipeline(
+      buildCommands,
+      opts.streamCallbacks,
+    );
+    runs.push(...buildRuns);
+
+    const failedBuild = findFirstFailedRun(buildRuns);
+    if (failedBuild) {
+      return Object.freeze({
+        success: false,
+        mode: "project",
+        selectionSummary,
+        runs: Object.freeze(runs),
+        summary: failedBuild.summary,
       });
     }
   }

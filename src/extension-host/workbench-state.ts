@@ -19,6 +19,7 @@ import type {
   PhasePlanItems,
   UpdateQualityDetailsParams,
 } from "../shared/workbench-runtime";
+import { buildSubagentPreferences } from "./subagent-settings";
 /** Applies the current run, agent, and approval state to the status bar items. */
 export function updateWorkbenchChrome(
   _params: {} & WorkbenchChromeUpdateParams,
@@ -42,6 +43,7 @@ export function buildSessionInitPayload(
     logs: params.logs,
     qualityDetails: params.qualityDetails,
     qualityPreferences: params.qualityPreferences,
+    subagentPreferences: buildSubagentPreferences(),
     toolCapabilities: params.toolCapabilities,
     toolToggles: params.toolToggles,
     extensionToolGroups: params.extensionToolGroups,

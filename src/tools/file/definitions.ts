@@ -7,6 +7,7 @@
  */
 
 import type { GalaxyConfig, ToolCapabilityConfig } from "../../shared/config";
+import { getSubagentAllowedToolNames } from "../../shared/subagents";
 import type {
   DiscoveredExtensionTool,
   ToolDefinition,
@@ -17,6 +18,8 @@ import { GALAXY_DESIGN_TOOL_DEFINITIONS } from "./definitions/galaxy-design-tool
 import { QUALITY_TOOL_DEFINITIONS } from "./definitions/quality-tools";
 import { VSCODE_NATIVE_TOOL_DEFINITIONS } from "./definitions/vscode-native-tools";
 import { normalizeToolName } from "./tooling";
+
+const DEPRECATED_AGENT_FACING_TOOLS = new Set(["edit_file_range"]);
 
 /**
  * Returns all extension tools discoverable from the active config.
@@ -84,12 +87,18 @@ function getToolCapability(
     case "get_latest_review_findings":
     case "get_next_review_finding":
     case "dismiss_review_finding":
+    case "get_change_summary":
+    case "query_shared_memory":
+    case "write_agent_handoff":
+    case "query_workflow_graph":
+    case "inspect_workspace_environment":
     case "grep":
     case "list_dir":
     case "head":
     case "tail":
     case "read_document":
       return "readProject";
+    case "claim_file_scope":
     case "write_file":
     case "create_drawio_diagram":
     case "convert_drawio_diagram":
@@ -101,6 +110,7 @@ function getToolCapability(
     case "edit_file_range":
     case "multi_edit_file_ranges":
       return "editFiles";
+    case "run_in_terminal":
     case "run_project_command":
     case "run_terminal_command":
     case "await_terminal_command":
@@ -120,6 +130,7 @@ function getToolCapability(
     case "crawl_web":
       return "webResearch";
     case "validate_code":
+    case "run_validation_suite":
       return "validation";
     case "request_code_review":
       return "review";
@@ -176,6 +187,21 @@ export function isToolEnabled(toolName: string, config: GalaxyConfig): boolean {
   return capabilityEnabled && toolEnabled;
 }
 
+function isAllowedForActiveSubagentRole(
+  toolName: string,
+  config: GalaxyConfig,
+): boolean {
+  if (!config.activeSubagentRole) {
+    return true;
+  }
+  const allowedNames = getSubagentAllowedToolNames(config.activeSubagentRole);
+  if (!allowedNames) {
+    return true;
+  }
+  const allowed = new Set(allowedNames.map((name) => normalizeToolName(name)));
+  return allowed.has(normalizeToolName(toolName));
+}
+
 /**
  * Builds the active tool schema exposed to the model.
  *
@@ -186,22 +212,31 @@ export function getEnabledToolDefinitions(
   config: GalaxyConfig,
 ): readonly ToolDefinition[] {
   const fileTools = FILE_TOOL_DEFINITIONS.filter((definition) =>
-    isToolEnabled(definition.name, config),
+    !DEPRECATED_AGENT_FACING_TOOLS.has(definition.name) &&
+    isToolEnabled(definition.name, config) &&
+    isAllowedForActiveSubagentRole(definition.name, config),
   );
   const actionTools = ACTION_TOOL_DEFINITIONS.filter((definition) =>
-    isToolEnabled(definition.name, config),
+    isToolEnabled(definition.name, config) &&
+    isAllowedForActiveSubagentRole(definition.name, config),
   );
   const qualityTools = QUALITY_TOOL_DEFINITIONS.filter((definition) =>
-    isToolEnabled(definition.name, config),
+    isToolEnabled(definition.name, config) &&
+    isAllowedForActiveSubagentRole(definition.name, config),
   );
   const vscodeNativeTools = VSCODE_NATIVE_TOOL_DEFINITIONS.filter(
-    (definition) => isToolEnabled(definition.name, config),
+    (definition) =>
+      isToolEnabled(definition.name, config) &&
+      isAllowedForActiveSubagentRole(definition.name, config),
   );
   const galaxyDesignTools = GALAXY_DESIGN_TOOL_DEFINITIONS.filter(
-    (definition) => isToolEnabled(definition.name, config),
+    (definition) =>
+      isToolEnabled(definition.name, config) &&
+      isAllowedForActiveSubagentRole(definition.name, config),
   );
   const extensionTools = getAvailableExtensionTools(config)
     .filter(({ tool }) => config.extensionToolToggles[tool.key] === true)
+    .filter(({ tool }) => isAllowedForActiveSubagentRole(tool.runtimeName, config))
     .map(({ group, tool }) =>
       Object.freeze({
         name: tool.runtimeName,

@@ -58,6 +58,8 @@ export function createWebviewActionCallbacks(
     },
     applyQualityPreferences: async (next, opts) =>
       params.applyQualityPreferences(next, opts),
+    applySubagentPreferences: async (next, opts) =>
+      params.applySubagentPreferences(next, opts),
     applyToolCapabilities: async (next, opts) =>
       params.applyToolCapabilities(next, opts),
     applyToolToggles: async (next, opts) => params.applyToolToggles(next, opts),
@@ -118,6 +120,7 @@ export function createProviderWebviewActionCallbacks(
     },
     clearPendingApprovalState: bindings.clearPendingApprovalState,
     applyQualityPreferences: bindings.applyQualityPreferences,
+    applySubagentPreferences: bindings.applySubagentPreferences,
     applyToolCapabilities: bindings.applyToolCapabilities,
     applyToolToggles: bindings.applyToolToggles,
     applyExtensionToolToggles: bindings.applyExtensionToolToggles,
@@ -182,6 +185,11 @@ export async function handleWebviewAction(
       await callbacks.applyQualityPreferences(message.payload, {
         syncVsCodeSettings: true,
         logMessage: `Quality preferences updated from the Galaxy Code sidebar: review=${String(message.payload.reviewEnabled)}, validate=${String(message.payload.validateEnabled)}, fullAccess=${String(message.payload.fullAccessEnabled)}.`,
+      });
+      return true;
+    case "subagent-set":
+      await callbacks.applySubagentPreferences(message.payload, {
+        logMessage: `Subagent preferences updated from the Galaxy Code sidebar: enabled=${String(message.payload.enabled)}.`,
       });
       return true;
     case "tool-capabilities-set":

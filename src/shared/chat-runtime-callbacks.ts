@@ -86,6 +86,12 @@ export type CreateChatRuntimeCallbacksParams = Readonly<{
   writeDebugBlock: (scope: string, content: string) => void;
   /** Requests user approval for one pending tool action. */
   requestToolApproval: ChatRuntimeCallbacks["requestToolApproval"];
+  /** Requests a blocking product or architecture clarification from the user. */
+  askUserClarification: ChatRuntimeCallbacks["askUserClarification"];
+  /** Requests user approval after planning/architecture handoff and before coding starts. */
+  askArchitectureApproval: ChatRuntimeCallbacks["askArchitectureApproval"];
+  /** Requests an explicit user decision when required development tools are missing. */
+  askEnvironmentSetupDecision: ChatRuntimeCallbacks["askEnvironmentSetupDecision"];
   /** Shows one VS Code error prompt and optional follow-up actions. */
   showWorkbenchError: (message: string) => void;
   /** Determines whether final assistant output should be gated behind review. */
@@ -138,6 +144,12 @@ export type ProviderChatRuntimeBindings = Readonly<{
   writeDebugBlock: (scope: string, content: string) => void;
   /** Requests user approval for one pending tool action. */
   requestToolApproval: ChatRuntimeCallbacks["requestToolApproval"];
+  /** Requests a blocking product or architecture clarification from the user. */
+  askUserClarification: ChatRuntimeCallbacks["askUserClarification"];
+  /** Requests user approval after planning/architecture handoff and before coding starts. */
+  askArchitectureApproval: ChatRuntimeCallbacks["askArchitectureApproval"];
+  /** Requests an explicit user decision when required development tools are missing. */
+  askEnvironmentSetupDecision: ChatRuntimeCallbacks["askEnvironmentSetupDecision"];
   /** Shows one VS Code error prompt and optional follow-up actions. */
   showWorkbenchError: (message: string) => void;
   /** Determines whether final assistant output should be gated behind review. */

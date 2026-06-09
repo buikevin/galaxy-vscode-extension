@@ -245,9 +245,6 @@ export async function handleChatSendMessage(params: {
         "turn-result",
         `agent=${params.message.payload.agent} phase4 handled had_error=${hadError} files_written=${result.filesWritten.length}`,
       );
-      if (!hadError && result.filesWritten.length > 0) {
-        await params.runValidationAndReviewFlow(params.message.payload.agent);
-      }
     } else {
       hadError = (
         await handleMainChatTurnResult(chatRuntimeCallbacks, {

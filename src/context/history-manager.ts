@@ -35,6 +35,7 @@ import {
   inferTaskMemoryTurnKind,
   mergeProjectSummary,
   mergeUniqueItems,
+  sanitizeMemoryUserMessage,
   summarizeText,
 } from './history/helpers';
 
@@ -120,12 +121,13 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
    */
   function beginNewActiveTask(userMessage: ChatMessage, contextNote?: string): void {
     const now = Date.now();
+    const memoryGoal = userMessage.memoryContent ?? sanitizeMemoryUserMessage(userMessage.content);
     const nextActiveTask = normalizeActiveTaskMemory(
       Object.freeze({
         ...createEmptyActiveTaskMemory(now),
         taskId: `task-${now}`,
-        originalUserGoal: userMessage.content,
-        currentObjective: userMessage.content,
+        originalUserGoal: memoryGoal,
+        currentObjective: memoryGoal,
         attachments: extractAttachments(userMessage, contextNote),
         lastUpdatedAt: now,
       }),
@@ -157,6 +159,7 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
     const blockers = turn.toolDigests.filter((digest) => !digest.success).map((digest) => digest.summary);
     const handoffSummary = buildWorkingSessionHandoff(turn, assistantText);
     const commitConclusion = opts?.commitConclusion ?? true;
+    const memoryUserMessage = turn.userMessage.memoryContent ?? sanitizeMemoryUserMessage(turn.userMessage.content);
     const taskMemory = sessionMemory.activeTaskMemory;
     const projectMemory = sessionMemory.projectMemory;
     const nextActiveProjectPath = normalizeActiveProjectPath(
@@ -171,7 +174,7 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
     const nextActiveTask = normalizeActiveTaskMemory(
       Object.freeze({
         ...taskMemory,
-        currentObjective: summarizeText(turn.userMessage.content, 500) || taskMemory.currentObjective,
+        currentObjective: summarizeText(memoryUserMessage, 500) || taskMemory.currentObjective,
         completedSteps: mergeUniqueItems(taskMemory.completedSteps, completedSteps, 12),
         blockers: mergeUniqueItems(taskMemory.blockers, blockers, 8),
         filesTouched: mergeUniqueItems(taskMemory.filesTouched, filesTouched, 16),
@@ -182,7 +185,7 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
           [createSessionSummaryLine(
             Object.freeze({
               turnId: turn.turnId,
-              userMessage: turn.userMessage.content,
+              userMessage: memoryUserMessage,
               assistantSummary: assistantText || turn.assistantDraft || handoffSummary,
               toolDigests: turn.toolDigests,
               keyDecisions: Object.freeze([]),
@@ -381,7 +384,9 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
 
       const digest: TurnDigest = Object.freeze({
         turnId: workingTurn.turnId,
-        userMessage: workingTurn.userMessage.content,
+        userMessage:
+          workingTurn.userMessage.memoryContent ??
+          sanitizeMemoryUserMessage(workingTurn.userMessage.content),
         assistantSummary,
         toolDigests: Object.freeze([...workingTurn.toolDigests]),
         keyDecisions: Object.freeze([]),
@@ -398,7 +403,7 @@ export function createHistoryManager(opts: { workspacePath: string; notes?: stri
           workspaceId: getProjectStorageInfo(taskMemoryWorkspacePath).workspaceId,
           turnId: workingTurn.turnId,
           turnKind: inferTaskMemoryTurnKind(workingTurn, finalAssistantText),
-          userIntent: summarizeText(workingTurn.userMessage.content, 1_200),
+          userIntent: summarizeText(digest.userMessage, 1_200),
           assistantConclusion: summarizeText(finalAssistantText, 2_400),
           filesJson: JSON.stringify(filesTouched),
           attachmentsJson: JSON.stringify(extractAttachments(workingTurn.userMessage, workingTurn.contextNote)),

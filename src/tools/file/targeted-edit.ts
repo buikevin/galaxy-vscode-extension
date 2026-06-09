@@ -66,6 +66,31 @@ function findMatchingRanges(
 }
 
 /**
+ * Resolves a range using exact snapshot content when the caller cannot provide
+ * trustworthy line numbers.
+ *
+ * @param lines Current file lines on disk.
+ * @param options Snapshot evidence captured from a previous read.
+ * @returns One unique matching range, or null when matching is missing/ambiguous.
+ */
+export function resolveUniqueRangeFromSnapshot(
+  lines: readonly string[],
+  options?: LineEditSnapshot,
+): Readonly<{ startLine: number; endLine: number }> | null {
+  const expectedRangeContentProvided = Boolean(options?.expectedRangeContentProvided);
+  const expectedRangeContent = typeof options?.expectedRangeContent === 'string' ? options.expectedRangeContent : '';
+  if (!expectedRangeContentProvided || expectedRangeContent.length === 0) {
+    return null;
+  }
+  const matchingRanges = findMatchingRanges(lines, expectedRangeContent)
+    .filter((candidate) => candidateMatchesAnchors(lines, candidate, options));
+  if (matchingRanges.length !== 1) {
+    return null;
+  }
+  return matchingRanges[0] ?? null;
+}
+
+/**
  * Returns true when the candidate range still satisfies the caller's nearby anchors.
  *
  * @param lines Current file lines on disk.
@@ -122,13 +147,7 @@ export function resolveRangeEditLocation(
     return null;
   }
 
-  const matchingRanges = findMatchingRanges(lines, expectedRangeContent)
-    .filter((candidate) => candidateMatchesAnchors(lines, candidate, options));
-  if (matchingRanges.length !== 1) {
-    return null;
-  }
-
-  return matchingRanges[0] ?? null;
+  return resolveUniqueRangeFromSnapshot(lines, options);
 }
 
 /**
@@ -186,9 +205,14 @@ export function validateAnchoredRangeEdit(
   endLine: number,
   options?: LineEditSnapshot,
 ): string | null {
-  return resolveRangeEditLocation(originalLines, startLine, endLine, options)
-    ? null
-    : `Target range in ${rawPath} no longer matches the last read snapshot. Read the file again before editing.`;
+  if (resolveRangeEditLocation(originalLines, startLine, endLine, options)) {
+    return null;
+  }
+  const currentRange = getRangeContent(originalLines, startLine, Math.min(endLine, originalLines.length));
+  const preview = currentRange
+    ? ` Current content at requested range:\n${currentRange.slice(0, 1200)}`
+    : "";
+  return `Target range in ${rawPath} no longer matches the last read snapshot.${preview}\nRead the file again, then retry with fresh expected_range_content/anchors. If replacing the whole file is safer, use write_file with overwrite_existing=true after reading the current file.`;
 }
 
 /**
